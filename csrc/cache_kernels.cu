@@ -63,6 +63,7 @@ void swap_blocks(
 
 namespace vllm {
 
+// TODO modify
 // Grid: (num_layers, num_pairs)
 template<typename scalar_t>
 __global__ void copy_blocks_kernel(
