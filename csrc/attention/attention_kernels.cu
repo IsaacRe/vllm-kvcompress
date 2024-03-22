@@ -78,6 +78,7 @@ inline __device__ float block_sum(float* red_smem, float sum) {
   return VLLM_SHFL_SYNC(sum, 0);
 }
 
+// TODO modify
 // TODO(woosuk): Merge the last two dimensions of the grid.
 // Grid: (num_heads, num_seqs, max_num_partitions).
 template<
@@ -127,10 +128,14 @@ __device__ void paged_attention_kernel(
   const int end_token_idx = MIN(start_token_idx + num_blocks * BLOCK_SIZE, context_len);
   const int num_tokens = end_token_idx - start_token_idx;
 
-  constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
+  // source of lack of parallelization for low block size (1)
+  // (I think) using same communication primitives between blocks in the same warp
+  // as blocks across warps (so not utilizing warp-level primitives at all when BLOCK_SIZE=1)?
+  // In fact, only parallelizes across single block (but over multiple vector elements) at a time
+  constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1); // number of blocks in the current warp
   constexpr int NUM_THREAD_GROUPS = NUM_THREADS / THREAD_GROUP_SIZE; // Note: This assumes THREAD_GROUP_SIZE divides NUM_THREADS
   assert(NUM_THREADS % THREAD_GROUP_SIZE == 0);
-  constexpr int NUM_TOKENS_PER_THREAD_GROUP = DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);
+  constexpr int NUM_TOKENS_PER_THREAD_GROUP = DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);  // computes (A+B-1)/B
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
   const int thread_idx = threadIdx.x;
   const int warp_idx = thread_idx / WARP_SIZE;
@@ -166,6 +171,8 @@ __device__ void paged_attention_kernel(
   // has 0, 4, 8, ... th vectors of the query, and the second thread has 1, 5, 9, ...
   // th vectors of the query, and so on.
   // NOTE(woosuk): Because q is split from a qkv tensor, it may not be contiguous.
+  // Note: "seq_idx" is actually the index into the batch dimension of the current sequence being processed
+  // Note: more query heads than kv heads for GQA (head_idx (below) vs kv_head_idx (above))
   const scalar_t* q_ptr = q + seq_idx * q_stride + head_idx * HEAD_SIZE;
   __shared__ Q_vec q_vecs[THREAD_GROUP_SIZE][NUM_VECS_PER_THREAD];
 #pragma unroll

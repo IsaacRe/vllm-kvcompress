@@ -61,6 +61,7 @@ void swap_blocks(
 
 namespace vllm {
 
+// TODO modify
 // Grid: (num_layers, num_pairs)
 template<typename scalar_t>
 __global__ void copy_blocks_kernel(
@@ -151,6 +152,7 @@ void copy_blocks(
 
 namespace vllm {
 
+// TODO modify
 template<typename scalar_t, typename cache_t, bool is_fp8_e5m2_kv_cache>
 __global__ void reshape_and_cache_kernel(
   const scalar_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
