@@ -27,9 +27,8 @@ def main(
     do_profile: bool,
     device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
+    use_kvc: bool = False,
 ) -> None:
-    use_kvc = version.startswith("kvc")
-
     random.seed(seed)
     torch.random.manual_seed(seed)
     if torch.cuda.is_available():
@@ -161,7 +160,41 @@ def main(
                     kv_cache_dtype,
                 )
             else:
-                raise ValueError(f"Invalid version: {version}")
+                if version == "v1":
+                    ops.paged_attention_v1(
+                        output,
+                        query,
+                        key_cache,
+                        value_cache,
+                        num_kv_heads,
+                        scale,
+                        block_tables,
+                        context_lens,
+                        block_size,
+                        max_context_len,
+                        alibi_slopes,
+                        kv_cache_dtype,
+                    )
+                elif version == "v2":
+                    ops.paged_attention_v2(
+                        output,
+                        exp_sums,
+                        max_logits,
+                        tmp_output,
+                        query,
+                        key_cache,
+                        value_cache,
+                        num_kv_heads,
+                        scale,
+                        block_tables,
+                        context_lens,
+                        block_size,
+                        max_context_len,
+                        alibi_slopes,
+                        kv_cache_dtype,
+                    )
+                else:
+                    raise ValueError(f"Invalid version: {version}")
         torch.cuda.synchronize()
 
         end_time = time.perf_counter()
@@ -233,4 +266,5 @@ if __name__ == '__main__':
         seed=args.seed,
         do_profile=args.profile,
         kv_cache_dtype=args.kv_cache_dtype,
+        use_kvc=args.kv_compress,
     )
