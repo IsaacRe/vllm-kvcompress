@@ -27,7 +27,7 @@ def main(
     do_profile: bool,
     device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
-    use_kvc: bool = False,
+    benchmark_kvc: bool = False,
 ) -> None:
     random.seed(seed)
     torch.random.manual_seed(seed)
@@ -64,7 +64,7 @@ def main(
         block_tables.append(block_table)
     block_tables = torch.tensor(block_tables, dtype=torch.int, device=device)
 
-    if use_kvc:
+    if benchmark_kvc:
         # context_lens should be [num_seqs X num_kv_heads] tensor
         context_lens = context_lens[:,None].repeat(1, num_kv_heads)
         # block_table should be [num_seqs X num_kv_heads X max_num_blocks_per_seq] tensor
@@ -79,7 +79,7 @@ def main(
                                                             kv_cache_dtype,
                                                             dtype,
                                                             device=device,
-                                                            use_kvc=use_kvc)
+                                                            use_kvc=benchmark_kvc)
     key_cache, value_cache = key_caches[0], value_caches[0]
 
     # Prepare for the paged attention kernel.
@@ -99,14 +99,14 @@ def main(
         )
         max_logits = torch.empty_like(exp_sums)
 
-    def run_cuda_benchmark(num_iters: int, profile: bool = False) -> float:
+    def run_cuda_benchmark(num_iters: int, profile: bool = False, kvc: bool = False) -> float:
         torch.cuda.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
         start_time = time.perf_counter()
 
         for _ in range(num_iters):
-            if use_kvc:
+            if kvc:
                 if version == "v1":
                     ops.kvcompress_paged_attention_v1(
                         output,
@@ -197,13 +197,27 @@ def main(
         latency = run_benchmark(num_iters=100, profile=False)
     print(f"Kernel running time: {latency * 1000000:.3f} us")
 
+    # Benchmark KV-Compress kernels.
+    if benchmark_kvc:
+        vanilla_output = output.clone().cpu()
+        print("Warming up KV-Compress kernel...")
+        run_benchmark(num_iters=3, profile=False)
+        
+        if do_profile:
+            latency = run_benchmark(num_iters=1, profile=True, kvc=True)
+        else:
+            latency = run_benchmark(num_iters=100, profile=False, kvc=True)
+
+        print(f"KV-Compress Kernel running time: {latency * 1000000:.3f} us")
+        assert torch.allclose(vanilla_output, output.cpu()), f"Outputs not equal: {(vanilla_output - output.cpu()).abs().max()}"
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="Benchmark the paged attention kernel.")
     parser.add_argument("--version",
                         type=str,
-                        choices=["v1", "v2", "kvc"],
+                        choices=["v1", "v2"],
                         default="v2")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context-len", type=int, default=4096)
@@ -248,5 +262,5 @@ if __name__ == '__main__':
         seed=args.seed,
         do_profile=args.profile,
         kv_cache_dtype=args.kv_cache_dtype,
-        use_kvc=args.kv_compress,
+        benchmark_kvc=args.kv_compress,
     )
