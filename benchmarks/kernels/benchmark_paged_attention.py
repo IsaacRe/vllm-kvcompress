@@ -256,15 +256,18 @@ def main(
     # Benchmark KV-Compress kernels.
     if benchmark_kvc:
         vanilla_output = output.clone().cpu()
+
+        print("Cooling down for KV-Compress benchmark...")
+        time.sleep(1)
         print("Warming up KV-Compress kernel...")
-        run_benchmark(num_iters=3, profile=False)
+        run_benchmark(num_iters=3, profile=False, kvc=True)
         
         if do_profile:
             latency = run_benchmark(num_iters=1, profile=True, kvc=True)
         else:
             latency = run_benchmark(num_iters=100, profile=False, kvc=True)
 
-        print(f"KV-Compress Kernel running time: {latency * 1000000:.3f} us")
+        print(f"KV-Compress kernel running time: {latency * 1000000:.3f} us")
         assert torch.allclose(vanilla_output, output.cpu()), f"Outputs not equal: {(vanilla_output - output.cpu()).abs().max()}"
 
 
