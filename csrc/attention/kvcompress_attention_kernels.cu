@@ -89,7 +89,7 @@ template<
   int NUM_THREADS,
   bool IS_FP8_E5M2_KV_CACHE,
   int PARTITION_SIZE = 0> // Zero means no partitioning.
-__device__ void paged_attention_kernel(
+__device__ void single_tier_paged_attention_kernel(
   float* __restrict__ exp_sums,           // [num_seqs, num_heads, max_num_partitions]
   float* __restrict__ max_logits,         // [num_seqs, num_heads, max_num_partitions]
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, max_num_partitions, head_size]
@@ -439,7 +439,7 @@ template<
   int BLOCK_SIZE,
   int NUM_THREADS,
   bool IS_FP8_E5M2_KV_CACHE>
-__global__ void paged_attention_v1_kernel(
+__global__ void single_tier_paged_attention_v1_kernel(
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, head_size]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]
@@ -452,7 +452,7 @@ __global__ void paged_attention_v1_kernel(
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride) {
-  paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_E5M2_KV_CACHE>(
+  single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_E5M2_KV_CACHE>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
     out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens,
     max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride);
@@ -462,9 +462,9 @@ __global__ void paged_attention_v1_kernel(
 
 #define LAUNCH_PAGED_ATTENTION_V1(HEAD_SIZE)                                                  \
   VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                                       \
-    ((void*)vllm::paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,   \
+    ((void*)vllm::single_tier_paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,   \
       IS_FP8_E5M2_KV_CACHE>), shared_mem_size);                                               \
-  vllm::paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
+  vllm::single_tier_paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
   IS_FP8_E5M2_KV_CACHE><<<grid, block, shared_mem_size, stream>>>(                            \
     out_ptr,                                                                                  \
     query_ptr,                                                                                \
@@ -503,6 +503,11 @@ void paged_attention_v1_launcher(
   int max_num_blocks_per_seq = block_tables.size(1);
   int q_stride = query.stride(0);
   int kv_block_stride = key_cache.stride(0);
+
+  // if block table has attention head dimension, we're using single-tiered paging
+  // single-tiered block_table: [num_seqs, num_kv_heads, max_num_blocks_per_seq]
+  // double-tiered block_table: [num_seqs, max_num_blocks_per_seq]
+  bool is_single_tier = block_tables.sizes().size() > 2;
 
   int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
   assert(head_size % thread_group_size == 0);
