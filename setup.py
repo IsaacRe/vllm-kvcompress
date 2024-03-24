@@ -330,6 +330,7 @@ elif _is_neuron():
 vllm_extension_sources = [
     "csrc/cache_kernels.cu",
     "csrc/attention/attention_kernels.cu",
+    "csrc/attention/kvcompress_attention_kernels.cu",
     "csrc/pos_encoding_kernels.cu",
     "csrc/activation_kernels.cu",
     "csrc/layernorm_kernels.cu",
