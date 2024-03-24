@@ -28,6 +28,8 @@ def main(
     device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
 ) -> None:
+    use_kvc = torch.version.startswith("kvc")
+
     random.seed(seed)
     torch.random.manual_seed(seed)
     if torch.cuda.is_available():
@@ -63,6 +65,12 @@ def main(
         block_tables.append(block_table)
     block_tables = torch.tensor(block_tables, dtype=torch.int, device=device)
 
+    if use_kvc:
+        # context_lens should be [num_seqs X num_kv_heads] tensor
+        context_lens = context_lens[:,None].repeat(1, num_kv_heads)
+        # block_table should be [num_seqs X num_kv_heads X max_num_blocks_per_seq] tensor
+        block_tables = block_tables[:,None].repeat(1, num_kv_heads, 1)
+
     # Create the KV cache.
     key_caches, value_caches = create_kv_caches_with_random(NUM_BLOCKS,
                                                             block_size,
@@ -71,7 +79,8 @@ def main(
                                                             head_size,
                                                             kv_cache_dtype,
                                                             dtype,
-                                                            device=device)
+                                                            device=device,
+                                                            use_kvc=use_kvc)
     key_cache, value_cache = key_caches[0], value_caches[0]
 
     # Prepare for the paged attention kernel.
@@ -131,6 +140,21 @@ def main(
                     alibi_slopes,
                     kv_cache_dtype,
                 )
+            elif version == "kvc":
+                ops.kvcompress_paged_attention_v1(
+                    output,
+                    query,
+                    key_cache,
+                    value_cache,
+                    num_kv_heads,
+                    scale,
+                    block_tables,
+                    context_lens,
+                    block_size,
+                    max_context_len,
+                    alibi_slopes,
+                    kv_cache_dtype,
+                )
             else:
                 raise ValueError(f"Invalid version: {version}")
         torch.cuda.synchronize()
@@ -158,7 +182,7 @@ if __name__ == '__main__':
         description="Benchmark the paged attention kernel.")
     parser.add_argument("--version",
                         type=str,
-                        choices=["v1", "v2"],
+                        choices=["v1", "v2", "kvc"],
                         default="v2")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--context-len", type=int, default=4096)
