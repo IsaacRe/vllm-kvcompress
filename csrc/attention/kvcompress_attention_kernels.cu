@@ -467,26 +467,25 @@ template<
   int NUM_THREADS,
   bool IS_FP8_E5M2_KV_CACHE,
   int PARTITION_SIZE>
-__global__ void paged_attention_v2_kernel(
+__global__ void single_tier_paged_attention_v2_kernel(
   float* __restrict__ exp_sums,           // [num_seqs, num_heads, max_num_partitions]
   float* __restrict__ max_logits,         // [num_seqs, num_heads, max_num_partitions]
   scalar_t* __restrict__ tmp_out,         // [num_seqs, num_heads, max_num_partitions, head_size]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
-  const cache_t* __restrict__ k_cache,    // [num_blocks, num_kv_heads, head_size/x, block_size, x]
-  const cache_t* __restrict__ v_cache,    // [num_blocks, num_kv_heads, head_size, block_size]
+  const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]
+  const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]
   const int num_kv_heads,                 // [num_heads]
   const float scale,
-  const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
-  const int* __restrict__ context_lens,   // [num_seqs]
+  const int* __restrict__ block_tables,   // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
+  const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
-  const int kv_block_stride,
-  const int kv_head_stride) {
-  paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_E5M2_KV_CACHE, PARTITION_SIZE>(
+  const int kv_block_stride) {
+  single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_E5M2_KV_CACHE, PARTITION_SIZE>(
     exp_sums, max_logits, tmp_out, q, k_cache, v_cache, num_kv_heads, scale,
     block_tables, context_lens, max_num_blocks_per_seq, alibi_slopes,
-    q_stride, kv_block_stride, kv_head_stride);
+    q_stride, kv_block_stride);
 }
 
 // Grid: (num_heads, num_seqs).
@@ -495,17 +494,20 @@ template<
   int HEAD_SIZE,
   int NUM_THREADS,
   int PARTITION_SIZE>
-__global__ void paged_attention_v2_reduce_kernel(
+__global__ void single_tier_paged_attention_v2_reduce_kernel(
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, head_size]
   const float* __restrict__ exp_sums,     // [num_seqs, num_heads, max_num_partitions]
   const float* __restrict__ max_logits,   // [num_seqs, num_heads, max_num_partitions]
   const scalar_t* __restrict__ tmp_out,   // [num_seqs, num_heads, max_num_partitions, head_size]
-  const int* __restrict__ context_lens,   // [num_seqs]
+  const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
+  const int num_kv_heads,
   const int max_num_partitions) {
   const int num_heads = gridDim.x;
   const int head_idx = blockIdx.x;
+  const int num_queries_per_kv = num_heads / num_kv_heads;
+  const int kv_head_idx = head_idx / num_queries_per_kv;
   const int seq_idx = blockIdx.y;
-  const int context_len = context_lens[seq_idx];
+  const int context_len = context_lens[seq_idx * num_kv_heads + kv_head_idx];
   const int num_partitions = DIVIDE_ROUND_UP(context_len, PARTITION_SIZE);
   if (num_partitions == 1) {
     // No need to reduce. Only copy tmp_out to out.
@@ -764,7 +766,7 @@ void kvcompress_paged_attention_v1(
 }
 
 #define LAUNCH_PAGED_ATTENTION_V2(HEAD_SIZE)                                                  \
-  vllm::paged_attention_v2_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
+  vllm::single_tier_paged_attention_v2_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
   IS_FP8_E5M2_KV_CACHE, PARTITION_SIZE>                                                       \
   <<<grid, block, shared_mem_size, stream>>>(                                                 \
     exp_sums_ptr,                                                                             \
@@ -780,15 +782,15 @@ void kvcompress_paged_attention_v1(
     max_num_blocks_per_seq,                                                                   \
     alibi_slopes_ptr,                                                                         \
     q_stride,                                                                                 \
-    kv_block_stride,                                                                          \
-    kv_head_stride);                                                                          \
-  vllm::paged_attention_v2_reduce_kernel<T, HEAD_SIZE, NUM_THREADS, PARTITION_SIZE>           \
+    kv_block_stride);                                                                          \
+  vllm::single_tier_paged_attention_v2_reduce_kernel<T, HEAD_SIZE, NUM_THREADS, PARTITION_SIZE>           \
   <<<reduce_grid, block, reduce_shared_mem_size, stream>>>(                                   \
     out_ptr,                                                                                  \
     exp_sums_ptr,                                                                             \
     max_logits_ptr,                                                                           \
     tmp_out_ptr,                                                                              \
     context_lens_ptr,                                                                         \
+    num_kv_heads,                                                                             \
     max_num_partitions);
 
 template<
@@ -818,7 +820,11 @@ void paged_attention_v2_launcher(
   int max_num_blocks_per_seq = block_tables.size(1);
   int q_stride = query.stride(0);
   int kv_block_stride = key_cache.stride(0);
-  int kv_head_stride = key_cache.stride(1);
+
+  // if block table has attention head dimension, we're using single-tiered paging
+  // single-tiered block_table: [num_seqs, num_kv_heads, max_num_blocks_per_seq]
+  // double-tiered block_table: [num_seqs, max_num_blocks_per_seq]
+  bool is_single_tier = block_tables.sizes().size() > 2;
 
   int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
   assert(head_size % thread_group_size == 0);
