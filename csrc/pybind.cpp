@@ -15,11 +15,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   ops.def(
     "kvcompress_paged_attention_v1",
     &kvcompress_paged_attention_v1,
-    "Compute the attention between an input query and the cached keys/values using PagedAttention.");
+    "PagedAttention V1 with KV-Compress.");
   ops.def(
     "paged_attention_v2",
     &paged_attention_v2,
     "PagedAttention V2.");
+  ops.def(
+    "kvcompress_paged_attention_v2",
+    &kvcompress_paged_attention_v2,
+    "PagedAttention V2 with KV-Compress.");
 
   // Activation ops
   ops.def(
