@@ -27,9 +27,8 @@ def main(
     do_profile: bool,
     device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
+    use_kvc: bool = False,
 ) -> None:
-    use_kvc = version.startswith("kvc")
-
     random.seed(seed)
     torch.random.manual_seed(seed)
     if torch.cuda.is_available():
@@ -107,56 +106,78 @@ def main(
         start_time = time.perf_counter()
 
         for _ in range(num_iters):
-            if version == "v1":
-                ops.paged_attention_v1(
-                    output,
-                    query,
-                    key_cache,
-                    value_cache,
-                    num_kv_heads,
-                    scale,
-                    block_tables,
-                    context_lens,
-                    block_size,
-                    max_context_len,
-                    alibi_slopes,
-                    kv_cache_dtype,
-                )
-            elif version == "v2":
-                ops.paged_attention_v2(
-                    output,
-                    exp_sums,
-                    max_logits,
-                    tmp_output,
-                    query,
-                    key_cache,
-                    value_cache,
-                    num_kv_heads,
-                    scale,
-                    block_tables,
-                    context_lens,
-                    block_size,
-                    max_context_len,
-                    alibi_slopes,
-                    kv_cache_dtype,
-                )
-            elif version == "kvc":
-                ops.kvcompress_paged_attention_v1(
-                    output,
-                    query,
-                    key_cache,
-                    value_cache,
-                    num_kv_heads,
-                    scale,
-                    block_tables,
-                    context_lens,
-                    block_size,
-                    max_context_len,
-                    alibi_slopes,
-                    kv_cache_dtype,
-                )
+            if use_kvc:
+                if version == "v1":
+                    ops.kvcompress_paged_attention_v1(
+                        output,
+                        query,
+                        key_cache,
+                        value_cache,
+                        num_kv_heads,
+                        scale,
+                        block_tables,
+                        context_lens,
+                        block_size,
+                        max_context_len,
+                        alibi_slopes,
+                        kv_cache_dtype,
+                    )
+                elif version == "v2":
+                    ops.kvcompress_paged_attention_v2(
+                        output,
+                        exp_sums,
+                        max_logits,
+                        tmp_output,
+                        query,
+                        key_cache,
+                        value_cache,
+                        num_kv_heads,
+                        scale,
+                        block_tables,
+                        context_lens,
+                        block_size,
+                        max_context_len,
+                        alibi_slopes,
+                        kv_cache_dtype,
+                    )
+                else:
+                    raise ValueError(f"Invalid version: {version}")
             else:
-                raise ValueError(f"Invalid version: {version}")
+                if version == "v1":
+                    ops.paged_attention_v1(
+                        output,
+                        query,
+                        key_cache,
+                        value_cache,
+                        num_kv_heads,
+                        scale,
+                        block_tables,
+                        context_lens,
+                        block_size,
+                        max_context_len,
+                        alibi_slopes,
+                        kv_cache_dtype,
+                    )
+                elif version == "v2":
+                    ops.paged_attention_v2(
+                        output,
+                        exp_sums,
+                        max_logits,
+                        tmp_output,
+                        query,
+                        key_cache,
+                        value_cache,
+                        num_kv_heads,
+                        scale,
+                        block_tables,
+                        context_lens,
+                        block_size,
+                        max_context_len,
+                        alibi_slopes,
+                        kv_cache_dtype,
+                    )
+                else:
+                    raise ValueError(f"Invalid version: {version}")
         torch.cuda.synchronize()
 
         end_time = time.perf_counter()
@@ -208,6 +229,7 @@ if __name__ == '__main__':
         help=
         'Data type for kv cache storage. If "auto", will use model data type.')
     parser.add_argument("--device", type=str, choices=["cuda"], default="cuda")
+    parser.add_argument("--kv-compress", action="store_true", help="Benchmark KV-Compress kernels.")
     args = parser.parse_args()
     print(args)
 
@@ -226,4 +248,5 @@ if __name__ == '__main__':
         seed=args.seed,
         do_profile=args.profile,
         kv_cache_dtype=args.kv_cache_dtype,
+        use_kvc=args.kv_compress,
     )
