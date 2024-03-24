@@ -28,7 +28,7 @@ def main(
     device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
 ) -> None:
-    use_kvc = torch.version.startswith("kvc")
+    use_kvc = version.startswith("kvc")
 
     random.seed(seed)
     torch.random.manual_seed(seed)
