@@ -1,5 +1,6 @@
 /*
- * Adapted from https://github.com/NVIDIA/FasterTransformer/blob/release/v5.3_tag/src/fastertransformer/kernels/decoder_masked_multihead_attention/decoder_masked_multihead_attention_template.hpp
+ * Adapted by Isaac Rehg (irehg@cloudflare.com) from https://github.com/vllm-project/vllm/blob/v0.3.3/csrc/attention/attention_kernels.cu
+ * Copyright (c) 2024, Cloudflare, inc.
  * Copyright (c) 2023, The vLLM team.
  * Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
  *
@@ -98,8 +99,8 @@ __device__ void single_tier_paged_attention_kernel(
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]  (single kv head per block)
   const int num_kv_heads,                 // [num_heads]
   const float scale,
-  const int* __restrict__ block_tables,   // [num_seqs * num_kv_heads, max_num_blocks_per_seq]
-  const int* __restrict__ context_lens,   // [num_seqs * num_kv_heads]  (track num KVs per attention head per batch elem)
+  const int* __restrict__ block_tables,   // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
+  const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]  (track num KVs per attention head per batch elem)
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
@@ -592,7 +593,7 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
 
 } // namespace vllm
 
-#define LAUNCH_PAGED_ATTENTION_V1(HEAD_SIZE)                                                  \
+#define LAUNCH_KVC_PAGED_ATTENTION_V1(HEAD_SIZE)                                                  \
   VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                                       \
     ((void*)vllm::single_tier_paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,   \
       IS_FP8_E5M2_KV_CACHE>), shared_mem_size);                                               \
@@ -618,7 +619,7 @@ template<
   int BLOCK_SIZE,
   bool IS_FP8_E5M2_KV_CACHE,
   int NUM_THREADS = 128>
-void paged_attention_v1_launcher(
+void kvc_paged_attention_v1_launcher(
   torch::Tensor& out,
   torch::Tensor& query,
   torch::Tensor& key_cache,
@@ -673,22 +674,22 @@ void paged_attention_v1_launcher(
     // head sizes that we use in the model. However, we can easily extend this
     // to support any head size which is a multiple of 16.
     case 64:
-      LAUNCH_PAGED_ATTENTION_V1(64);
+      LAUNCH_KVC_PAGED_ATTENTION_V1(64);
       break;
     case 80:
-      LAUNCH_PAGED_ATTENTION_V1(80);
+      LAUNCH_KVC_PAGED_ATTENTION_V1(80);
       break;
     case 96:
-      LAUNCH_PAGED_ATTENTION_V1(96);
+      LAUNCH_KVC_PAGED_ATTENTION_V1(96);
       break;
     case 112:
-      LAUNCH_PAGED_ATTENTION_V1(112);
+      LAUNCH_KVC_PAGED_ATTENTION_V1(112);
       break;
     case 128:
-      LAUNCH_PAGED_ATTENTION_V1(128);
+      LAUNCH_KVC_PAGED_ATTENTION_V1(128);
       break;
     case 256:
-      LAUNCH_PAGED_ATTENTION_V1(256);
+      LAUNCH_KVC_PAGED_ATTENTION_V1(256);
       break;
     default:
       TORCH_CHECK(false, "Unsupported head size: ", head_size);
@@ -696,8 +697,8 @@ void paged_attention_v1_launcher(
   }
 }
 
-#define CALL_V1_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)       \
-  paged_attention_v1_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>( \
+#define CALL_KVC_V1_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)       \
+  kvc_paged_attention_v1_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>( \
     out,                                                                     \
     query,                                                                   \
     key_cache,                                                               \
@@ -711,16 +712,16 @@ void paged_attention_v1_launcher(
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
-#define CALL_V1_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_E5M2_KV_CACHE) \
+#define CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_E5M2_KV_CACHE) \
   switch (block_size) {                                               \
     case 8:                                                           \
-      CALL_V1_LAUNCHER(T, CACHE_T, 8, IS_FP8_E5M2_KV_CACHE);          \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 8, IS_FP8_E5M2_KV_CACHE);          \
       break;                                                          \
     case 16:                                                          \
-      CALL_V1_LAUNCHER(T, CACHE_T, 16, IS_FP8_E5M2_KV_CACHE);         \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 16, IS_FP8_E5M2_KV_CACHE);         \
       break;                                                          \
     case 32:                                                          \
-      CALL_V1_LAUNCHER(T, CACHE_T, 32, IS_FP8_E5M2_KV_CACHE);         \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 32, IS_FP8_E5M2_KV_CACHE);         \
       break;                                                          \
     default:                                                          \
       TORCH_CHECK(false, "Unsupported block size: ", block_size);     \
@@ -742,21 +743,21 @@ void kvcompress_paged_attention_v1(
   const std::string& kv_cache_dtype) {
   if (kv_cache_dtype == "auto") {
     if (query.dtype() == at::ScalarType::Float) {
-      CALL_V1_LAUNCHER_BLOCK_SIZE(float, float, false);
+      CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(float, float, false);
     } else if (query.dtype() == at::ScalarType::Half) {
-      CALL_V1_LAUNCHER_BLOCK_SIZE(uint16_t, uint16_t, false);
+      CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(uint16_t, uint16_t, false);
     } else if (query.dtype() == at::ScalarType::BFloat16) {
-      CALL_V1_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, __nv_bfloat16, false);
+      CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, __nv_bfloat16, false);
     } else {
       TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
     }
   } else if (kv_cache_dtype == "fp8_e5m2") {
     if (query.dtype() == at::ScalarType::Float) {
-      CALL_V1_LAUNCHER_BLOCK_SIZE(float, uint8_t, true);
+      CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(float, uint8_t, true);
     } else if (query.dtype() == at::ScalarType::Half) {
-      CALL_V1_LAUNCHER_BLOCK_SIZE(uint16_t, uint8_t, true);
+      CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(uint16_t, uint8_t, true);
     } else if (query.dtype() == at::ScalarType::BFloat16) {
-      CALL_V1_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, uint8_t, true);
+      CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, uint8_t, true);
     } else {
       TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
     }
@@ -765,7 +766,7 @@ void kvcompress_paged_attention_v1(
   }
 }
 
-#define LAUNCH_PAGED_ATTENTION_V2(HEAD_SIZE)                                                  \
+#define LAUNCH_KVC_PAGED_ATTENTION_V2(HEAD_SIZE)                                                  \
   vllm::single_tier_paged_attention_v2_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
   IS_FP8_E5M2_KV_CACHE, PARTITION_SIZE>                                                       \
   <<<grid, block, shared_mem_size, stream>>>(                                                 \
@@ -800,7 +801,7 @@ template<
   bool IS_FP8_E5M2_KV_CACHE,
   int NUM_THREADS = 128,
   int PARTITION_SIZE = 512>
-void paged_attention_v2_launcher(
+void kvc_paged_attention_v2_launcher(
   torch::Tensor& out,
   torch::Tensor& exp_sums,
   torch::Tensor& max_logits,
@@ -864,22 +865,22 @@ void paged_attention_v2_launcher(
     // head sizes that we use in the model. However, we can easily extend this
     // to support any head size which is a multiple of 16.
     case 64:
-      LAUNCH_PAGED_ATTENTION_V2(64);
+      LAUNCH_KVC_PAGED_ATTENTION_V2(64);
       break;
     case 80:
-      LAUNCH_PAGED_ATTENTION_V2(80);
+      LAUNCH_KVC_PAGED_ATTENTION_V2(80);
       break;
     case 96:
-      LAUNCH_PAGED_ATTENTION_V2(96);
+      LAUNCH_KVC_PAGED_ATTENTION_V2(96);
       break;
     case 112:
-      LAUNCH_PAGED_ATTENTION_V2(112);
+      LAUNCH_KVC_PAGED_ATTENTION_V2(112);
       break;
     case 128:
-      LAUNCH_PAGED_ATTENTION_V2(128);
+      LAUNCH_KVC_PAGED_ATTENTION_V2(128);
       break;
     case 256:
-      LAUNCH_PAGED_ATTENTION_V2(256);
+      LAUNCH_KVC_PAGED_ATTENTION_V2(256);
       break;
     default:
       TORCH_CHECK(false, "Unsupported head size: ", head_size);
@@ -887,8 +888,8 @@ void paged_attention_v2_launcher(
   }
 }
 
-#define CALL_V2_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)           \
-  paged_attention_v2_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>(     \
+#define CALL_KVC_V2_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)           \
+  kvc_paged_attention_v2_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>(     \
     out,                                                                         \
     exp_sums,                                                                    \
     max_logits,                                                                  \
@@ -905,16 +906,16 @@ void paged_attention_v2_launcher(
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
-#define CALL_V2_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_E5M2_KV_CACHE)       \
+#define CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_E5M2_KV_CACHE)       \
   switch (block_size) {                                                     \
     case 8:                                                                 \
-      CALL_V2_LAUNCHER(T, CACHE_T, 8, IS_FP8_E5M2_KV_CACHE);                \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 8, IS_FP8_E5M2_KV_CACHE);                \
       break;                                                                \
     case 16:                                                                \
-      CALL_V2_LAUNCHER(T, CACHE_T, 16, IS_FP8_E5M2_KV_CACHE);               \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 16, IS_FP8_E5M2_KV_CACHE);               \
       break;                                                                \
     case 32:                                                                \
-      CALL_V2_LAUNCHER(T, CACHE_T, 32, IS_FP8_E5M2_KV_CACHE);               \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 32, IS_FP8_E5M2_KV_CACHE);               \
       break;                                                                \
     default:                                                                \
       TORCH_CHECK(false, "Unsupported block size: ", block_size);           \
@@ -939,21 +940,21 @@ void kvcompress_paged_attention_v2(
   const std::string& kv_cache_dtype) {
   if (kv_cache_dtype == "auto") {
     if (query.dtype() == at::ScalarType::Float) {
-      CALL_V2_LAUNCHER_BLOCK_SIZE(float, float, false);
+      CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(float, float, false);
     } else if (query.dtype() == at::ScalarType::Half) {
-      CALL_V2_LAUNCHER_BLOCK_SIZE(uint16_t, uint16_t, false);
+      CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(uint16_t, uint16_t, false);
     } else if (query.dtype() == at::ScalarType::BFloat16) {
-      CALL_V2_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, __nv_bfloat16, false);
+      CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, __nv_bfloat16, false);
     } else {
       TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
     }
   } else if (kv_cache_dtype == "fp8_e5m2") {
     if (query.dtype() == at::ScalarType::Float) {
-      CALL_V2_LAUNCHER_BLOCK_SIZE(float, uint8_t, true);
+      CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(float, uint8_t, true);
     } else if (query.dtype() == at::ScalarType::Half) {
-      CALL_V2_LAUNCHER_BLOCK_SIZE(uint16_t, uint8_t, true);
+      CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(uint16_t, uint8_t, true);
     } else if (query.dtype() == at::ScalarType::BFloat16) {
-      CALL_V2_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, uint8_t, true);
+      CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, uint8_t, true);
     } else {
       TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
     }
