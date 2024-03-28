@@ -633,14 +633,9 @@ void kvc_paged_attention_v1_launcher(
   int num_seqs = query.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
-  int max_num_blocks_per_seq = block_tables.size(1);
+  int max_num_blocks_per_seq = block_tables.size(2);
   int q_stride = query.stride(0);
   int kv_block_stride = key_cache.stride(0);
-
-  // if block table has attention head dimension, we're using single-tiered paging
-  // single-tiered block_table: [num_seqs, num_kv_heads, max_num_blocks_per_seq]
-  // double-tiered block_table: [num_seqs, max_num_blocks_per_seq]
-  bool is_single_tier = block_tables.sizes().size() > 2;
 
   int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
   assert(head_size % thread_group_size == 0);
@@ -818,14 +813,9 @@ void kvc_paged_attention_v2_launcher(
   int num_seqs = query.size(0);
   int num_heads = query.size(1);
   int head_size = query.size(2);
-  int max_num_blocks_per_seq = block_tables.size(1);
+  int max_num_blocks_per_seq = block_tables.size(2);
   int q_stride = query.stride(0);
   int kv_block_stride = key_cache.stride(0);
-
-  // if block table has attention head dimension, we're using single-tiered paging
-  // single-tiered block_table: [num_seqs, num_kv_heads, max_num_blocks_per_seq]
-  // double-tiered block_table: [num_seqs, max_num_blocks_per_seq]
-  bool is_single_tier = block_tables.sizes().size() > 2;
 
   int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
   assert(head_size % thread_group_size == 0);
