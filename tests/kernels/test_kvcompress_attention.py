@@ -116,29 +116,39 @@ def ref_single_query_cached_kv_attention(
                 success_heads += [(h, qh)]
 
 
-# @pytest.mark.parametrize("version", ["v1", "v2"])
-# @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
-# @pytest.mark.parametrize("num_heads", NUM_HEADS)
-# @pytest.mark.parametrize("head_size", HEAD_SIZES)
-# @pytest.mark.parametrize("use_alibi", USE_ALIBI)
-# @pytest.mark.parametrize("block_size", BLOCK_SIZES)
-# @pytest.mark.parametrize("dtype", DTYPES)
-# @pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
-# @pytest.mark.parametrize("seed", SEEDS)
-# @pytest.mark.parametrize("device", CUDA_DEVICES)
+@pytest.mark.parametrize("version", ["v1", "v2"])
+@pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
+@pytest.mark.parametrize("num_heads", NUM_HEADS)
+@pytest.mark.parametrize("head_size", HEAD_SIZES)
+@pytest.mark.parametrize("use_alibi", USE_ALIBI)
+@pytest.mark.parametrize("block_size", BLOCK_SIZES)
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
+@pytest.mark.parametrize("seed", SEEDS)
+@pytest.mark.parametrize("device", CUDA_DEVICES)
 def test_kvcompress_paged_attention(
     kv_cache_factory,
+    version: str,
+    num_seqs: int,
+    num_heads: Tuple[int, int],
+    head_size: int,
+    use_alibi: bool,
+    block_size: int,
+    dtype: torch.dtype,
+    kv_cache_dtype: str,
+    seed: int,
+    device: str,
 ) -> None:
-    device = 'cuda:0'
-    seed = 1
-    kv_cache_dtype = 'auto'
-    dtype = DTYPES[0]
-    block_size = BLOCK_SIZES[0]
-    use_alibi = False
-    head_size = HEAD_SIZES[0]
-    num_heads = NUM_HEADS[1]
-    num_seqs = NUM_GEN_SEQS[0]
-    version = 'v1'
+    # device = 'cuda:0'
+    # seed = 1
+    # kv_cache_dtype = 'auto'
+    # dtype = DTYPES[0]
+    # block_size = BLOCK_SIZES[0]
+    # use_alibi = False
+    # head_size = HEAD_SIZES[0]
+    # num_heads = NUM_HEADS[1]
+    # num_seqs = NUM_GEN_SEQS[0]
+    # version = 'v1'
     random.seed(seed)
     torch.random.manual_seed(seed)
     if torch.cuda.is_available():
