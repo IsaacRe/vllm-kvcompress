@@ -18,7 +18,7 @@ MAX_SEQ_LEN = get_max_shared_memory_bytes() // FLOAT32_BYTES - 512
 # There may not be enough gpu memory due to large NUM_BLOCKS.
 # Reduce NUM_BLOCKS when it happens.
 NUM_BLOCKS = 4321  # Arbitrary values for testing
-PARTITION_SIZE = 0
+PARTITION_SIZE = 512
 # flshattF and tritonflashattF supported: {torch.float16, torch.bfloat16}
 DTYPES = [torch.half, torch.bfloat16, torch.float
           ] if not is_hip() else [torch.half, torch.bfloat16]
@@ -111,7 +111,7 @@ def ref_single_query_cached_kv_attention(
 
                 out = ref_masked_attention(q, keys, values, scale, alibi_bias)
                 out = out.view(1, head_size)
-                #output[i,qh].copy_(out[0], non_blocking=True)
+                # output[i,qh].copy_(out[0], non_blocking=True)
                 assert torch.allclose(output[i,qh], out[0], atol=atol, rtol=rtol), f"KV head/Q head: {h}/{qh}, Successful: {success_heads}"
                 success_heads += [(h, qh)]
 
@@ -144,7 +144,7 @@ def test_kvcompress_paged_attention(
     # kv_cache_dtype = 'auto'
     # dtype = DTYPES[0]
     # block_size = BLOCK_SIZES[0]
-    # use_alibi = False
+    use_alibi = True
     # head_size = HEAD_SIZES[0]
     # num_heads = NUM_HEADS[1]
     # num_seqs = NUM_GEN_SEQS[0]
@@ -196,7 +196,7 @@ def test_kvcompress_paged_attention(
     key_cache = key_cache.flatten(start_dim=0, end_dim=1)
     value_cache = value_cache.flatten(start_dim=0, end_dim=1)
 
-    print(f"block_tables: {block_tables.shape}, context_lens: {context_lens.shape}, key_cache: {key_cache.shape}, value_cache: {value_cache.shape}")
+    # print(f"block_tables: {block_tables.shape}, context_lens: {context_lens.shape}, key_cache: {key_cache.shape}, value_cache: {value_cache.shape}")
 
     # Call the paged attention kernel.
     output = torch.empty_like(query)
