@@ -64,6 +64,16 @@ void kvcompress_paged_attention_v2(
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype);
 
+void kvcompress_schedule_evictions(
+  torch::Tensor& evicted_kv_indices,
+  torch::Tensor& evicted_kv_count,
+  torch::Tensor& sorted_indices,
+  torch::Tensor& seq_block_offsets,
+  torch::Tensor& layer_by_block,
+  torch::Tensor& head_by_block,
+  torch::Tensor& evicted_blocks_per_seq,
+  int block_size);
+
 void rms_norm(
   torch::Tensor& out,
   torch::Tensor& input,
