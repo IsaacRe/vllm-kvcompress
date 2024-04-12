@@ -19,6 +19,7 @@ void paged_attention_v1(
 
 void kvcompress_paged_attention_v1(
   torch::Tensor& out,
+  torch::Tensor& kv_metric_out,
   torch::Tensor& query,
   torch::Tensor& key_cache,
   torch::Tensor& value_cache,
@@ -51,9 +52,11 @@ void paged_attention_v2(
 
 void kvcompress_paged_attention_v2(
   torch::Tensor& out,
+  torch::Tensor& kv_metric_out,
   torch::Tensor& exp_sums,
   torch::Tensor& max_logits,
   torch::Tensor& tmp_out,
+  torch::Tensor& tmp_kv_metric_out,
   torch::Tensor& query,
   torch::Tensor& key_cache,
   torch::Tensor& value_cache,

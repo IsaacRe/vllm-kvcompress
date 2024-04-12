@@ -94,6 +94,7 @@ __device__ void single_tier_paged_attention_kernel(
   float* __restrict__ exp_sums,           // [num_seqs, num_heads, max_num_partitions]
   float* __restrict__ max_logits,         // [num_seqs, num_heads, max_num_partitions]
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, max_num_partitions, head_size]
+  float* __restrict__ kv_metric_out,      // [num_blocks, block_size]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]  (single kv head per block)
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]  (single kv head per block)
@@ -289,7 +290,11 @@ __device__ void single_tier_paged_attention_kernel(
   // Compute softmax.
   const float inv_sum = __fdividef(1.f, exp_sum + 1e-6f);
   for (int i = thread_idx; i < num_tokens; i += NUM_THREADS) {
-    logits[i] *= inv_sum;
+    const int physical_block_offset = i % BLOCK_SIZE;
+    const int physical_block_number = block_table[i / BLOCK_SIZE];
+    const float normalized = logits[i] * inv_sum;
+    logits[i] = normalized;
+    kv_metric_out[physical_block_number * BLOCK_SIZE + physical_block_offset] = normalized;
   }
   __syncthreads();
 
@@ -442,6 +447,7 @@ template<
   bool IS_FP8_E5M2_KV_CACHE>
 __global__ void single_tier_paged_attention_v1_kernel(
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, head_size]
+  float* __restrict__ kv_metric_out,      // [num_blocks, block_size]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]
@@ -455,7 +461,7 @@ __global__ void single_tier_paged_attention_v1_kernel(
   const int kv_block_stride) {
   single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_E5M2_KV_CACHE>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
-    out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens,
+    out, kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens,
     max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride);
 }
 
@@ -472,6 +478,7 @@ __global__ void single_tier_paged_attention_v2_kernel(
   float* __restrict__ exp_sums,           // [num_seqs, num_heads, max_num_partitions]
   float* __restrict__ max_logits,         // [num_seqs, num_heads, max_num_partitions]
   scalar_t* __restrict__ tmp_out,         // [num_seqs, num_heads, max_num_partitions, head_size]
+  float* __restrict__ tmp_kv_metric_out,      // [num_blocks, block_size]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]
@@ -484,7 +491,7 @@ __global__ void single_tier_paged_attention_v2_kernel(
   const int q_stride,
   const int kv_block_stride) {
   single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_E5M2_KV_CACHE, PARTITION_SIZE>(
-    exp_sums, max_logits, tmp_out, q, k_cache, v_cache, num_kv_heads, scale,
+    exp_sums, max_logits, tmp_out, tmp_kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale,
     block_tables, context_lens, max_num_blocks_per_seq, alibi_slopes,
     q_stride, kv_block_stride);
 }
@@ -493,15 +500,20 @@ __global__ void single_tier_paged_attention_v2_kernel(
 template<
   typename scalar_t,
   int HEAD_SIZE,
+  int BLOCK_SIZE,
   int NUM_THREADS,
   int PARTITION_SIZE>
 __global__ void single_tier_paged_attention_v2_reduce_kernel(
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, head_size]
+  float* __restrict__ kv_metric_out,      // [num_blocks, block_size]
   const float* __restrict__ exp_sums,     // [num_seqs, num_heads, max_num_partitions]
   const float* __restrict__ max_logits,   // [num_seqs, num_heads, max_num_partitions]
   const scalar_t* __restrict__ tmp_out,   // [num_seqs, num_heads, max_num_partitions, head_size]
+  const float* __restrict__ tmp_kv_metric_out,  // [num_blocks, block_size]
+  const int* __restrict__ block_tables,   // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
   const int num_kv_heads,
+  const int max_num_blocks_per_seq,
   const int max_num_partitions) {
   const int num_heads = gridDim.x;
   const int head_idx = blockIdx.x;
@@ -510,6 +522,9 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
   const int seq_idx = blockIdx.y;
   const int context_len = context_lens[seq_idx * num_kv_heads + kv_head_idx];
   const int num_partitions = DIVIDE_ROUND_UP(context_len, PARTITION_SIZE);
+  const int* block_table = block_tables \
+    + seq_idx * num_kv_heads * max_num_blocks_per_seq \
+    + kv_head_idx * max_num_blocks_per_seq;
   if (num_partitions == 1) {
     // No need to reduce. Only copy tmp_out to out.
     scalar_t* out_ptr = out + seq_idx * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE;
@@ -517,6 +532,11 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
                                           + head_idx * max_num_partitions * HEAD_SIZE;
     for (int i = threadIdx.x; i < HEAD_SIZE; i += blockDim.x) {
       out_ptr[i] = tmp_out_ptr[i];
+    }
+    for (int i = threadIdx.x; i < context_len; i += blockDim.x) {
+      const int physical_block_number = block_table[i / BLOCK_SIZE];
+      const int kv_metric_idx = physical_block_number * BLOCK_SIZE + i % BLOCK_SIZE;
+      kv_metric_out[kv_metric_idx] = tmp_kv_metric_out[kv_metric_idx];
     }
     // Terminate the thread block.
     return;
@@ -589,6 +609,13 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
     }
     from_float(out_ptr[i], acc);
   }
+  for (int i = threadIdx.x; i < context_len; i += blockDim.x) {
+    const int partition_idx = i / PARTITION_SIZE;
+    const int physical_block_number = block_table[i / BLOCK_SIZE];
+    const int kv_metric_idx = physical_block_number * BLOCK_SIZE + i % BLOCK_SIZE;
+    kv_metric_out[kv_metric_idx] = tmp_kv_metric_out[kv_metric_idx] \
+      * shared_exp_sums[partition_idx] * inv_global_exp_sum;
+  }
 }
 
 } // namespace vllm
@@ -600,6 +627,7 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
   vllm::single_tier_paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
   IS_FP8_E5M2_KV_CACHE><<<grid, block, shared_mem_size, stream>>>(                            \
     out_ptr,                                                                                  \
+    kv_metric_out_ptr,                                                                        \
     query_ptr,                                                                                \
     key_cache_ptr,                                                                            \
     value_cache_ptr,                                                                          \
@@ -621,6 +649,7 @@ template<
   int NUM_THREADS = 128>
 void kvc_paged_attention_v1_launcher(
   torch::Tensor& out,
+  torch::Tensor& kv_metric_out,
   torch::Tensor& query,
   torch::Tensor& key_cache,
   torch::Tensor& value_cache,
@@ -646,6 +675,7 @@ void kvc_paged_attention_v1_launcher(
     : nullptr;
 
   T* out_ptr = reinterpret_cast<T*>(out.data_ptr());
+  float* kv_metric_out_ptr = reinterpret_cast<float*>(kv_metric_out.data_ptr());
   T* query_ptr = reinterpret_cast<T*>(query.data_ptr());
   CACHE_T* key_cache_ptr = reinterpret_cast<CACHE_T*>(key_cache.data_ptr());
   CACHE_T* value_cache_ptr = reinterpret_cast<CACHE_T*>(value_cache.data_ptr());
@@ -695,6 +725,7 @@ void kvc_paged_attention_v1_launcher(
 #define CALL_KVC_V1_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)       \
   kvc_paged_attention_v1_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>( \
     out,                                                                     \
+    kv_metric_out,                                                           \
     query,                                                                   \
     key_cache,                                                               \
     value_cache,                                                             \
@@ -725,6 +756,7 @@ void kvc_paged_attention_v1_launcher(
 
 void kvcompress_paged_attention_v1(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
+  torch::Tensor& kv_metric_out,   // [num_blocks, block_size]
   torch::Tensor& query,           // [num_seqs, num_heads, head_size]
   torch::Tensor& key_cache,       // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& value_cache,     // [num_blocks, head_size, block_size]
@@ -768,6 +800,7 @@ void kvcompress_paged_attention_v1(
     exp_sums_ptr,                                                                             \
     max_logits_ptr,                                                                           \
     tmp_out_ptr,                                                                              \
+    tmp_kv_metric_out_ptr,                                                                    \
     query_ptr,                                                                                \
     key_cache_ptr,                                                                            \
     value_cache_ptr,                                                                          \
@@ -779,14 +812,18 @@ void kvcompress_paged_attention_v1(
     alibi_slopes_ptr,                                                                         \
     q_stride,                                                                                 \
     kv_block_stride);                                                                          \
-  vllm::single_tier_paged_attention_v2_reduce_kernel<T, HEAD_SIZE, NUM_THREADS, PARTITION_SIZE>           \
+  vllm::single_tier_paged_attention_v2_reduce_kernel<T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, PARTITION_SIZE>           \
   <<<reduce_grid, block, reduce_shared_mem_size, stream>>>(                                   \
     out_ptr,                                                                                  \
+    kv_metric_out_ptr,                                                                        \
     exp_sums_ptr,                                                                             \
     max_logits_ptr,                                                                           \
     tmp_out_ptr,                                                                              \
+    tmp_kv_metric_out_ptr,                                                                    \
+    block_tables_ptr,                                                                         \
     context_lens_ptr,                                                                         \
     num_kv_heads,                                                                             \
+    max_num_blocks_per_seq,                                                                   \
     max_num_partitions);
 
 template<
@@ -798,9 +835,11 @@ template<
   int PARTITION_SIZE = 512>
 void kvc_paged_attention_v2_launcher(
   torch::Tensor& out,
+  torch::Tensor& kv_metric_out,
   torch::Tensor& exp_sums,
   torch::Tensor& max_logits,
   torch::Tensor& tmp_out,
+  torch::Tensor& tmp_kv_metric_out,
   torch::Tensor& query,
   torch::Tensor& key_cache,
   torch::Tensor& value_cache,
@@ -826,9 +865,11 @@ void kvc_paged_attention_v2_launcher(
     : nullptr;
 
   T* out_ptr = reinterpret_cast<T*>(out.data_ptr());
+  float* kv_metric_out_ptr = reinterpret_cast<float*>(kv_metric_out.data_ptr());
   float* exp_sums_ptr = reinterpret_cast<float*>(exp_sums.data_ptr());
   float* max_logits_ptr = reinterpret_cast<float*>(max_logits.data_ptr());
   T* tmp_out_ptr = reinterpret_cast<T*>(tmp_out.data_ptr());
+  float* tmp_kv_metric_out_ptr = reinterpret_cast<float*>(tmp_kv_metric_out.data_ptr());
   T* query_ptr = reinterpret_cast<T*>(query.data_ptr());
   CACHE_T* key_cache_ptr = reinterpret_cast<CACHE_T*>(key_cache.data_ptr());
   CACHE_T* value_cache_ptr = reinterpret_cast<CACHE_T*>(value_cache.data_ptr());
@@ -881,9 +922,11 @@ void kvc_paged_attention_v2_launcher(
 #define CALL_KVC_V2_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)           \
   kvc_paged_attention_v2_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>(     \
     out,                                                                         \
+    kv_metric_out,                                                               \
     exp_sums,                                                                    \
     max_logits,                                                                  \
     tmp_out,                                                                     \
+    tmp_kv_metric_out,                                                           \
     query,                                                                       \
     key_cache,                                                                   \
     value_cache,                                                                 \
@@ -914,9 +957,11 @@ void kvc_paged_attention_v2_launcher(
 
 void kvcompress_paged_attention_v2(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
+  torch::Tensor& kv_metric_out,   // [num_blocks, block_size]
   torch::Tensor& exp_sums,        // [num_seqs, num_heads, max_num_partitions]
   torch::Tensor& max_logits,      // [num_seqs, num_heads, max_num_partitions]
   torch::Tensor& tmp_out,         // [num_seqs, num_heads, max_num_partitions, head_size]
+  torch::Tensor& tmp_kv_metric_out,   // [num_blocks, block_size]
   torch::Tensor& query,           // [num_seqs, num_heads, head_size]
   torch::Tensor& key_cache,       // [num_blocks, num_heads, head_size/x, block_size, x]
   torch::Tensor& value_cache,     // [num_blocks, num_heads, head_size, block_size]
