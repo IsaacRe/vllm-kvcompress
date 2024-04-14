@@ -94,7 +94,7 @@ __device__ void single_tier_paged_attention_kernel(
   float* __restrict__ exp_sums,           // [num_seqs, num_heads, max_num_partitions]
   float* __restrict__ max_logits,         // [num_seqs, num_heads, max_num_partitions]
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, max_num_partitions, head_size]
-  float* __restrict__ kv_metric_out,      // [num_blocks, block_size]
+  float* __restrict__ kv_metric_out,      // [num_blocks, block_size, num_queries_per_kv]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]  (single kv head per block)
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]  (single kv head per block)
@@ -110,6 +110,7 @@ __device__ void single_tier_paged_attention_kernel(
   const int num_heads = gridDim.x;
   const int num_queries_per_kv = num_heads / num_kv_heads;
   const int kv_head_idx = head_idx / num_queries_per_kv;
+  const int query_head_offset = head_idx % num_queries_per_kv;
 
   const int seq_idx = blockIdx.y;
   const int seq_head_idx = seq_idx * num_kv_heads + kv_head_idx;
@@ -287,14 +288,17 @@ __device__ void single_tier_paged_attention_kernel(
   }
   exp_sum = block_sum<NUM_WARPS>(&red_smem[NUM_WARPS], exp_sum);
 
-  // Compute softmax.
+  // Compute softmax and record attention value in kv_metric_out
   const float inv_sum = __fdividef(1.f, exp_sum + 1e-6f);
   for (int i = thread_idx; i < num_tokens; i += NUM_THREADS) {
     const int physical_block_offset = i % BLOCK_SIZE;
-    const int physical_block_number = block_table[i / BLOCK_SIZE];
+    const int64_t physical_block_number = static_cast<int64_t>(
+      block_table[i / BLOCK_SIZE + start_block_idx]);
     const float normalized = logits[i] * inv_sum;
-    logits[i] = normalized;
-    kv_metric_out[physical_block_number * BLOCK_SIZE + physical_block_offset] = normalized;
+    logits[i] = normalized; 
+    kv_metric_out[
+      (physical_block_number * BLOCK_SIZE + physical_block_offset) * num_queries_per_kv + query_head_offset
+    ] = normalized;
   }
   __syncthreads();
 
@@ -447,7 +451,7 @@ template<
   bool IS_FP8_E5M2_KV_CACHE>
 __global__ void single_tier_paged_attention_v1_kernel(
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, head_size]
-  float* __restrict__ kv_metric_out,      // [num_blocks, block_size]
+  float* __restrict__ kv_metric_out,      // [num_blocks, block_size, num_queries_per_kv]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]
@@ -478,7 +482,7 @@ __global__ void single_tier_paged_attention_v2_kernel(
   float* __restrict__ exp_sums,           // [num_seqs, num_heads, max_num_partitions]
   float* __restrict__ max_logits,         // [num_seqs, num_heads, max_num_partitions]
   scalar_t* __restrict__ tmp_out,         // [num_seqs, num_heads, max_num_partitions, head_size]
-  float* __restrict__ tmp_kv_metric_out,      // [num_blocks, block_size]
+  float* __restrict__ tmp_kv_metric_out,      // [num_blocks, block_size, num_queries_per_kv]
   const scalar_t* __restrict__ q,         // [num_seqs, num_heads, head_size]
   const cache_t* __restrict__ k_cache,    // [num_blocks, head_size/x, block_size, x]
   const cache_t* __restrict__ v_cache,    // [num_blocks, head_size, block_size]
@@ -505,11 +509,11 @@ template<
   int PARTITION_SIZE>
 __global__ void single_tier_paged_attention_v2_reduce_kernel(
   scalar_t* __restrict__ out,             // [num_seqs, num_heads, head_size]
-  float* __restrict__ kv_metric_out,      // [num_blocks, block_size]
+  float* __restrict__ kv_metric_out,      // [num_blocks, block_size, num_queries_per_kv]
   const float* __restrict__ exp_sums,     // [num_seqs, num_heads, max_num_partitions]
   const float* __restrict__ max_logits,   // [num_seqs, num_heads, max_num_partitions]
   const scalar_t* __restrict__ tmp_out,   // [num_seqs, num_heads, max_num_partitions, head_size]
-  const float* __restrict__ tmp_kv_metric_out,  // [num_blocks, block_size]
+  const float* __restrict__ tmp_kv_metric_out,  // [num_blocks, block_size, num_queries_per_kv]
   const int* __restrict__ block_tables,   // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
   const int num_kv_heads,
@@ -519,12 +523,12 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
   const int head_idx = blockIdx.x;
   const int num_queries_per_kv = num_heads / num_kv_heads;
   const int kv_head_idx = head_idx / num_queries_per_kv;
+  const int query_head_offset = head_idx % num_queries_per_kv;
   const int seq_idx = blockIdx.y;
-  const int context_len = context_lens[seq_idx * num_kv_heads + kv_head_idx];
+  const int seq_head_idx = seq_idx * num_kv_heads + kv_head_idx;
+  const int context_len = context_lens[seq_head_idx];
   const int num_partitions = DIVIDE_ROUND_UP(context_len, PARTITION_SIZE);
-  const int* block_table = block_tables \
-    + seq_idx * num_kv_heads * max_num_blocks_per_seq \
-    + kv_head_idx * max_num_blocks_per_seq;
+  const int* block_table = block_tables + seq_head_idx * max_num_blocks_per_seq;
   if (num_partitions == 1) {
     // No need to reduce. Only copy tmp_out to out.
     scalar_t* out_ptr = out + seq_idx * num_heads * HEAD_SIZE + head_idx * HEAD_SIZE;
@@ -534,8 +538,9 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
       out_ptr[i] = tmp_out_ptr[i];
     }
     for (int i = threadIdx.x; i < context_len; i += blockDim.x) {
-      const int physical_block_number = block_table[i / BLOCK_SIZE];
-      const int kv_metric_idx = physical_block_number * BLOCK_SIZE + i % BLOCK_SIZE;
+      const int64_t physical_block_number = static_cast<int64_t>(
+        block_table[i / BLOCK_SIZE]);
+      const int64_t kv_metric_idx = (physical_block_number * BLOCK_SIZE + i % BLOCK_SIZE) * num_queries_per_kv + query_head_offset;
       kv_metric_out[kv_metric_idx] = tmp_kv_metric_out[kv_metric_idx];
     }
     // Terminate the thread block.
@@ -611,8 +616,9 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
   }
   for (int i = threadIdx.x; i < context_len; i += blockDim.x) {
     const int partition_idx = i / PARTITION_SIZE;
-    const int physical_block_number = block_table[i / BLOCK_SIZE];
-    const int kv_metric_idx = physical_block_number * BLOCK_SIZE + i % BLOCK_SIZE;
+    const int64_t physical_block_number = static_cast<int64_t>(
+      block_table[i / BLOCK_SIZE]);
+    const int64_t kv_metric_idx = (physical_block_number * BLOCK_SIZE + i % BLOCK_SIZE) * num_queries_per_kv + query_head_offset;
     kv_metric_out[kv_metric_idx] = tmp_kv_metric_out[kv_metric_idx] \
       * shared_exp_sums[partition_idx] * inv_global_exp_sum;
   }
@@ -756,7 +762,7 @@ void kvc_paged_attention_v1_launcher(
 
 void kvcompress_paged_attention_v1(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
-  torch::Tensor& kv_metric_out,   // [num_blocks, block_size]
+  torch::Tensor& kv_metric_out,   // [num_blocks, block_size, num_queries_per_kv]
   torch::Tensor& query,           // [num_seqs, num_heads, head_size]
   torch::Tensor& key_cache,       // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& value_cache,     // [num_blocks, head_size, block_size]
@@ -957,18 +963,18 @@ void kvc_paged_attention_v2_launcher(
 
 void kvcompress_paged_attention_v2(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
-  torch::Tensor& kv_metric_out,   // [num_blocks, block_size]
+  torch::Tensor& kv_metric_out,   // [num_blocks, block_size, num_queries_per_kv]
   torch::Tensor& exp_sums,        // [num_seqs, num_heads, max_num_partitions]
   torch::Tensor& max_logits,      // [num_seqs, num_heads, max_num_partitions]
   torch::Tensor& tmp_out,         // [num_seqs, num_heads, max_num_partitions, head_size]
-  torch::Tensor& tmp_kv_metric_out,   // [num_blocks, block_size]
+  torch::Tensor& tmp_kv_metric_out,   // [num_blocks, block_size, num_queries_per_kv]
   torch::Tensor& query,           // [num_seqs, num_heads, head_size]
-  torch::Tensor& key_cache,       // [num_blocks, num_heads, head_size/x, block_size, x]
-  torch::Tensor& value_cache,     // [num_blocks, num_heads, head_size, block_size]
+  torch::Tensor& key_cache,       // [num_blocks, head_size/x, block_size, x]
+  torch::Tensor& value_cache,     // [num_blocks, head_size, block_size]
   int num_kv_heads,               // [num_heads]
   float scale,
-  torch::Tensor& block_tables,    // [num_seqs, max_num_blocks_per_seq]
-  torch::Tensor& context_lens,    // [num_seqs]
+  torch::Tensor& block_tables,    // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
+  torch::Tensor& context_lens,    // [num_seqs, num_kv_heads]
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
