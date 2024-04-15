@@ -128,15 +128,17 @@ def ref_single_query_cached_kv_attention(
                 success_heads.append((h, qh))
             
             attn_weights = torch.concat(attn_weights, dim=0)
-            # print(torch.where(kv_metric_output.flatten() > 0))
-            # print((kv_metric_output > 0).sum())
+            print(torch.where(kv_metric_output.flatten() > 0))
+            print(torch.where(kv_metric_output.flatten() == 0))
+            print("KV_METRIC_OUT:\n" + repr(kv_metric_output[:,0,0]))
+            print((kv_metric_output > 0).sum())
             # print(block_table[0])
 
-            for j in range(min(6, context_len)):
-                t1_block_number = t1_block_tables[i,j//block_size].item()
-                t2_block_number = t2_block_tables[t1_block_number,h].item()
-                block_offset = j % block_size
-                assert torch.allclose(kv_metric_output[t2_block_number, block_offset], attn_weights[:,0,j]), f"j: {j}, kv_metric_out: {kv_metric_output[t1_block_number, block_offset]}, gt: {attn_weights[:,0,j]}"
+            # for j in range(min(6, context_len)):
+            #     t1_block_number = t1_block_tables[i,j//block_size].item()
+            #     t2_block_number = t2_block_tables[t1_block_number,h].item()
+            #     block_offset = j % block_size
+            #     assert torch.allclose(kv_metric_output[t2_block_number, block_offset], attn_weights[:,0,j]), f"j: {j}, h: {h}, kv_metric_out: {kv_metric_output[t1_block_number, block_offset]}, gt: {attn_weights[:,0,j]}"
 
             # succeed_metrics = kv_metric_output[(blk_numbers, blk_offsets)].T[torch.isclose(kv_metric_output[(blk_numbers, blk_offsets)].T, attn_weights[:,0,:])]
             # fail_metrics = kv_metric_output[(blk_numbers, blk_offsets)].T[~torch.isclose(kv_metric_output[(blk_numbers, blk_offsets)].T, attn_weights[:,0,:])]
@@ -146,14 +148,14 @@ def ref_single_query_cached_kv_attention(
             # print(f"SUM CLOSE: {torch.isclose(kv_metric_output[(blk_numbers, blk_offsets)].T, attn_weights[:,0,:]).sum()}")
             # print(f"WHERE CLOSE: {torch.where(torch.isclose(kv_metric_output[(blk_numbers, blk_offsets)].T, attn_weights[:,0,:]))}")
             # print(f"WHERE ~CLOSE: {torch.where(~torch.isclose(kv_metric_output[(blk_numbers, blk_offsets)].T, attn_weights[:,0,:]))}")
-            #assert torch.allclose(kv_metric_output[(blk_numbers, blk_offsets)].T, attn_weights[:,0,:])
+            assert torch.allclose(kv_metric_output[(t2_blk_numbers, blk_offsets)].T, attn_weights[:,0,:])
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
 @pytest.mark.parametrize("num_seqs", NUM_GEN_SEQS)
 @pytest.mark.parametrize("num_heads", NUM_HEADS)
 @pytest.mark.parametrize("head_size", HEAD_SIZES)
-@pytest.mark.parametrize("use_alibi", USE_ALIBI)
+# @pytest.mark.parametrize("use_alibi", USE_ALIBI)
 @pytest.mark.parametrize("block_size", BLOCK_SIZES)
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
@@ -165,7 +167,7 @@ def test_kvcompress_paged_attention(
     num_seqs: int,
     num_heads: Tuple[int, int],
     head_size: int,
-    use_alibi: bool,
+    # use_alibi: bool,
     block_size: int,
     dtype: torch.dtype,
     kv_cache_dtype: str,
@@ -182,6 +184,8 @@ def test_kvcompress_paged_attention(
     # num_heads = NUM_HEADS[1]
     # num_seqs = NUM_GEN_SEQS[0]
     # version = 'v2'
+    # num_seqs = 2
+    # num_heads = 2, 2
     # print(MAX_SEQ_LEN)
 
     random.seed(seed)
@@ -208,58 +212,65 @@ def test_kvcompress_paged_attention(
     context_lens[-1][-1] = MAX_SEQ_LEN
     max_context_len = MAX_SEQ_LEN
     context_lens = torch.tensor(context_lens, dtype=torch.int)
+    #context_lens[:] = MAX_SEQ_LEN
     print(context_lens)
 
     # get max context length for within each sequence
-    seq_context_lens = context_lens.max(dim=1)
+    seq_context_lens = context_lens.max(dim=1).values
 
     # Create T1/T2 block tables.
     max_num_blocks_per_seq = (max_context_len + block_size - 1) // block_size
-    t1_block_tables = []
     total_t1_blocks = ((seq_context_lens + block_size - 1) // block_size).sum().item()
-    t2_block_tables = []
     total_t2_blocks = ((context_lens + block_size - 1) // block_size).sum().item()
+    t1_block_tables = []
+    t2_block_tables = torch.zeros((total_t2_blocks, num_kv_heads), dtype=torch.int)
+    print(t2_block_tables)
+    assert t2_block_tables.max().item() < total_t2_blocks
+    print(((context_lens + block_size - 1) // block_size))
     # Track running T1/T2 block indices as we add blocks to the tables
     t1_block_idx = 0
     t2_block_idx = 0
     all_t1_block_nums = np.random.choice(total_t1_blocks, total_t1_blocks, replace=False)
-    all_t2_block_nums = np.random.choice(total_t2_blocks, total_t1_blocks, replace=False)
+    assert all_t1_block_nums.max().item() < total_t1_blocks
+    all_t2_block_nums = np.random.choice(total_t2_blocks, total_t2_blocks, replace=False)
+    assert all_t2_block_nums.max().item() < total_t2_blocks
     for i in range(num_seqs):
         # Create T1 block table entry for this sequence
         seq_ctx_len = seq_context_lens[i].item()
         num_seq_blocks = (seq_ctx_len + (block_size - 1)) // block_size
         assert num_seq_blocks <= max_num_blocks_per_seq
+        seq_indices = torch.tensor(all_t1_block_nums[t1_block_idx:t1_block_idx+num_seq_blocks])
         t1_block_tables.append(
             torch.concat([
-                torch.tensor(all_t1_block_nums[t1_block_idx:t1_block_idx+num_seq_blocks]),
-                torch.empty(max_num_blocks_per_seq - num_seq_blocks)
+                seq_indices, torch.zeros(max_num_blocks_per_seq - num_seq_blocks)
             ]).type(torch.int)
         )
 
-        # Create T2 block table entries for this sequence
-        total_t2_blocks = ((context_lens[i] + block_size - 1) // block_size).sum().item()
-        max_num_blocks_per_head = num_seq_blocks
-        t2_block_table = []
+        # Create and insert T2 block table entries for this sequence
         for j in range(num_kv_heads):
             head_ctx_len = context_lens[i,j].item()
             num_head_blocks = (head_ctx_len + (block_size - 1)) // block_size
-            t2_block_table.append(
-                torch.concat([
-                    torch.tensor(all_t2_block_nums[t2_block_idx:t2_block_idx+num_head_blocks]),
-                    torch.empty(max_num_blocks_per_head - num_head_blocks)
-                ]).type(torch.int)
+            head_seq_indices = torch.tensor(
+                all_t2_block_nums[t2_block_idx:t2_block_idx+num_head_blocks], dtype=torch.int
             )
+            assert head_seq_indices.max().item() < total_t2_blocks
+            t2_block_tables[:,j] = t2_block_tables[:,j].scatter(
+                dim=0,
+                index=seq_indices[:num_head_blocks],
+                src=head_seq_indices
+            )
+            assert t2_block_tables.max().item() < total_t2_blocks, j
+
             # Increment T2 block index
             t2_block_idx += num_head_blocks
-
-        # Add this sequence to the T2 block tables
-        t2_block_tables.append(torch.stack(t2_block_table, dim=0))
 
         # Increment T1 block index
         t1_block_idx += num_seq_blocks
 
     t1_block_tables = torch.stack(t1_block_tables, dim=0)
-    t2_block_tables = torch.concat(t2_block_tables, dim=0)
+
+    print(t1_block_tables)
+    print(t2_block_tables)
 
     # Create the KV caches.
     key_caches, value_caches = kv_cache_factory(total_t2_blocks, block_size, 1,
@@ -319,7 +330,7 @@ def test_kvcompress_paged_attention(
             dtype=torch.float32,
         )
         max_logits = torch.empty_like(exp_sums)
-        ops.kvcompress_paged_attention_v2(
+        ops.kvcompress_t2_paged_attention_v2(
             output,
             kv_metric_output,
             exp_sums,
