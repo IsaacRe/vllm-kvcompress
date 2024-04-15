@@ -18,7 +18,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "PagedAttention V1 with KV-Compress using single-tiered block tables.");
   ops.def(
     "kvcompress_t2_paged_attention_v1",
-    &kvcompress_paged_attention_v1,
+    &kvcompress_t2_paged_attention_v1,
     "PagedAttention V1 with KV-Compress using two-tiered block tables.");
   ops.def(
     "paged_attention_v2",
@@ -30,7 +30,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "PagedAttention V2 with KV-Compress using single-tiered block tables.");
   ops.def(
     "kvcompress_t2_paged_attention_v2",
-    &kvcompress_paged_attention_v2,
+    &kvcompress_t2_paged_attention_v2,
     "PagedAttention V2 with KV-Compress using two-tiered block tables.");
 
   // Activation ops
