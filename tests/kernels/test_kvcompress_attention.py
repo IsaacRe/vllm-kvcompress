@@ -179,6 +179,16 @@ def test_kvcompress_paged_attention(
     # num_seqs = NUM_GEN_SEQS[0]
     # version = 'v2'
     # print(MAX_SEQ_LEN)
+    version = 'v1'
+    num_seqs = 7
+    num_heads = (64, 8)
+    head_size = 112
+    use_alibi = False
+    block_size = 16
+    dtype = torch.float16
+    kv_cache_dtype = 'auto'
+    seed = 0
+    device = 'cuda:0'
 
     random.seed(seed)
     np.random.seed(seed)
@@ -310,7 +320,7 @@ def test_kvcompress_paged_attention(
     if kv_cache_dtype == "fp8_e5m2":
         # Convert cache data back to dtype.
         x = 16 // torch.tensor([], dtype=dtype).element_size()
-        key_cache_shape = key_cache.shape
+        key_cache_shape = (total_blocks, head_size // x, block_size, x)
         dequantized_key_cache = torch.empty(size=key_cache_shape,
                                             dtype=dtype,
                                             device=device)
