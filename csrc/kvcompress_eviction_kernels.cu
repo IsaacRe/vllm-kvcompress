@@ -318,13 +318,13 @@ void schedule_cache_evictions(
 #define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE, TOTAL_KV_HEADS) \
   if (TOTAL_KV_HEADS <= 1) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 1) \
-  } else if (TOTAL_KV_HEADS <= 2) { \
+  } /*else if (TOTAL_KV_HEADS <= 2) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 2) \
   } else if (TOTAL_KV_HEADS <= 4) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 4) \
   } else if (TOTAL_KV_HEADS <= 8) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 8) \
-  } else { \
+  } */else { \
     TORCH_CHECK(false, "Unsupported num kv heads * num layers: ", TOTAL_KV_HEADS); \
   }
 
@@ -333,7 +333,7 @@ void schedule_cache_evictions(
     case 1: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(1, TOTAL_KV_HEADS) \
       break; \
-    case 2: \
+    /*case 2: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(2, TOTAL_KV_HEADS) \
       break; \
     case 4: \
@@ -341,7 +341,7 @@ void schedule_cache_evictions(
       break; \
     case 8: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(8, TOTAL_KV_HEADS) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -366,7 +366,7 @@ void schedule_cache_evictions(
     case 1: \
       T1_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE_HEAD_SIZE(BLOCK_SIZE, VEC_SIZE, 1, CACHE_T) \
       break; \
-    case 2: \
+    /*case 2: \
       T1_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE_HEAD_SIZE(BLOCK_SIZE, VEC_SIZE, 2, CACHE_T) \
       break; \
     case 4: \
@@ -374,7 +374,7 @@ void schedule_cache_evictions(
       break; \
     case 8: \
       T1_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE_HEAD_SIZE(BLOCK_SIZE, VEC_SIZE, 8, CACHE_T) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported head size: ", HEAD_SIZE); \
   }
@@ -384,7 +384,7 @@ void schedule_cache_evictions(
     case 1: \
       T1_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE(BLOCK_SIZE, 1, HEAD_SIZE, CACHE_T) \
       break; \
-    case 2: \
+    /*case 2: \
       T1_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE(BLOCK_SIZE, 2, HEAD_SIZE, CACHE_T) \
       break; \
     case 4: \
@@ -392,7 +392,7 @@ void schedule_cache_evictions(
       break; \
     case 8: \
       T1_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE(BLOCK_SIZE, 8, HEAD_SIZE, CACHE_T) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported vec size for key cache: ", VEC_SIZE); \
   }
@@ -402,7 +402,7 @@ void schedule_cache_evictions(
     case 1: \
       T1_EVICT_KERNEL_BLOCK_SIZE(1, VEC_SIZE, HEAD_SIZE, CACHE_T) \
       break; \
-    case 2: \
+    /*case 2: \
       T1_EVICT_KERNEL_BLOCK_SIZE(2, VEC_SIZE, HEAD_SIZE, CACHE_T) \
       break; \
     case 4: \
@@ -410,7 +410,7 @@ void schedule_cache_evictions(
       break; \
     case 8: \
       T1_EVICT_KERNEL_BLOCK_SIZE(8, VEC_SIZE, HEAD_SIZE, CACHE_T) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -478,15 +478,15 @@ void evict_from_t1_cache(
   if (kv_cache_dtype == "auto") {
     if (k_cache.dtype() == at::ScalarType::Float) {
       CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, float)
-    } else if (k_cache.dtype() == at::ScalarType::Half) {
-      CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, uint16_t)
-    } else if (k_cache.dtype() == at::ScalarType::BFloat16) {
-      CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, __nv_bfloat16)
+    // } else if (k_cache.dtype() == at::ScalarType::Half) {
+    //   CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, uint16_t)
+    // } else if (k_cache.dtype() == at::ScalarType::BFloat16) {
+    //   CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, __nv_bfloat16)
     } else {
       TORCH_CHECK(false, "Unsupported data type of kv cache: ", k_cache.dtype());
     }
-  } else if (kv_cache_dtype == "fp8_e5m2") {
-    CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, uint8_t)
+  // } else if (kv_cache_dtype == "fp8_e5m2") {
+  //   CALL_T1_EVICT_LAUNCHER(block_size, vec_size, head_size, uint8_t)
   } else {
     TORCH_CHECK(false, "Unsupported data type of kv cache: ", kv_cache_dtype);
   }
@@ -513,7 +513,7 @@ void evict_from_t1_cache(
     case 1: \
       T2_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE_HEAD_SIZE(BLOCK_SIZE, VEC_SIZE, 1, CACHE_T) \
       break; \
-    case 2: \
+    /*case 2: \
       T2_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE_HEAD_SIZE(BLOCK_SIZE, VEC_SIZE, 2, CACHE_T) \
       break; \
     case 4: \
@@ -521,14 +521,14 @@ void evict_from_t1_cache(
       break; \
     case 8: \
       T2_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE_HEAD_SIZE(BLOCK_SIZE, VEC_SIZE, 8, CACHE_T) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported head size: ", HEAD_SIZE); \
   }
 
 #define T2_EVICT_KERNEL_BLOCK_SIZE(BLOCK_SIZE, VEC_SIZE, HEAD_SIZE, CACHE_T) \
   switch(VEC_SIZE) { \
-    case 1: \
+    /*case 1: \
       T2_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE(BLOCK_SIZE, 1, HEAD_SIZE, CACHE_T) \
       break; \
     case 2: \
@@ -539,7 +539,7 @@ void evict_from_t1_cache(
       break; \
     case 8: \
       T2_EVICT_KERNEL_BLOCK_SIZE_VEC_SIZE(BLOCK_SIZE, 8, HEAD_SIZE, CACHE_T) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported vec size for key cache: ", VEC_SIZE); \
   }
@@ -549,7 +549,7 @@ void evict_from_t1_cache(
     case 1: \
       T2_EVICT_KERNEL_BLOCK_SIZE(1, VEC_SIZE, HEAD_SIZE, CACHE_T) \
       break; \
-    case 2: \
+    /*case 2: \
       T2_EVICT_KERNEL_BLOCK_SIZE(2, VEC_SIZE, HEAD_SIZE, CACHE_T) \
       break; \
     case 4: \
@@ -557,7 +557,7 @@ void evict_from_t1_cache(
       break; \
     case 8: \
       T2_EVICT_KERNEL_BLOCK_SIZE(8, VEC_SIZE, HEAD_SIZE, CACHE_T) \
-      break; \
+      break;*/ \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -628,15 +628,15 @@ void evict_from_t2_cache(
   if (kv_cache_dtype == "auto") {
     if (k_cache.dtype() == at::ScalarType::Float) {
       CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, float)
-    } else if (k_cache.dtype() == at::ScalarType::Half) {
-      CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, uint16_t)
-    } else if (k_cache.dtype() == at::ScalarType::BFloat16) {
-      CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, __nv_bfloat16)
+    // } else if (k_cache.dtype() == at::ScalarType::Half) {
+    //   CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, uint16_t)
+    // } else if (k_cache.dtype() == at::ScalarType::BFloat16) {
+    //   CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, __nv_bfloat16)
     } else {
       TORCH_CHECK(false, "Unsupported data type of kv cache: ", k_cache.dtype());
     }
-  } else if (kv_cache_dtype == "fp8_e5m2") {
-    CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, uint8_t)
+  // } else if (kv_cache_dtype == "fp8_e5m2") {
+  //   CALL_T2_EVICT_LAUNCHER(block_size, vec_size, head_size, uint8_t)
   } else {
     TORCH_CHECK(false, "Unsupported data type of kv cache: ", kv_cache_dtype);
   }
