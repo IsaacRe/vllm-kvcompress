@@ -164,6 +164,7 @@ set(VLLM_EXT_SRC
   "csrc/attention/attention_kernels.cu"
   "csrc/attention/kvcompress_attention_kernels.cu"
   "csrc/attention/kvcompress_t2_attention_kernels.cu"
+  "csrc/kvcompress_eviction_kernels.cu"
   "csrc/pos_encoding_kernels.cu"
   "csrc/activation_kernels.cu"
   "csrc/layernorm_kernels.cu"
