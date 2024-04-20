@@ -4,16 +4,9 @@
 evict<float, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE><<<grid,block>>>(\
   k_cache,\
   v_cache,\
-  evicted_kv_indices,\
-  evicted_kv_count,\
-  block_tables,\
-  context_lens,\
-  layer_idx,\
-  layer_offset,\
-  num_layers,\
-  num_kv_heads,\
-  max_evicted_blocks,\
-  max_num_blocks_per_seq);
+  cache_move_idx,\
+  cache_move_count,\
+  max_num_moves);
 
 #define KERNEL_BLOCK_SIZE_VEC_SIZE(BLOCK_SIZE, VEC_SIZE, HEAD_SIZE) \
   switch(HEAD_SIZE) { \
@@ -69,6 +62,7 @@ evict<float, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE><<<grid,block>>>(\
       return 1; \
   }
 
+// WARNING: Will fail if cache moves of different sequences/heads specify same dst indices
 template<
   typename cache_t,
   int HEAD_SIZE,
@@ -77,93 +71,55 @@ template<
 __global__ void evict(
   cache_t* __restrict__ k_cache,                  // [num_blocks, head_size/x, block_size, x]
   cache_t* __restrict__ v_cache,                  // [num_blocks, head_size, block_size]
-  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |(ragged), block_size]
-  const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
-  const int* __restrict__ block_tables,           // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
-  const int* __restrict__ context_lens,           // [num_seqs, num_kv_heads]
-  const int layer_idx,
-  const int layer_offset,
-  const int num_layers,
-  const int num_kv_heads,
-  const int max_evicted_blocks,
-  const int max_num_blocks_per_seq) {
+  const int* __restrict__ cache_move_idx,         // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
+  const int* __restrict__ cache_move_count,       // [num_seqs, num_kv_heads]
+  const int max_num_moves) {
   constexpr int BLOCK_STRIDE = BLOCK_SIZE * HEAD_SIZE;
   constexpr int K_STRIDE = BLOCK_SIZE * VEC_SIZE;
   const int seq_head_idx = blockIdx.y * blockDim.y + threadIdx.y;  // allow block-level or thread-level parallelization (or both)
-  const int seq_head_block_idx = seq_head_idx * max_num_blocks_per_seq;
-  const int seq_idx = seq_head_idx / num_kv_heads;
-  const int head_idx = seq_head_idx % num_kv_heads;
-  const int seq_layer_head_idx =
-    seq_idx * num_layers * num_kv_heads +
-    layer_idx * num_kv_heads +
-    head_idx;
 
-  printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
+  printf("KERNEL: seq_head_idx: %d\n", seq_head_idx);
   // get range of src KVs that will be handled by this thread
-  const int evicted_kv_cnt = evicted_kv_count[seq_layer_head_idx];
-  const int evicted_kv_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  const int moved_kv_count = cache_move_count[seq_head_idx];
+  const int moved_kv_offset = blockIdx.x * blockDim.x + threadIdx.x;
   const int max_parallel_kv = gridDim.x * blockDim.x;
+  const int move_table_offset = seq_head_idx * max_num_moves * 2;
 
   printf("MAX_PARALLEL_KV: %d", max_parallel_kv);
 
-  // printf("KERNEL: seq_head_idx: %d, evicted_kv_offset: %d\n", seq_head_idx, evicted_kv_offset);
-
-  // indices for src KVs - we move last n KVs into the slots of KVs being evicted
-  int src_kv_idx = context_lens[seq_head_idx] - evicted_kv_cnt + evicted_kv_offset;
-  int src_block_table_block_idx;  // index into block table of the current block
-  int src_physical_block_number;
-  int src_block_start; // index into k/v cache for first elem of current block
-  int src_tok_offset;
-  int src_k_start;
-  int src_v_start;
-
-  // indices for dst KVs
-  int dst_kv_idx;       // index of KV in block table slice for the current head
-  int dst_block_start;  // index into k/v cache for first elem of current block
-  int dst_tok_offset;   // index of current token within block
-  int dst_k_start;      // index into k cache of current token
-  int dst_v_start;      // index into v cache of current token
-
-  // used for inner loop of k-vector copy
-  int src_k_group_start;
-  int dst_k_group_start;
-
-  printf("evicted_kv_cnt: %d, layer_offset: %d\n", evicted_kv_cnt, layer_offset);
-  printf("start_idx: %d, end_idx: %d\n", seq_layer_head_idx + evicted_kv_offset, seq_layer_head_idx + evicted_kv_cnt);
   for (
-    int i = seq_layer_head_idx * max_evicted_blocks * BLOCK_SIZE + evicted_kv_offset;
-    i < seq_layer_head_idx * max_evicted_blocks * BLOCK_SIZE + evicted_kv_cnt;
-    i += max_parallel_kv, src_kv_idx += max_parallel_kv) {
-    dst_kv_idx = evicted_kv_indices[i] - layer_offset;
-    dst_block_start = dst_kv_idx / BLOCK_SIZE * BLOCK_STRIDE;
-    dst_tok_offset = dst_kv_idx % BLOCK_SIZE;
-    printf("seq_idx: %d, dst_tok_offset: %d, dst_kv_idx: %d, i: %d, next_i: %d, max_i: %d\n", seq_idx, dst_tok_offset, dst_kv_idx, i, i + max_parallel_kv, seq_layer_head_idx * max_evicted_blocks * BLOCK_SIZE + evicted_kv_cnt);
-    dst_k_start = dst_block_start + dst_tok_offset * VEC_SIZE;  // key cache has vector size as last dim
-    dst_v_start = dst_block_start + dst_tok_offset;
-    
-    src_block_table_block_idx = src_kv_idx / BLOCK_SIZE;
-    src_physical_block_number = block_tables[seq_head_block_idx + src_block_table_block_idx];  // block number
-    src_block_start = src_physical_block_number * BLOCK_STRIDE;  // ptr to first elem in block in cache
-    src_tok_offset = src_kv_idx % BLOCK_SIZE;
-    src_k_start = src_block_start + src_tok_offset * VEC_SIZE;  // key cache has vector size as last dim
-    src_v_start = src_block_start + src_tok_offset;
-    printf("SRC DEBUG: seq_head_idx=%d, src_kv_idx=%d, blk_tbl_idx=%d, phys_blk_num=%d, src_blk_start=%d, src_tok_offset=%d, src_k_start=%d\n",
-      seq_head_idx, src_kv_idx, src_block_table_block_idx, src_physical_block_number, src_block_start, src_tok_offset, src_k_start);
+    int i = move_table_offset + moved_kv_offset;
+    i < move_table_offset + moved_kv_count;
+    i += max_parallel_kv) {
+    const int src_idx = cache_move_idx[i+1];
+    const int src_block_start = src_idx / BLOCK_SIZE * BLOCK_STRIDE;
+    const int src_block_offset = src_idx % BLOCK_SIZE;
+    const int dst_idx = cache_move_idx[i];
+    const int dst_block_start = dst_idx / BLOCK_SIZE * BLOCK_STRIDE;
+    const int dst_block_offset = dst_idx % BLOCK_SIZE;
+
+    const int src_k_start = src_block_start + src_block_offset * VEC_SIZE;
+    const int src_v_start = src_block_start + src_block_offset;
+    const int dst_k_start = dst_block_start + dst_block_offset * VEC_SIZE;
+    const int dst_v_start = dst_block_start + dst_block_offset;
+
+    printf("SRC DEBUG: seq_head_idx=%d, src_kv_idx=%d, src_blk_start=%d, src_tok_offset=%d, src_k_start=%d\n",
+      seq_head_idx, src_idx, src_block_start, src_block_offset, src_k_start);
 
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += K_STRIDE) {
-      dst_k_group_start = dst_k_start + j;
-      src_k_group_start = src_k_start + j;
+      const int dst_k_group_start = dst_k_start + j;
+      const int src_k_group_start = src_k_start + j;
 #pragma unroll
       for (int k = 0; k < VEC_SIZE; ++k) {
-        printf("evicting k, phys_blk_num=%d, seq_idx=%d, kv_offset=%d, dst=%d, src=%d, o=%d\n", src_physical_block_number, seq_idx, evicted_kv_offset, dst_k_group_start, src_k_group_start, k);
+        printf("evicting k, dst_k_start=%d, dst_k_group_start=%d, src_k_start=%d, src_k_group_start=%d, kv_offset=%d,\n", dst_k_start, dst_k_group_start, src_k_start, src_k_group_start, k);
         k_cache[dst_k_group_start + k] = k_cache[src_k_group_start + k];
       }
     }
   
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += BLOCK_SIZE) {
-      printf("evicting v, phys_blk_num=%d, seq_idx=%d, kv_offset=%d, dst=%d, src=%d, o=%d\n", src_physical_block_number, seq_idx, evicted_kv_offset, dst_v_start, src_v_start, j);
+      printf("evicting v, dst_v_start=%d, src_v_start=%d, kv_offset=%d\n", dst_v_start, src_v_start, j);
       v_cache[dst_v_start + j] = v_cache[src_v_start + j];
     }
   }
@@ -202,18 +158,21 @@ template<typename T>void print_output(
   std::cout << "]" << std::endl;
 }
 
-void set_incr_int_data(int* ptr, int size, int incr, int stride, int wrap) {
+void set_cache_moves_int_data(int* ptr, int size, int dst_incr, int dst_stride, int dst_wrap, int src_offset) {
   int data[size];
-  if (stride < 1) {
-    stride = 1;
+  if (dst_stride < 1) {
+    dst_stride = 1;
   }
-  if (wrap < 1) {
-    wrap = size;
+  if (dst_wrap < 1) {
+    dst_wrap = size;
   }
   for (int i = 0; i < size; ++i) {
-    data[i] = ((i % wrap) / stride) * incr;
+    data[i] = ((i % dst_wrap) / dst_stride) * dst_incr;
   }
-  print_output<int>(data, size, wrap, stride, -1);
+  for (int i = 1; i < size; i += 2) {
+    data[i] = data[i-1] + src_offset;
+  }
+  print_output<int>(data, size, dst_wrap, dst_stride, -1);
   cudaMemcpy(ptr, data, size * sizeof(int), cudaMemcpyHostToDevice);
 }
 
@@ -343,29 +302,21 @@ void set_const_int_data(int* ptr, int size, int value) {
 /*
 cache_t* __restrict__ k_cache,                  // [num_blocks, head_size/x, block_size, x]
 cache_t* __restrict__ v_cache,                  // [num_blocks, head_size, block_size]
-const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |, block_size]
-const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
-const int* __restrict__ context_lens,           // [num_seqs, num_kv_heads]
-const int layer_idx,
-const int layer_offset,
-const int max_parallel_kv,
-const int num_layers,
-const int num_kv_heads
+const int* __restrict__ cache_move_idx,         // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
+const int* __restrict__ cache_move_count,       // [num_seqs, num_kv_heads]
+const int max_num_moves
 */
 
 void set_inputs(
   float* k_cache,
   float* v_cache,
-  int* evicted_kv_indices,
-  int* evicted_kv_count,
-  int* block_tables,
-  int* context_lens,
+  int* cache_move_idx,
+  int* cache_move_count,
   int num_seqs,
   int num_blocks_per_seq,
-  int num_layers,
   int num_kv_heads,
-  int evicted_kvs_per_seq,
-  int max_evicted_blocks,
+  int num_moves_per_seq,
+  int max_num_moves,
   int head_size,
   int block_size,
   int vec_size
@@ -382,96 +333,74 @@ void set_inputs(
   );
   std::cout << "v_cache" << std::endl;
   set_incr_float_data(v_cache, num_blocks * head_size * block_size, 1, 1, -1);
-  std::cout << "evicted_kv_indices" << std::endl;
-  // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
-  // must index into [num_layers, num_blocks |(ragged), block_size] and align with layer offsets
-  set_incr_int_data_multi(
-    evicted_kv_indices, num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size,
-    1, 1, max_evicted_blocks * block_size,  // block offset
-    num_blocks * block_size, num_kv_heads * max_evicted_blocks * block_size, num_layers * num_kv_heads * max_evicted_blocks * block_size,  // layer offset
-    num_blocks_per_seq * num_kv_heads * block_size, num_layers * num_kv_heads * max_evicted_blocks * block_size, -1,  // seq offset
-    num_blocks_per_seq * block_size, max_evicted_blocks * block_size, num_kv_heads * max_evicted_blocks * block_size // head offset
+  std::cout << "cache_move_idx" << std::endl;
+  // [num_seqs, num_kv_heads, max_num_moves, 2]
+  // must index into [num_blocks, block_size]
+
+  // move last kv of each head to first of each head
+  set_cache_moves_int_data(
+    cache_move_idx, num_seqs * num_kv_heads * max_num_moves * 2,
+    num_blocks_per_seq * block_size, 2, -1, num_blocks_per_seq * block_size - 1  // dst offset (beginning of block)
   );
-  std::cout << "evicted_kv_count" << std::endl;
+
+  std::cout << "cache_move_count" << std::endl;
   set_const_int_data(
-    evicted_kv_count, num_seqs * num_layers * num_kv_heads, evicted_kvs_per_seq);
-  std::cout << "block_tables" << std::endl;
-  set_incr_int_data(
-    block_tables, num_seqs * num_kv_heads * num_blocks_per_seq, 1, 1, -1);
-  std::cout << "context_lens" << std::endl;
-  set_const_int_data(
-    context_lens, num_seqs * num_kv_heads, num_blocks_per_seq * block_size);
+    cache_move_count, num_seqs * num_kv_heads, num_moves_per_seq);
 }
 
 int main(int argc, char** argv) {
-  if (argc != 12) {
+  if (argc != 10) {
     std::cerr << "wrong number of arguments"  << std::endl;
     return 1;
   }
 
   int num_seqs;
-  int num_layers;
   int num_kv_heads;
-  int evicted_kvs_per_seq;
+  int num_moves_per_seq;
   int block_size;
   int head_size;
   int vec_size;
   int num_blocks_per_seq;
-  int layer_idx;
   int num_seq_blocks;
   int num_seq_threads;
 
-  sscanf(argv[1], "%d", &layer_idx);  
-  sscanf(argv[2], "%d", &num_layers);
-  sscanf(argv[3], "%d", &num_seqs);
-  sscanf(argv[4], "%d", &num_kv_heads);
-  sscanf(argv[5], "%d", &evicted_kvs_per_seq);
-  sscanf(argv[6], "%d", &block_size);
-  sscanf(argv[7], "%d", &head_size);
-  sscanf(argv[8], "%d", &vec_size);
-  sscanf(argv[9], "%d", &num_blocks_per_seq);
-  sscanf(argv[10], "%d", &num_seq_blocks);  
-  sscanf(argv[11], "%d", &num_seq_threads);
+  sscanf(argv[1], "%d", &num_seqs);
+  sscanf(argv[2], "%d", &num_kv_heads);
+  sscanf(argv[3], "%d", &num_moves_per_seq);  
+  sscanf(argv[4], "%d", &block_size);
+  sscanf(argv[5], "%d", &head_size);
+  sscanf(argv[6], "%d", &vec_size);
+  sscanf(argv[7], "%d", &num_blocks_per_seq);
+  sscanf(argv[8], "%d", &num_seq_blocks);  
+  sscanf(argv[9], "%d", &num_seq_threads);
 
-  int max_evicted_blocks = DIVIDE_ROUND_UP(evicted_kvs_per_seq, block_size);
+  int max_num_moves = num_moves_per_seq;
 
-  if (layer_idx >= num_layers) {
-    std::cerr << "not enough layers for layer idx" << std::endl;
-  }
-
-  printf("args:\nlayer_idx=%d num_layers=%d num_seqs=%d num_kv_heads=%d evicted_kvs_per_seq=%d block_size=%d head_size=%d\nvec_size=%d num_blocks_per_seq=%d num_seq_blocks=%d num_seq_threads=%d\n",
-          layer_idx, num_layers, num_seqs, num_kv_heads, evicted_kvs_per_seq, block_size, head_size, vec_size, num_blocks_per_seq, num_seq_blocks, num_seq_threads);
+  printf("args:\nnum_seqs=%d num_kv_heads=%d num_moves_per_seq=%d block_size=%d head_size=%d\nvec_size=%d num_blocks_per_seq=%d num_seq_blocks=%d num_seq_threads=%d\n",
+          num_seqs, num_kv_heads, num_moves_per_seq, block_size, head_size, vec_size, num_blocks_per_seq, num_seq_blocks, num_seq_threads);
 
   float* k_cache;
   float* v_cache;
-  int* evicted_kv_indices;
-  int* evicted_kv_count;
-  int* block_tables;
-  int* context_lens;
+  int* cache_move_idx;
+  int* cache_move_count;;
   const int cache_size = num_blocks_per_seq * num_seqs * num_kv_heads * head_size * block_size;
   cudaMalloc(&k_cache, sizeof(float)* cache_size);
   cudaMalloc(&v_cache, sizeof(float)* cache_size);
-  cudaMalloc(&evicted_kv_indices, sizeof(int)* num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size);
-  cudaMalloc(&evicted_kv_count, sizeof(int)* num_seqs * num_layers * num_kv_heads);
-  cudaMalloc(&block_tables, sizeof(int)* num_seqs * num_kv_heads * num_blocks_per_seq);
-  cudaMalloc(&context_lens, sizeof(int)* num_seqs * num_kv_heads);
+  cudaMalloc(&cache_move_idx, sizeof(int)* num_seqs * num_kv_heads * max_num_moves * 2);
+  cudaMalloc(&cache_move_count, sizeof(int)* num_seqs * num_kv_heads);
   set_inputs(
     k_cache,
     v_cache,
-    evicted_kv_indices,
-    evicted_kv_count,
-    block_tables,
-    context_lens,
+    cache_move_idx,
+    cache_move_count,
     num_seqs,
     num_blocks_per_seq,
-    num_layers,
     num_kv_heads,
-    evicted_kvs_per_seq,
-    max_evicted_blocks,
+    num_moves_per_seq,
+    max_num_moves,
     head_size,
     block_size,
-    vec_size
-  );
+    vec_size);
   float k_cache_cpu[cache_size];
   cudaMemcpy(k_cache_cpu, k_cache, sizeof(float) * cache_size, cudaMemcpyDeviceToHost);
   std::cout << "K CACHE:" << std::endl;
@@ -490,27 +419,16 @@ int main(int argc, char** argv) {
     head_size * block_size,
     block_size * vec_size,
     vec_size);
-  int evicted_kv_indices_cpu[num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size];
-  cudaMemcpy(evicted_kv_indices_cpu, evicted_kv_indices, sizeof(int) * num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size, cudaMemcpyDeviceToHost);
-  std::cout << "EVICTED_KV_INDICES:" << std::endl;
+  int cache_move_idx_cpu[num_seqs * num_kv_heads * max_num_moves * 2];
+  cudaMemcpy(cache_move_idx_cpu, cache_move_idx, sizeof(int) * num_seqs * num_kv_heads * max_num_moves * 2, cudaMemcpyDeviceToHost);
+  std::cout << "CACHE_MOVE_IDX [num_seqs, num_kv_heads, max_num_moves, 2]:" << std::endl;
   print_output<int>(
-    evicted_kv_indices_cpu,
-    num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size,
-    num_layers * num_kv_heads * max_evicted_blocks * block_size,
-    max_evicted_blocks * block_size,
-    block_size);
+    cache_move_idx_cpu,
+    num_seqs * num_kv_heads * max_num_moves * 2,
+    num_kv_heads * max_num_moves * 2 ,
+    max_num_moves * 2,
+    2);
   
-
-  // index is into [num_layers, num_blocks, block_size]
-  int layer_offset = layer_idx * num_blocks_per_seq * num_seqs * num_kv_heads * block_size;
-  int max_num_blocks_per_seq = num_blocks_per_seq;
-
-//   const int layer_idx,
-// const int layer_offset,
-// const int max_parallel_kv,
-// const int num_layers,
-// const int num_kv_heads
-
   dim3 grid(num_seq_blocks, num_seqs);
   dim3 block(num_seq_threads, num_kv_heads);
   printf("num_seqs: %d, num_seq_blocks: %d, num_kv_heads: %d, num_seq_threads: %d\n", num_seqs, num_seq_blocks, num_kv_heads, num_seq_threads);
