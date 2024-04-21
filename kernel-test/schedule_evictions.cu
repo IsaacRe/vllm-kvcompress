@@ -1,12 +1,14 @@
 #include <iostream>
 #define KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, TOTAL_KV_HEADS) \
-schedule_evictions<BLOCK_SIZE, TOTAL_KV_HEADS><<<1,num_seqs>>>(\
+schedule_evictions<BLOCK_SIZE, TOTAL_KV_HEADS><<<1,num_seqs,sizeof(int)*num_seqs*num_layers*num_kv_heads>>>(\
   kv_idx,\
   kv_cnt,\
   sort_idx,\
   seq_blk_offsets,\
+  layer_blk_offsets,\
   layer_by_blk,\
   head_by_blk,\
+  virtual_blk_num_by_block,\
   evicted_blks_per_seq,\
   num_layers,\
   num_kv_heads,\
@@ -48,9 +50,11 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
   int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
   int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
-  const int* __restrict__ seq_block_offsets,        // [num_seqs]
+  const int* __restrict__ seq_block_offsets,        // [num_seqs]  (offset into indices post-sort)
+  const int* __restrict__ layer_block_offsets,      // [num_layers]  (offset into indices pre-sort)
   const int* __restrict__ layer_by_block,           // [total_blocks]  TODO: could use uint8
   const int* __restrict__ head_by_block,            // [total_blocks]  TODO: could use uint8
+  const int* __restrict__ virtual_block_num_by_block,  // [total_blocks]
   const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
   const int num_layers,
   const int num_kv_heads,
@@ -87,10 +91,16 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
   int evicted_block_count = 0;  // track number of evicted blocks for this sequence
   const int total_heads = num_layers * num_kv_heads;
   printf("seq %d tot kv heads: %d/%d\n", seq_idx, total_heads, MAX_TOTAL_KV_HEADS);
-  int remaining_kv_count[MAX_TOTAL_KV_HEADS];  // track number of number of KVs remaining in current block for each head
+
+  // use shared memory since MAX_TOTAL_KV_HEADS will max out registers
+  extern __shared__ char shmem[];
+  int* remaining_kv_count = reinterpret_cast<int*>(shmem);  // [num_seqs_per_block, MAX_TOTAL_KV_HEADS]
+  const int thread_offset = threadIdx.x * MAX_TOTAL_KV_HEADS;
+
+  //int remaining_kv_count[MAX_TOTAL_KV_HEADS];  // track number of number of KVs remaining in current block for each head
 #pragma unroll
   for (int i = 0; i < total_heads; ++i) {
-    remaining_kv_count[i] = BLOCK_SIZE;
+    remaining_kv_count[thread_offset + i] = BLOCK_SIZE;
   }
 
   int token_idx;
@@ -107,22 +117,25 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
     block_idx = token_idx / BLOCK_SIZE;
     layer_idx = layer_by_block[block_idx];
     head_idx = head_by_block[block_idx];
+    const int virtual_block_num = virtual_block_num_by_block[block_idx - layer_block_offsets[layer_idx]];
+    const int block_offset = token_idx % BLOCK_SIZE;
+    const int virtual_token_idx = virtual_block_num * BLOCK_SIZE + block_offset;
 
     layer_head_idx = layer_idx * num_kv_heads + head_idx;
     output_kv_idx = output_head_offset + layer_head_idx;
 
     // Add to evicted KVs, incrementing the evicted KV count for the current head
     // Note: only the first ( (evicted_kv_count / BLOCK_SIZE) * BLOCK_SIZE ) KVs for each head will be evicted
-    evicted_kv_indices[output_kv_idx * output_head_stride + evicted_kv_count[output_kv_idx]++] = token_idx;
+    evicted_kv_indices[output_kv_idx * output_head_stride + evicted_kv_count[output_kv_idx]++] = virtual_token_idx;
     printf("loop %d, seq %d, token_idx %d, output_kv_idx %d, remaining: %d\n", i, seq_idx, token_idx, output_kv_idx, remaining_kv_count[layer_head_idx]);
 
     // Update remaining_kv_count, incrementing total evicted blocks if we now have a full block of evicted
     // keys for the current head
-    if (--(remaining_kv_count[layer_head_idx]) == 0) {
+    if (--(remaining_kv_count[thread_offset + layer_head_idx]) == 0) {
       if (++evicted_block_count >= blocks_to_evict) {
         return;
       }
-      remaining_kv_count[layer_head_idx] = BLOCK_SIZE;
+      remaining_kv_count[thread_offset + layer_head_idx] = BLOCK_SIZE;
     }
   }
 
@@ -132,9 +145,11 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
 int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
 int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
 const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
-const int* __restrict__ seq_block_offsets,        // [num_seqs]
+const int* __restrict__ seq_block_offsets,        // [num_seqs]  (offset into indices post-sort)
+const int* __restrict__ layer_block_offsets       // [num_layers]  (offset into indices pre-sort)
 const int* __restrict__ layer_by_block,           // [total_blocks]  TODO: could use uint8
 const int* __restrict__ head_by_block,            // [total_blocks]  TODO: could use uint8
+const int* __restrict__ virtual_block_num_by_block,  // [total_blocks]
 const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
 const int num_layers,
 const int num_kv_heads,
@@ -227,8 +242,10 @@ void set_inputs(
   int* kv_cnt,
   int* sort_idx,
   int* seq_blk_offsets,
+  int* layer_blk_offsets,
   int* layer_by_blk,
   int* head_by_blk,
+  int* virtual_blk_num_by_block,
   int* evicted_blks_per_seq,
   int num_seqs,
   int num_layers,
@@ -242,10 +259,14 @@ void set_inputs(
   set_incr_int_data_rev(sort_idx, total_blocks * block_size, 1, -1, total_blocks * block_size);
   std::cout << "seq_blk_offsets" << std::endl;
   set_incr_int_data(seq_blk_offsets, num_seqs, blocks_per_head * num_layers * num_kv_heads, -1, -1);
+  std::cout << "layer_blk_offsets" << std::endl;
+  set_incr_int_data(layer_blk_offsets, num_layers, num_seqs * num_kv_heads * blocks_per_head, 1, total_blocks);
   std::cout << "layer_idxs" << std::endl;
   set_incr_int_data(layer_by_blk, total_blocks, 1, num_kv_heads * blocks_per_head, num_layers * num_kv_heads * blocks_per_head);
   std::cout << "head_idxs" << std::endl;
   set_incr_int_data(head_by_blk, total_blocks, 1, blocks_per_head, blocks_per_head * num_kv_heads);
+  std::cout << "virtual_block_nums" << std::endl;
+  set_incr_int_data(virtual_blk_num_by_block, total_blocks, 1, 1, blocks_per_head);
   std::cout << "tgt_evictions" << std::endl;
   set_const_int_data(evicted_blks_per_seq, num_seqs, max_evicted_blocks);
 }
@@ -271,6 +292,9 @@ int main(int argc, char** argv) {
   sscanf(argv[5], "%d", &blocks_per_head);
   sscanf(argv[6], "%d", &block_size);
 
+  printf("num_seqs=%d, num_layers=%d, num_kv_heads=%d, max_evicted_blocks=%d, blocks_per_head=%d, block_size=%d",
+    num_seqs, num_layers, num_kv_heads, max_evicted_blocks, blocks_per_head, block_size);
+
   int total_kv_heads = num_layers * num_kv_heads;
   int total_blocks = num_seqs * num_layers * num_kv_heads * blocks_per_head;
 
@@ -278,23 +302,29 @@ int main(int argc, char** argv) {
   int* kv_cnt;
   int* sort_idx;
   int* seq_blk_offsets;
+  int* layer_blk_offsets;
   int* layer_by_blk;
   int* head_by_blk;
+  int* virtual_blk_num_by_block;
   int* evicted_blks_per_seq;
   cudaMalloc(&kv_idx, sizeof(int)* num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size);
   cudaMalloc(&kv_cnt, sizeof(int)* num_seqs * num_layers * num_kv_heads);
   cudaMalloc(&sort_idx, sizeof(int)* total_blocks * block_size);
   cudaMalloc(&seq_blk_offsets, sizeof(int)* num_seqs);
+  cudaMalloc(&layer_blk_offsets, sizeof(int)* num_layers);
   cudaMalloc(&layer_by_blk, sizeof(int)* total_blocks);
   cudaMalloc(&head_by_blk, sizeof(int)* total_blocks);
+  cudaMalloc(&virtual_blk_num_by_block, sizeof(int) * total_blocks);
   cudaMalloc(&evicted_blks_per_seq, sizeof(int)* num_seqs);
   set_inputs(
     kv_idx,
     kv_cnt,
     sort_idx,
     seq_blk_offsets,
+    layer_blk_offsets,
     layer_by_blk,
     head_by_blk,
+    virtual_blk_num_by_block,
     evicted_blks_per_seq,
     num_seqs,
     num_layers,
