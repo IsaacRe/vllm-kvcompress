@@ -108,40 +108,38 @@ void schedule_cache_evictions(
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   torch::Tensor& seq_block_offsets,         // [num_seqs]
-  torch::Tensor& layer_by_block,            // [total_blocks]  TODO: could use uint8
-  torch::Tensor& head_by_block,             // [total_blocks]  TODO: could use uint8
-  torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
-  int num_layers,
-  int num_kv_heads,
-  int total_blocks,     // Total number of blocks across all layers, seqs, heads
-  int max_evicted_blocks);
+  torch::Tensor& layer_block_offsets,       // [num_layers]
+  torch::Tensor& layer_by_block,            // [total_blocks]
+  torch::Tensor& head_by_block,             // [total_blocks]
+  torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
+  torch::Tensor& evicted_blocks_per_seq);   // [num_seqs]
 
-void evict_from_t1_cache(
-  torch::Tensor& k_cache,                   // [num_blocks, head_size/x, block_size, x]
-  torch::Tensor& v_cache,                   // [num_blocks, head_size, block_size]
+void schedule_t1_cache_moves(
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
   torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |(ragged), block_size]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& block_tables,              // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
   torch::Tensor& context_lens,              // [num_seqs, num_kv_heads]
-  int layer_idx,
-  int layer_offset,
-  int blocks_per_head,
-  int threads_per_head,
-  const std::string& kv_cache_dtype);
+  const int block_size,
+  const int layer_idx);
 
-void evict_from_t2_cache(
-  torch::Tensor& k_cache,                   // [num_t2_blocks, head_size/x, block_size, x]
-  torch::Tensor& v_cache,                   // [num_t2_blocks, head_size, block_size]
-  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_t2_blocks |(ragged), block_size]
+void schedule_t2_cache_moves(
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
+  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |(ragged), block_size]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& t1_block_tables,           // [num_seqs, max_num_blocks_per_seq]
   torch::Tensor& t2_block_tables,           // [num_t1_blocks, num_kv_heads]
   torch::Tensor& context_lens,              // [num_seqs, num_kv_heads]
-  int layer_idx,
-  int layer_offset,
-  int blocks_per_head,
-  int threads_per_head,
-  const std::string& kv_cache_dtype);
+  const int block_size,
+  const int layer_idx);
+
+void execute_cache_moves(
+  torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
+  torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
+  torch::Tensor& cache_moves_idx,       // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
+  torch::Tensor& cache_moves_count);    // [num_seqs, num_kv_heads]
 
 void rms_norm(
   torch::Tensor& out,
