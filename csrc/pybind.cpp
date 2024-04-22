@@ -118,6 +118,25 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &convert_fp8,
     "Convert the key and value cache to fp8 data type");
 
+  // KV-Compress ops
+  pybind11::module kvc_ops = m.def_submodule("kvc_ops", "KV-Compress kv-eviction ops");
+  kvc_ops.def(
+    "schedule_cache_evictions",
+    &schedule_cache_evictions,
+    "Schedule next cycle of KV evictions");
+  kvc_ops.def(
+    "schedule_t1_cache_moves",
+    &schedule_t1_cache_moves,
+    "Convert KV evictions into KV moves for single-tiered cache");
+  kvc_ops.def(
+    "schedule_t2_cache_moves",
+    &schedule_t2_cache_moves,
+    "Convert KV evictions into KV moves for two-tiered cache");
+  kvc_ops.def(
+    "execute_cache_moves",
+    &execute_cache_moves,
+    "Carry out KV cache moves to free KV blocks for future generation");
+
   // Cuda utils
   pybind11::module cuda_utils = m.def_submodule("cuda_utils", "vLLM cuda utils");
   cuda_utils.def(
