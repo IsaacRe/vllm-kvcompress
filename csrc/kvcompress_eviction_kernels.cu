@@ -28,7 +28,6 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   const int* __restrict__ seq_block_offsets,        // [num_seqs]  (offset into indices post-sort)
-  const int* __restrict__ layer_block_offsets,      // [num_layers]  (offset into indices pre-sort)
   const int* __restrict__ layer_by_block,           // [total_blocks]  TODO: could use uint8
   const int* __restrict__ head_by_block,            // [total_blocks]  TODO: could use uint8
   const int* __restrict__ virtual_block_num_by_block,  // [total_blocks]
@@ -94,7 +93,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
     block_idx = token_idx / BLOCK_SIZE;
     layer_idx = layer_by_block[block_idx];
     head_idx = head_by_block[block_idx];
-    const int virtual_block_num = virtual_block_num_by_block[block_idx - layer_block_offsets[layer_idx]];
+    const int virtual_block_num = virtual_block_num_by_block[block_idx];
     const int block_offset = token_idx % BLOCK_SIZE;
     const int virtual_token_idx = virtual_block_num * BLOCK_SIZE + block_offset;
 
@@ -299,7 +298,6 @@ __global__ void execute_cache_moves_kernel(
     evicted_kv_count_ptr, \
     sorted_indices_ptr, \
     seq_block_offsets_ptr, \
-    layer_block_offsets_ptr, \
     layer_by_block_ptr, \
     head_by_block_ptr, \
     virtual_block_num_by_block_ptr, \
@@ -345,7 +343,6 @@ void schedule_cache_evictions(
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   torch::Tensor& seq_block_offsets,         // [num_seqs]
-  torch::Tensor& layer_block_offsets,       // [num_layers]
   torch::Tensor& layer_by_block,            // [total_blocks]  TODO: could use uint8
   torch::Tensor& head_by_block,             // [total_blocks]  TODO: could use uint8
   torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
@@ -362,7 +359,6 @@ void schedule_cache_evictions(
   int* evicted_kv_count_ptr = reinterpret_cast<int*>(evicted_kv_count.data_ptr());
   int* sorted_indices_ptr = reinterpret_cast<int*>(sorted_indices.data_ptr());
   int* seq_block_offsets_ptr = reinterpret_cast<int*>(seq_block_offsets.data_ptr());
-  int* layer_block_offsets_ptr = reinterpret_cast<int*>(layer_block_offsets.data_ptr());
   int* layer_by_block_ptr = reinterpret_cast<int*>(layer_by_block.data_ptr());
   int* head_by_block_ptr = reinterpret_cast<int*>(head_by_block.data_ptr());
   int* virtual_block_num_by_block_ptr = reinterpret_cast<int*>(virtual_block_num_by_block.data_ptr());
