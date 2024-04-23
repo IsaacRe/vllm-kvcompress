@@ -32,6 +32,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   const int* __restrict__ head_by_block,            // [total_blocks]  TODO: could use uint8
   const int* __restrict__ virtual_block_num_by_block,  // [total_blocks]
   const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
+  const int* __restrict__ hanging_token_count,      // [num_seqs]  number of new generated tokens for each sequence modulo block_size
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
@@ -50,6 +51,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
 
   const int seq_end_offset = (seq_idx + 1 >= num_seqs) ? total_blocks : seq_block_offsets[seq_idx + 1];
   const int blocks_to_evict = evicted_blocks_per_seq[seq_idx];
+  const int hanging_tokens = hanging_token_count[seq_idx];
 
   printf("seq %d evictions: %d\n", seq_idx, blocks_to_evict);
   
@@ -76,7 +78,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   //int remaining_kv_count[MAX_TOTAL_KV_HEADS];  // track number of number of KVs remaining in current block for each head
 #pragma unroll
   for (int i = 0; i < total_heads; ++i) {
-    remaining_kv_count[thread_offset + i] = BLOCK_SIZE;
+    remaining_kv_count[thread_offset + i] = hanging_tokens;
   }
 
   int token_idx;
@@ -302,6 +304,7 @@ __global__ void execute_cache_moves_kernel(
     head_by_block_ptr, \
     virtual_block_num_by_block_ptr, \
     evicted_blocks_per_seq_ptr, \
+    hanging_token_count_ptr, \
     num_layers, \
     num_kv_heads, \
     total_blocks, \
@@ -346,7 +349,8 @@ void schedule_cache_evictions(
   torch::Tensor& layer_by_block,            // [total_blocks]  TODO: could use uint8
   torch::Tensor& head_by_block,             // [total_blocks]  TODO: could use uint8
   torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
-  torch::Tensor& evicted_blocks_per_seq) {  // [num_seqs]
+  torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
+  torch::Tensor& hanging_token_count) {     // [num_seqs]
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
@@ -363,6 +367,7 @@ void schedule_cache_evictions(
   int* head_by_block_ptr = reinterpret_cast<int*>(head_by_block.data_ptr());
   int* virtual_block_num_by_block_ptr = reinterpret_cast<int*>(virtual_block_num_by_block.data_ptr());
   int* evicted_blocks_per_seq_ptr = reinterpret_cast<int*>(evicted_blocks_per_seq.data_ptr());
+  int* hanging_token_count_ptr = reinterpret_cast<int*>(hanging_token_count.data_ptr());
   
   dim3 grid(1);
   dim3 block(num_seqs);
