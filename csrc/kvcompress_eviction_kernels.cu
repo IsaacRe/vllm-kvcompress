@@ -149,7 +149,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
   int evict_count = 0;  // number of KVs scheduled for eviction that we've skipped over without moving into an earlier slot (and will therefore be lost)
   for (int i = 0; i < evicted_kv_cnt; ++i) {
     const int src_kv_idx = context_lens[seq_head_idx] - 1 - i;
-    const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count];
+    const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count - move_count];
     const int dst_kv_idx = evicted_kv_indices[seq_layer_head_offset + move_count];
 
     printf("src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d", src_kv_idx, src_kv_stop_idx, dst_kv_idx);
