@@ -24,7 +24,7 @@
 namespace kvcompress {
 
 template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_evictions_kernel(
-  int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
+  int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   const int* __restrict__ seq_block_offsets,        // [num_seqs]  (offset into indices post-sort)
@@ -35,11 +35,11 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
-  const int max_evicted_blocks) {
+  const int max_evicted_tokens) {
   const int num_seqs = gridDim.x * blockDim.x;
   const int seq_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
 
-  const int output_head_stride = max_evicted_blocks * BLOCK_SIZE;
+  const int output_head_stride = max_evicted_tokens;
   const int output_seq_stride = num_layers * num_kv_heads;
 
   const int output_head_offset = seq_idx * output_seq_stride;
@@ -117,16 +117,16 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
 }
 
 template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel(
-  int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]  (virtual token indices)
+  int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
   int* __restrict__ cache_moves_count,             // [num_seqs, num_kv_heads]
-  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]  *indices must be sorted in ascending order
+  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]  *indices must be sorted in ascending order
   const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ block_tables,           // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,           // [num_seqs, num_kv_heads]
   const int layer_idx,
   const int num_layers,
   const int num_kv_heads,
-  const int max_evicted_blocks,
+  const int max_evicted_tokens,
   const int max_num_blocks_per_seq) {
   const int seq_head_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
   const int seq_head_block_offset = seq_head_idx * max_num_blocks_per_seq;
@@ -136,8 +136,8 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     seq_idx * num_layers * num_kv_heads +
     layer_idx * num_kv_heads +
     head_idx;
-  const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_blocks * BLOCK_SIZE;
-  const int cache_moves_offset = seq_head_idx * max_evicted_blocks * BLOCK_SIZE;
+  const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
+  const int cache_moves_offset = seq_head_idx * max_evicted_tokens;
 
   printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
   // get range of src KVs that will be handled by this thread
@@ -175,9 +175,9 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
 }
 
 template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
-  int* __restrict__ cache_moves_idx,              // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]
+  int* __restrict__ cache_moves_idx,              // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]
   int* __restrict__ cache_moves_count,            // [num_seqs, num_kv_heads]
-  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]  *indices must be sorted in ascending order
+  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]  *indices must be sorted in ascending order
   const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ t1_block_tables,        // [num_seqs, max_num_blocks_per_seq]
   const int* __restrict__ t2_block_tables,        // [num_t1_blocks, num_kv_heads]
@@ -185,7 +185,7 @@ template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
   const int layer_idx,
   const int num_layers,
   const int num_kv_heads,
-  const int max_evicted_blocks,
+  const int max_evicted_tokens,
   const int max_num_blocks_per_seq) {
   const int seq_head_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
   const int seq_idx = seq_head_idx / num_kv_heads;
@@ -195,8 +195,8 @@ template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
     seq_idx * num_layers * num_kv_heads +
     layer_idx * num_kv_heads +
     head_idx;
-  const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_blocks * BLOCK_SIZE;
-  const int cache_moves_offset = seq_head_idx * max_evicted_blocks * BLOCK_SIZE;
+  const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
+  const int cache_moves_offset = seq_head_idx * max_evicted_tokens;
 
   printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
   // get range of src KVs that will be handled by this thread
@@ -305,7 +305,7 @@ __global__ void execute_cache_moves_kernel(
     num_layers, \
     num_kv_heads, \
     total_blocks, \
-    max_evicted_blocks);
+    max_evicted_tokens);
 
 #define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE, TOTAL_KV_HEADS) \
   if (TOTAL_KV_HEADS <= 1) { \
@@ -339,7 +339,7 @@ __global__ void execute_cache_moves_kernel(
   }
 
 void schedule_cache_evictions(
-  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
+  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   torch::Tensor& seq_block_offsets,         // [num_seqs]
@@ -351,7 +351,7 @@ void schedule_cache_evictions(
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
   const int block_size = evicted_kv_indices.size(4);
-  const int max_evicted_blocks = evicted_kv_indices.size(3);
+  const int max_evicted_tokens = evicted_kv_indices.size(3);
   const int total_blocks = layer_by_block.size(0);
   const int total_kv_heads = num_layers * num_kv_heads;
 
@@ -384,7 +384,7 @@ void schedule_cache_evictions(
     layer_idx,\
     num_layers,\
     num_kv_heads,\
-    max_evicted_blocks,\
+    max_evicted_tokens,\
     max_num_blocks_per_seq);
 
 #define T1_SCHEDULE_MOVES_KERNEL(BLOCK_SIZE) \
@@ -406,9 +406,9 @@ void schedule_cache_evictions(
   }
 
 void schedule_t1_cache_moves(
-  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
   torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
-  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |(ragged), block_size]
+  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& block_tables,              // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
   torch::Tensor& context_lens,              // [num_seqs, num_kv_heads]
@@ -417,7 +417,7 @@ void schedule_t1_cache_moves(
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
-  const int max_evicted_blocks = evicted_kv_indices.size(3);
+  const int max_evicted_tokens = evicted_kv_indices.size(3);
   const int max_num_blocks_per_seq = block_tables.size(2);
 
   int* cache_moves_idx_ptr = reinterpret_cast<int*>(cache_moves_idx.data_ptr());
@@ -447,7 +447,7 @@ void schedule_t1_cache_moves(
     layer_idx,\
     num_layers,\
     num_kv_heads,\
-    max_evicted_blocks,\
+    max_evicted_tokens,\
     max_num_blocks_per_seq);
 
 #define T2_SCHEDULE_MOVES_KERNEL(BLOCK_SIZE) \
@@ -469,9 +469,9 @@ void schedule_t1_cache_moves(
   }
 
 void schedule_t2_cache_moves(
-  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
   torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
-  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |(ragged), block_size]
+  torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& t1_block_tables,           // [num_seqs, max_num_blocks_per_seq]
   torch::Tensor& t2_block_tables,           // [num_t1_blocks, num_kv_heads]
@@ -481,7 +481,7 @@ void schedule_t2_cache_moves(
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
-  const int max_evicted_blocks = evicted_kv_indices.size(3);
+  const int max_evicted_tokens = evicted_kv_indices.size(3);
   const int max_num_blocks_per_seq = t1_block_tables.size(1);
 
   int* cache_moves_idx_ptr = reinterpret_cast<int*>(cache_moves_idx.data_ptr());

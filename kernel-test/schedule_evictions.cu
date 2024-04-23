@@ -12,7 +12,7 @@ schedule_evictions<BLOCK_SIZE, TOTAL_KV_HEADS><<<1,num_seqs,sizeof(int)*num_seqs
   num_layers,\
   num_kv_heads,\
   total_blocks,\
-  max_evicted_blocks);
+  max_evicted_tokens);
 
 #define KERNEL_BLOCK_SIZE(BLOCK_SIZE, TOTAL_KV_HEADS) \
   if (TOTAL_KV_HEADS <= 1) { \
@@ -46,7 +46,7 @@ schedule_evictions<BLOCK_SIZE, TOTAL_KV_HEADS><<<1,num_seqs,sizeof(int)*num_seqs
   }
 
 template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evictions(
-  int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
+  int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   const int* __restrict__ seq_block_offsets,        // [num_seqs]  (offset into indices post-sort)
@@ -57,11 +57,11 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
-  const int max_evicted_blocks) {
+  const int max_evicted_tokens) {
   const int num_seqs = gridDim.x * blockDim.x;
   const int seq_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
 
-  const int output_head_stride = max_evicted_blocks * BLOCK_SIZE;
+  const int output_head_stride = max_evicted_tokens;
   const int output_seq_stride = num_layers * num_kv_heads;
 
   const int output_head_offset = seq_idx * output_seq_stride;
@@ -140,7 +140,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
 }
 
 /*
-int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]
+int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
 int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
 const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
 const int* __restrict__ seq_block_offsets,        // [num_seqs]  (offset into indices post-sort)
@@ -151,7 +151,7 @@ const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
 const int num_layers,
 const int num_kv_heads,
 const int total_blocks,     // Total number of blocks across all layers, seqs, heads
-const int max_evicted_blocks
+const int max_evicted_tokens
 */
 
 void print_output(
@@ -291,6 +291,7 @@ int main(int argc, char** argv) {
 
   int total_kv_heads = num_layers * num_kv_heads;
   int total_blocks = num_seqs * num_layers * num_kv_heads * blocks_per_head;
+  int max_evicted_tokens = max_evicted_blocks * block_size;
 
   int* kv_idx;
   int* kv_cnt;
