@@ -302,7 +302,7 @@ __global__ void execute_cache_moves_kernel(
     layer_block_offsets_ptr, \
     layer_by_block_ptr, \
     head_by_block_ptr, \
-    virtual_block_num_ptr, \
+    virtual_block_num_by_block_ptr, \
     evicted_blocks_per_seq_ptr, \
     num_layers, \
     num_kv_heads, \
@@ -501,11 +501,11 @@ void schedule_t2_cache_moves(
   const at::cuda::OptionalCUDAGuard device_guard(device_of(evicted_kv_indices));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  T1_SCHEDULE_MOVES_KERNEL(block_size)
+  T2_SCHEDULE_MOVES_KERNEL(block_size)
 }
 
 #define EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, BLOCK_SIZE) \
-kvcompress::single_tier_schedule_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE><<<grid,block,0,stream>>>(\
+kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE><<<grid,block,0,stream>>>(\
   k_cache_ptr,\
   v_cache_ptr,\
   cache_moves_idx_ptr,\
@@ -570,20 +570,24 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
   torch::Tensor& cache_moves_idx,       // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
-  torch::Tensor& cache_moves_count) {   // [num_seqs, num_kv_heads]
+  torch::Tensor& cache_moves_count,     // [num_seqs, num_kv_heads]
+  const int blocks_per_head,
+  const int threads_per_head) {
   const int max_num_moves = cache_moves_idx.size(2);
   const int head_size = v_cache.size(1);
   const int vec_size = k_cache.size(3);
   const int block_size = v_cache.size(2);
+  const int num_seqs = cache_moves_idx.size(0);
+  const int num_kv_heads = cache_moves_idx.size(1);
 
-  CACHE_T* k_cache = reinterpret_cast<CACHE_T*>(k_cache.data_ptr());
-  CACHE_T* v_cache = reinterpret_cast<CACHE_T*>(v_cache.data_ptr());
+  CACHE_T* k_cache_ptr = reinterpret_cast<CACHE_T*>(k_cache.data_ptr());
+  CACHE_T* v_cache_ptr = reinterpret_cast<CACHE_T*>(v_cache.data_ptr());
   int* cache_moves_idx_ptr = reinterpret_cast<int*>(cache_moves_idx.data_ptr());
   int* cache_moves_count_ptr = reinterpret_cast<int*>(cache_moves_count.data_ptr());
 
-  dim3 grid(num_seqs);
-  dim3 block(num_kv_heads);
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(evicted_kv_indices));
+  dim3 grid(blocks_per_head, num_seqs);
+  dim3 block(threads_per_head, num_kv_heads);
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(cache_moves_idx));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   EXECUTE_MOVES_KERNEL(head_size, vec_size, block_size)
@@ -594,13 +598,17 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
     k_cache,                              \
     v_cache,                              \
     cache_moves_idx,                      \
-    cache_moves_count);
+    cache_moves_count,                    \
+    blocks_per_head,                      \
+    threads_per_head);
 
 void execute_cache_moves(
   torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
   torch::Tensor& cache_moves_idx,       // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
-  torch::Tensor& cache_moves_count) {   // [num_seqs, num_kv_heads]
+  torch::Tensor& cache_moves_count,     // [num_seqs, num_kv_heads]
+  int blocks_per_head,
+  int threads_per_head) {
   if (k_cache.dtype() == at::ScalarType::Float) {
     CALL_EXECUTE_CACHE_MOVES_LAUNCHER(float);
   } else if (k_cache.dtype() == at::ScalarType::Half) {
