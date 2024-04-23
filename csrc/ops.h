@@ -141,7 +141,9 @@ void execute_cache_moves(
   torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
   torch::Tensor& cache_moves_idx,       // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
-  torch::Tensor& cache_moves_count);    // [num_seqs, num_kv_heads]
+  torch::Tensor& cache_moves_count,     // [num_seqs, num_kv_heads]
+  int blocks_per_head,
+  int threads_per_head);
 
 void rms_norm(
   torch::Tensor& out,
