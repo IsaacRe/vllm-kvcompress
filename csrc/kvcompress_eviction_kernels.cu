@@ -119,7 +119,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
 }
 
 template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel(
-  int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
+  int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
   int* __restrict__ cache_moves_count,             // [num_seqs, num_kv_heads]
   const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]  *indices must be sorted in ascending order
   const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
@@ -177,7 +177,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
 }
 
 template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
-  int* __restrict__ cache_moves_idx,              // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]
+  int* __restrict__ cache_moves_idx,              // [num_seqs, num_kv_heads, max_evicted_tokens, 2]
   int* __restrict__ cache_moves_count,            // [num_seqs, num_kv_heads]
   const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]  *indices must be sorted in ascending order
   const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
@@ -411,7 +411,7 @@ void schedule_cache_evictions(
   }
 
 void schedule_t1_cache_moves(
-  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
   torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
   torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
@@ -474,7 +474,7 @@ void schedule_t1_cache_moves(
   }
 
 void schedule_t2_cache_moves(
-  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
   torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
   torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]

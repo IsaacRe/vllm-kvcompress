@@ -34,7 +34,7 @@ schedule_moves<BLOCK_SIZE><<<grid,block>>>(\
   }
 
 template<int BLOCK_SIZE> __global__ void schedule_moves(
-  int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
+  int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
   int* __restrict__ cache_moves_count,             // [num_seqs, num_kv_heads]
   const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]  *indices must be sorted in ascending order
   const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
@@ -262,7 +262,7 @@ void set_const_int_data(int* ptr, int size, int value) {
 }
 
 /*
-int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
+int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
 int* __restrict__ cache_moves_count,             // [num_seqs, num_kv_heads]
 const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens] indexes into [num_layers, num_blocks |, block_size]
 const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
