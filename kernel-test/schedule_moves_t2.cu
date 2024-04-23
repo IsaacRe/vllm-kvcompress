@@ -12,7 +12,7 @@ schedule_moves_t2<BLOCK_SIZE><<<grid,block>>>(\
   layer_idx,\
   num_layers,\
   num_kv_heads,\
-  max_evicted_blocks,\
+  max_evicted_tokens,\
   max_num_blocks_per_seq);
 
 
@@ -35,9 +35,9 @@ schedule_moves_t2<BLOCK_SIZE><<<grid,block>>>(\
   }
 
 template<int BLOCK_SIZE> __global__ void schedule_moves_t2(
-  int* __restrict__ cache_moves_idx,              // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]
+  int* __restrict__ cache_moves_idx,              // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]
   int* __restrict__ cache_moves_count,            // [num_seqs, num_kv_heads]
-  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE]  *indices must be sorted in ascending order
+  const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]  *indices must be sorted in ascending order
   const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ t1_block_tables,        // [num_seqs, max_num_blocks_per_seq]
   const int* __restrict__ t2_block_tables,        // [num_t1_blocks, num_kv_heads]
@@ -45,7 +45,7 @@ template<int BLOCK_SIZE> __global__ void schedule_moves_t2(
   const int layer_idx,
   const int num_layers,
   const int num_kv_heads,
-  const int max_evicted_blocks,
+  const int max_evicted_tokens,
   const int max_num_blocks_per_seq) {
   const int seq_head_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
   const int seq_idx = seq_head_idx / num_kv_heads;
@@ -55,8 +55,8 @@ template<int BLOCK_SIZE> __global__ void schedule_moves_t2(
     seq_idx * num_layers * num_kv_heads +
     layer_idx * num_kv_heads +
     head_idx;
-  const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_blocks * BLOCK_SIZE;
-  const int cache_moves_offset = seq_head_idx * max_evicted_blocks * BLOCK_SIZE;
+  const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
+  const int cache_moves_offset = seq_head_idx * max_evicted_tokens;
 
   printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
   // get range of src KVs that will be handled by this thread
@@ -266,9 +266,9 @@ void set_const_int_data(int* ptr, int size, int value) {
 }
 
 /*
-int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_blocks * BLOCK_SIZE / 2, 2]  (virtual token indices)
+int* __restrict__ cache_moves_idx,               // [num_seqs, num_kv_heads, max_evicted_tokens / 2, 2]  (virtual token indices)
 int* __restrict__ cache_moves_count,             // [num_seqs, num_kv_heads]
-const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_blocks, BLOCK_SIZE] indexes into [num_layers, num_blocks |, block_size]
+const int* __restrict__ evicted_kv_indices,     // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens] indexes into [num_layers, num_blocks |, block_size]
 const int* __restrict__ evicted_kv_count,       // [num_seqs, num_layers, num_kv_heads]
 const int* __restrict__ context_lens,           // [num_seqs, num_kv_heads]
 const int layer_idx,
@@ -342,6 +342,7 @@ int main(int argc, char** argv) {
   sscanf(argv[7], "%d", &num_blocks_per_seq);
 
   int max_evicted_blocks = DIVIDE_ROUND_UP(evicted_kvs_per_seq, block_size);
+  int max_evicted_tokens = max_evicted_blocks * block_size;
 
   if (layer_idx >= num_layers) {
     std::cerr << "not enough layers for layer idx" << std::endl;
@@ -357,9 +358,9 @@ int main(int argc, char** argv) {
   int* t1_block_tables;
   int* t2_block_tables;
   int* context_lens;
-  cudaMalloc(&cache_moves_idx, sizeof(int)* num_seqs * num_kv_heads * max_evicted_blocks * block_size);
+  cudaMalloc(&cache_moves_idx, sizeof(int)* num_seqs * num_kv_heads * max_evicted_tokens);
   cudaMalloc(&cache_moves_count, sizeof(int)* num_seqs * num_kv_heads);
-  cudaMalloc(&evicted_kv_indices, sizeof(int)* num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size);
+  cudaMalloc(&evicted_kv_indices, sizeof(int)* num_seqs * num_layers * num_kv_heads * max_evicted_tokens);
   cudaMalloc(&evicted_kv_count, sizeof(int)* num_seqs * num_layers * num_kv_heads);
   cudaMalloc(&t1_block_tables, sizeof(int)* num_seqs * num_blocks_per_seq);
   cudaMalloc(&t2_block_tables, sizeof(int)* num_seqs * num_blocks_per_seq * num_kv_heads);
