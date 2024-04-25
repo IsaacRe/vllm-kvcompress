@@ -112,7 +112,9 @@ void schedule_cache_evictions(
   torch::Tensor& head_by_block,             // [total_blocks]
   torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
   torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
-  torch::Tensor& hanging_token_count);      // [num_seqs]
+  torch::Tensor& context_lens,              // [num_seqs, num_layers, num_kv_heads]
+  torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
+  const int block_size);
 
 void schedule_t1_cache_moves(
   torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)

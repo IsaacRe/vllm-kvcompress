@@ -32,7 +32,8 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   const int* __restrict__ head_by_block,            // [total_blocks]  TODO: could use uint8
   const int* __restrict__ virtual_block_num_by_block,  // [total_blocks]
   const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
-  const int* __restrict__ hanging_token_count,      // [num_seqs]  number of new generated tokens for each sequence modulo block_size
+  const int* __restrict__ context_lens,             // [num_seqs, num_layers, num_kv_heads]
+  const int* __restrict__ hanging_token_count,      // [num_seqs, num_layers, num_kv_heads]  number of new generated tokens for each sequence modulo block_size
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
@@ -51,7 +52,10 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
 
   const int seq_end_offset = (seq_idx + 1 >= num_seqs) ? total_blocks : seq_block_offsets[seq_idx + 1];
   const int blocks_to_evict = evicted_blocks_per_seq[seq_idx];
-  const int hanging_tokens = hanging_token_count[seq_idx];
+
+  if (blocks_to_evict == 0) {
+    return;
+  }
 
   printf("seq %d evictions: %d\n", seq_idx, blocks_to_evict);
   
@@ -67,8 +71,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   printf("seq %d total toks: %d\n", seq_idx, seq_total_tokens);
 
   int evicted_block_count = 0;  // track number of evicted blocks for this sequence
-  const int total_heads = num_layers * num_kv_heads;
-  printf("seq %d tot kv heads: %d/%d\n", seq_idx, total_heads, MAX_TOTAL_KV_HEADS);
+  printf("seq %d tot kv heads: %d/%d\n", seq_idx, output_seq_stride, MAX_TOTAL_KV_HEADS);
 
   // use shared memory since MAX_TOTAL_KV_HEADS will max out registers
   extern __shared__ char shmem[];
@@ -76,36 +79,35 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   const int thread_offset = threadIdx.x * MAX_TOTAL_KV_HEADS;
 
   //int remaining_kv_count[MAX_TOTAL_KV_HEADS];  // track number of number of KVs remaining in current block for each head
-#pragma unroll
-  for (int i = 0; i < total_heads; ++i) {
-    remaining_kv_count[thread_offset + i] = hanging_tokens;
+  for (int i = 0; i < output_seq_stride; ++i) {
+    remaining_kv_count[thread_offset + i] = hanging_token_count[output_head_offset + i];
+    printf("REMAINING KV COUNT: %d vs %d", remaining_kv_count[thread_offset + i], hanging_token_count[output_head_offset + i]);
   }
-
-  int token_idx;
-  int block_idx;
-  int layer_idx;
-  int head_idx;
-
-  int layer_head_idx;
-  int output_kv_idx;
 
   // Iterate over the merged sorted list (KVs for all layers of all heads for current sequence)
   for (int i = 0; i < seq_total_tokens; ++i) {
-    token_idx = seq_sorted_indices[i];
-    block_idx = token_idx / BLOCK_SIZE;
-    layer_idx = layer_by_block[block_idx];
-    head_idx = head_by_block[block_idx];
+    const int token_idx = seq_sorted_indices[i];
+    const int block_idx = token_idx / BLOCK_SIZE;
+    const int layer_idx = layer_by_block[block_idx];
+    const int head_idx = head_by_block[block_idx];
     const int virtual_block_num = virtual_block_num_by_block[block_idx];
     const int block_offset = token_idx % BLOCK_SIZE;
     const int virtual_token_idx = virtual_block_num * BLOCK_SIZE + block_offset;
 
-    layer_head_idx = layer_idx * num_kv_heads + head_idx;
-    output_kv_idx = output_head_offset + layer_head_idx;
+    const int layer_head_idx = layer_idx * num_kv_heads + head_idx;
+    const int output_kv_idx = output_head_offset + layer_head_idx;
+    printf("loop %d, ctx_len %d, seq %d, token_idx %d, v_token_idx %d, output_kv_idx %d, evicted_cnt: %d, remaining: %d\n",
+      i, context_lens[output_kv_idx], seq_idx, token_idx, virtual_token_idx, output_kv_idx,
+      evicted_kv_count[output_kv_idx], remaining_kv_count[thread_offset + layer_head_idx]);
+
+    // Skip empty token slots in fragmented cache blocks
+    if (virtual_token_idx >= context_lens[output_kv_idx]) {
+      continue;
+    }
 
     // Add to evicted KVs, incrementing the evicted KV count for the current head
     // Note: only the first ( (evicted_kv_count / BLOCK_SIZE) * BLOCK_SIZE ) KVs for each head will be evicted
     evicted_kv_indices[output_kv_idx * output_head_stride + evicted_kv_count[output_kv_idx]++] = virtual_token_idx;
-    printf("loop %d, seq %d, token_idx %d, output_kv_idx %d, remaining: %d\n", i, seq_idx, token_idx, output_kv_idx, remaining_kv_count[layer_head_idx]);
 
     // Update remaining_kv_count, incrementing total evicted blocks if we now have a full block of evicted
     // keys for the current head
@@ -304,6 +306,7 @@ __global__ void execute_cache_moves_kernel(
     head_by_block_ptr, \
     virtual_block_num_by_block_ptr, \
     evicted_blocks_per_seq_ptr, \
+    context_lens_ptr, \
     hanging_token_count_ptr, \
     num_layers, \
     num_kv_heads, \
@@ -313,13 +316,13 @@ __global__ void execute_cache_moves_kernel(
 #define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE, TOTAL_KV_HEADS) \
   if (TOTAL_KV_HEADS <= 1) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 1) \
-  } /*else if (TOTAL_KV_HEADS <= 2) { \
+  } else if (TOTAL_KV_HEADS <= 2) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 2) \
   } else if (TOTAL_KV_HEADS <= 4) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 4) \
   } else if (TOTAL_KV_HEADS <= 8) { \
     SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 8) \
-  } */else { \
+  } else { \
     TORCH_CHECK(false, "Unsupported num kv heads * num layers: ", TOTAL_KV_HEADS); \
   }
 
@@ -328,7 +331,7 @@ __global__ void execute_cache_moves_kernel(
     case 1: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(1, TOTAL_KV_HEADS) \
       break; \
-    /*case 2: \
+    case 2: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(2, TOTAL_KV_HEADS) \
       break; \
     case 4: \
@@ -336,7 +339,7 @@ __global__ void execute_cache_moves_kernel(
       break; \
     case 8: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(8, TOTAL_KV_HEADS) \
-      break;*/ \
+      break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -350,11 +353,12 @@ void schedule_cache_evictions(
   torch::Tensor& head_by_block,             // [total_blocks]  TODO: could use uint8
   torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
   torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
-  torch::Tensor& hanging_token_count) {     // [num_seqs]
+  torch::Tensor& context_lens,              // [num_seqs, num_layers, num_kv_heads]
+  torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
+  const int block_size) {
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
-  const int block_size = evicted_kv_indices.size(4);
   const int max_evicted_tokens = evicted_kv_indices.size(3);
   const int total_blocks = layer_by_block.size(0);
   const int total_kv_heads = num_layers * num_kv_heads;
@@ -367,6 +371,7 @@ void schedule_cache_evictions(
   int* head_by_block_ptr = reinterpret_cast<int*>(head_by_block.data_ptr());
   int* virtual_block_num_by_block_ptr = reinterpret_cast<int*>(virtual_block_num_by_block.data_ptr());
   int* evicted_blocks_per_seq_ptr = reinterpret_cast<int*>(evicted_blocks_per_seq.data_ptr());
+  int* context_lens_ptr = reinterpret_cast<int*>(context_lens.data_ptr());
   int* hanging_token_count_ptr = reinterpret_cast<int*>(hanging_token_count.data_ptr());
   
   dim3 grid(1);
@@ -397,7 +402,7 @@ void schedule_cache_evictions(
     case 1: \
       T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(1) \
       break; \
-    /*case 2: \
+    case 2: \
       T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(2) \
       break; \
     case 4: \
@@ -405,7 +410,7 @@ void schedule_cache_evictions(
       break; \
     case 8: \
       T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(8) \
-      break;*/ \
+      break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -460,7 +465,7 @@ void schedule_t1_cache_moves(
     case 1: \
       T2_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(1) \
       break; \
-    /*case 2: \
+    case 2: \
       T2_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(2) \
       break; \
     case 4: \
@@ -468,7 +473,7 @@ void schedule_t1_cache_moves(
       break; \
     case 8: \
       T2_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(8) \
-      break;*/ \
+      break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -518,7 +523,7 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
     case 1: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
       break; \
-    /*case 2: \
+    case 2: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
       break; \
     case 4: \
@@ -526,7 +531,7 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
       break; \
     case 8: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
-      break;*/ \
+      break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
   }
@@ -536,17 +541,14 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
     case 1: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 1, BLOCK_SIZE) \
       break; \
-    /*case 2: \
+    case 2: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 2, BLOCK_SIZE) \
       break; \
     case 4: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 4, BLOCK_SIZE) \
       break; \
-    case 8: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 8, BLOCK_SIZE) \
-      break;*/ \
     default: \
-      TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
+      TORCH_CHECK(false, "Unsupported vec size: ", VEC_SIZE); \
   }
 
 #define EXECUTE_MOVES_KERNEL(HEAD_SIZE, VEC_SIZE, BLOCK_SIZE) \
@@ -554,7 +556,7 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
     case 1: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE(1, VEC_SIZE, BLOCK_SIZE) \
       break; \
-    /*case 2: \
+    case 2: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE(2, VEC_SIZE, BLOCK_SIZE) \
       break; \
     case 4: \
@@ -562,9 +564,9 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
       break; \
     case 8: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE(8, VEC_SIZE, BLOCK_SIZE) \
-      break;*/ \
+      break; \
     default: \
-      TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
+      TORCH_CHECK(false, "Unsupported head size: ", HEAD_SIZE); \
   }
 
 template<typename CACHE_T> void execute_cache_moves_launcher(
