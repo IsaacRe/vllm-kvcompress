@@ -9,6 +9,7 @@ schedule_evictions<BLOCK_SIZE, TOTAL_KV_HEADS><<<1,num_seqs,sizeof(int)*num_seqs
   head_by_blk,\
   virtual_blk_num_by_block,\
   evicted_blks_per_seq,\
+  context_lens,\
   hanging_token_count,\
   num_layers,\
   num_kv_heads,\
@@ -55,7 +56,8 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
   const int* __restrict__ head_by_block,            // [total_blocks]  TODO: could use uint8
   const int* __restrict__ virtual_block_num_by_block,  // [total_blocks]
   const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
-  const int* __restrict__ hanging_token_count,      // [num_seqs]  number of new generated tokens for each sequence modulo block_size
+  const int* __restrict__ context_lens,             // [num_seqs, num_layers, num_kv_heads]
+  const int* __restrict__ hanging_token_count,      // [num_seqs, num_layers, num_kv_heads]  number of new generated tokens for each sequence modulo block_size
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
@@ -74,7 +76,10 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
 
   const int seq_end_offset = (seq_idx + 1 >= num_seqs) ? total_blocks : seq_block_offsets[seq_idx + 1];
   const int blocks_to_evict = evicted_blocks_per_seq[seq_idx];
-  const int hanging_tokens = hanging_token_count[seq_idx];
+
+  if (blocks_to_evict == 0) {
+    return;
+  }
 
   printf("seq %d evictions: %d\n", seq_idx, blocks_to_evict);
   
@@ -90,8 +95,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
   printf("seq %d total toks: %d\n", seq_idx, seq_total_tokens);
 
   int evicted_block_count = 0;  // track number of evicted blocks for this sequence
-  const int total_heads = num_layers * num_kv_heads;
-  printf("seq %d tot kv heads: %d/%d\n", seq_idx, total_heads, MAX_TOTAL_KV_HEADS);
+  printf("seq %d tot kv heads: %d/%d\n", seq_idx, output_seq_stride, MAX_TOTAL_KV_HEADS);
 
   // use shared memory since MAX_TOTAL_KV_HEADS will max out registers
   extern __shared__ char shmem[];
@@ -99,32 +103,27 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
   const int thread_offset = threadIdx.x * MAX_TOTAL_KV_HEADS;
 
   //int remaining_kv_count[MAX_TOTAL_KV_HEADS];  // track number of number of KVs remaining in current block for each head
-#pragma unroll
-  for (int i = 0; i < total_heads; ++i) {
-    // to evict first block for each head only need to evict up to the number of hanging KVs
-    remaining_kv_count[thread_offset + i] = hanging_tokens;
+  for (int i = 0; i < output_seq_stride; ++i) {
+    remaining_kv_count[thread_offset + i] = hanging_token_count[output_head_offset + i];
   }
-
-  int token_idx;
-  int block_idx;
-  int layer_idx;
-  int head_idx;
-
-  int layer_head_idx;
-  int output_kv_idx;
 
   // Iterate over the merged sorted list (KVs for all layers of all heads for current sequence)
   for (int i = 0; i < seq_total_tokens; ++i) {
-    token_idx = seq_sorted_indices[i];
-    block_idx = token_idx / BLOCK_SIZE;
-    layer_idx = layer_by_block[block_idx];
-    head_idx = head_by_block[block_idx];
+    const int token_idx = seq_sorted_indices[i];
+    const int block_idx = token_idx / BLOCK_SIZE;
+    const int layer_idx = layer_by_block[block_idx];
+    const int head_idx = head_by_block[block_idx];
     const int virtual_block_num = virtual_block_num_by_block[block_idx];
     const int block_offset = token_idx % BLOCK_SIZE;
     const int virtual_token_idx = virtual_block_num * BLOCK_SIZE + block_offset;
 
-    layer_head_idx = layer_idx * num_kv_heads + head_idx;
-    output_kv_idx = output_head_offset + layer_head_idx;
+    const int layer_head_idx = layer_idx * num_kv_heads + head_idx;
+    const int output_kv_idx = output_head_offset + layer_head_idx;
+
+    // Skip empty token slots in fragmented cache blocks
+    if (virtual_token_idx >= context_lens[output_kv_idx]) {
+      continue;
+    }
 
     // Add to evicted KVs, incrementing the evicted KV count for the current head
     // Note: only the first ( (evicted_kv_count / BLOCK_SIZE) * BLOCK_SIZE ) KVs for each head will be evicted
@@ -140,7 +139,6 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_evicti
       remaining_kv_count[thread_offset + layer_head_idx] = BLOCK_SIZE;
     }
   }
-
 }
 
 /*
@@ -247,6 +245,7 @@ void set_inputs(
   int* head_by_blk,
   int* virtual_blk_num_by_block,
   int* evicted_blks_per_seq,
+  int* context_lens,
   int* hanging_token_count,
   int num_seqs,
   int num_layers,
@@ -269,8 +268,10 @@ void set_inputs(
   set_incr_int_data(virtual_blk_num_by_block, total_blocks, 1, 1, blocks_per_head);
   std::cout << "tgt_evictions" << std::endl;
   set_const_int_data(evicted_blks_per_seq, num_seqs, max_evicted_blocks);
+  std::cout << "context_lens" << std::endl;
+  set_const_int_data(context_lens, num_seqs * num_layers * num_kv_heads, blocks_per_head * block_size - (block_size - hanging_tokens));
   std::cout << "hanging_token_count" << std::endl;
-  set_const_int_data(hanging_token_count, num_seqs, hanging_tokens);
+  set_const_int_data(hanging_token_count, num_seqs * num_layers * num_kv_heads, hanging_tokens);
 }
 
 // num_seqs, num_layers, num_kv_heads, max_evicted_blocks, blocks_per_head, block_size
@@ -311,6 +312,7 @@ int main(int argc, char** argv) {
   int* head_by_blk;
   int* virtual_blk_num_by_block;
   int* evicted_blks_per_seq;
+  int* context_lens;
   int* hanging_token_count;
   cudaMalloc(&kv_idx, sizeof(int)* num_seqs * num_layers * num_kv_heads * max_evicted_blocks * block_size);
   cudaMalloc(&kv_cnt, sizeof(int)* num_seqs * num_layers * num_kv_heads);
@@ -320,7 +322,8 @@ int main(int argc, char** argv) {
   cudaMalloc(&head_by_blk, sizeof(int)* total_blocks);
   cudaMalloc(&virtual_blk_num_by_block, sizeof(int) * total_blocks);
   cudaMalloc(&evicted_blks_per_seq, sizeof(int)* num_seqs);
-  cudaMalloc(&hanging_token_count, sizeof(int)* num_seqs);
+  cudaMalloc(&context_lens, sizeof(int)* num_seqs * num_layers * num_kv_heads);
+  cudaMalloc(&hanging_token_count, sizeof(int)* num_seqs * num_layers * num_kv_heads);
   set_inputs(
     kv_idx,
     kv_cnt,
@@ -330,6 +333,7 @@ int main(int argc, char** argv) {
     head_by_blk,
     virtual_blk_num_by_block,
     evicted_blks_per_seq,
+    context_lens,
     hanging_token_count,
     num_seqs,
     num_layers,
