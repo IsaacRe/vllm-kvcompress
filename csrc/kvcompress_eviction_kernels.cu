@@ -141,7 +141,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     layer_idx * num_kv_heads +
     head_idx;
   const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
-  const int cache_moves_offset = seq_head_idx * max_evicted_tokens;
+  const int cache_moves_offset = seq_head_idx * max_evicted_tokens * 2;
 
   printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
   // get range of src KVs that will be handled by this thread
@@ -154,7 +154,8 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count - move_count];
     const int dst_kv_idx = evicted_kv_indices[seq_layer_head_offset + move_count];
 
-    printf("src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d", src_kv_idx, src_kv_stop_idx, dst_kv_idx);
+    printf("seq: %d, head: %d, i: %d, src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d, move_cnt: %d, evict_cnt: %d\n",
+      seq_idx, head_idx, i, src_kv_idx, src_kv_stop_idx, dst_kv_idx, move_count, evict_count);
 
     if (dst_kv_idx >= src_kv_idx) {
       cache_moves_count[seq_head_idx] = move_count;  // record final move count
@@ -172,10 +173,15 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     const int dst_physical_block_number = block_tables[seq_head_block_offset + dst_kv_idx / BLOCK_SIZE];
     const int dst_physical_kv_idx = dst_physical_block_number * BLOCK_SIZE + dst_kv_idx % BLOCK_SIZE;
 
+    printf("moving: seq: %d, head: %d, i: %d, src_kv_idx: %d, src_p_idx: %d, dst_kv_idx: %d, dst_p_idx: %d\n",
+      seq_idx, head_idx, i, src_kv_idx, src_physical_kv_idx, dst_kv_idx, dst_physical_kv_idx);
+
     const int cache_moves_idx_idx = cache_moves_offset + (move_count++);
     cache_moves_idx[cache_moves_idx_idx] = dst_physical_kv_idx;
     cache_moves_idx[cache_moves_idx_idx + 1] = src_physical_kv_idx;
   }
+
+  cache_moves_count[seq_head_idx] = move_count;  // record final move count
 }
 
 template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
