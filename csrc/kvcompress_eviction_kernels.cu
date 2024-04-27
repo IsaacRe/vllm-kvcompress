@@ -53,6 +53,11 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   const int seq_end_offset = (seq_idx + 1 >= num_seqs) ? total_blocks : seq_block_offsets[seq_idx + 1];
   const int blocks_to_evict = evicted_blocks_per_seq[seq_idx];
 
+  // initialize all counts at zero
+  for (int i = 0; i < output_seq_stride; ++i) {
+    evicted_kv_count[output_head_offset + i] = 0;
+  }
+  
   if (blocks_to_evict == 0) {
     return;
   }
@@ -206,7 +211,7 @@ template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
     layer_idx * num_kv_heads +
     head_idx;
   const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
-  const int cache_moves_offset = seq_head_idx * max_evicted_tokens;
+  const int cache_moves_offset = seq_head_idx * max_evicted_tokens * 2;
 
   printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
   // get range of src KVs that will be handled by this thread
@@ -219,7 +224,8 @@ template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
     const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count];
     const int dst_kv_idx = evicted_kv_indices[seq_layer_head_offset + move_count];
 
-    printf("src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d", src_kv_idx, src_kv_stop_idx, dst_kv_idx);
+    printf("seq: %d, head: %d, i: %d, src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d, move_cnt: %d, evict_cnt: %d\n",
+      seq_idx, head_idx, i, src_kv_idx, src_kv_stop_idx, dst_kv_idx, move_count, evict_count);
 
     if (dst_kv_idx >= src_kv_idx) {
       cache_moves_count[seq_head_idx] = move_count;  // record final move count
@@ -239,10 +245,15 @@ template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
     const int dst_physical_block_number = t2_block_tables[dst_t2_physical_block_number * num_kv_heads + head_idx];
     const int dst_physical_kv_idx = dst_physical_block_number * BLOCK_SIZE + dst_kv_idx % BLOCK_SIZE;
 
+    printf("moving: seq: %d, head: %d, i: %d, src_kv_idx: %d, src_p_idx: %d, dst_kv_idx: %d, dst_p_idx: %d\n",
+      seq_idx, head_idx, i, src_kv_idx, src_physical_kv_idx, dst_kv_idx, dst_physical_kv_idx);
+
     const int cache_moves_idx_idx = cache_moves_offset + (move_count++);
     cache_moves_idx[cache_moves_idx_idx] = dst_physical_kv_idx;
     cache_moves_idx[cache_moves_idx_idx + 1] = src_physical_kv_idx;
   }
+
+  cache_moves_count[seq_head_idx] = move_count;  // record final move count
 }
 
 // WARNING: Will fail if cache moves of different sequences/heads specify same dst indices

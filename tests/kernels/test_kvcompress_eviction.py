@@ -250,18 +250,25 @@ def test_kvcompress_schedule_evictions(
     seed = 4
     device = 'cuda:0'
 
+    num_seqs = 3
+    num_kv_heads = 4
+    block_size = 8
+    MAX_SEQ_LEN = 8
+    NUM_LAYERS = 2
+    head_size = 8
+
     # num_seqs = 3
     # num_kv_heads = 2
     # block_size = 2
     # MAX_SEQ_LEN = 8
     # NUM_LAYERS = 2
     # head_size = 1
-    num_seqs = 2
-    num_kv_heads = 1
-    block_size = 2
-    MAX_SEQ_LEN = 2
-    NUM_LAYERS = 2
-    head_size = 1
+    # num_seqs = 2
+    # num_kv_heads = 1
+    # block_size = 2
+    # MAX_SEQ_LEN = 2
+    # NUM_LAYERS = 2
+    # head_size = 1
 
     random.seed(seed)
     np.random.seed(seed)
@@ -470,7 +477,7 @@ def test_kvcompress_schedule_evictions(
     ) * MAX_INT
     ref_evicted_kv_count = torch.empty((num_seqs, NUM_LAYERS, num_kv_heads), dtype=torch.int)
     out_evicted_kv_indices = torch.empty_like(ref_evicted_kv_indices)
-    out_evicted_kv_count = torch.zeros_like(ref_evicted_kv_count)
+    out_evicted_kv_count = torch.empty_like(ref_evicted_kv_count)
 
     ref_schedule_cache_evictions(
         ref_evicted_kv_indices,
@@ -552,6 +559,8 @@ def test_kvcompress_schedule_evictions(
 
     ref_key_cache_by_layer = []
     ref_value_cache_by_layer = []
+    ref_cache_moves_by_layer = []
+    ref_cache_move_cnt_by_layer = []
 
     # Remaining eviction steps are applied layerwise
     for l in range(NUM_LAYERS):
@@ -560,8 +569,8 @@ def test_kvcompress_schedule_evictions(
         # Call schedule_moves kernel
         ref_cache_moves_idx = -torch.ones((num_seqs, num_kv_heads, max_evicted_tokens, 2), dtype=torch.int)
         ref_cache_moves_count = torch.empty((num_seqs, num_kv_heads), dtype=torch.int)
-        out_cache_moves_idx = torch.empty_like(ref_cache_moves_idx)
-        out_cache_moves_count = torch.zeros_like(ref_cache_moves_count)
+        out_cache_moves_idx = -torch.ones_like(ref_cache_moves_idx, dtype=torch.int)
+        out_cache_moves_count = torch.empty_like(ref_cache_moves_count, dtype=torch.int)
 
         ref_schedule_t1_cache_moves(
             ref_cache_moves_idx,
@@ -601,10 +610,15 @@ def test_kvcompress_schedule_evictions(
         print(f'cache_moves_count [{ref_cache_moves_count.shape}]:\n{ref_cache_moves_count}')
 
         print(f'-----\n{out_cache_moves_count}\n---- VS ----\n{ref_cache_moves_count}')
+        print(f'-----\n{out_cache_moves_idx}\n---- VS ----\n{ref_cache_moves_idx}')
 
         mask = ref_cache_moves_idx >= 0
         assert torch.allclose(out_cache_moves_idx[mask], ref_cache_moves_idx[mask])
         assert torch.allclose(out_cache_moves_count, ref_cache_moves_count)
+
+        # Save cache moves for final correctness check
+        ref_cache_moves_by_layer.append(ref_cache_moves_idx)
+        ref_cache_move_cnt_by_layer.append(ref_cache_moves_count)
 
         # Call execute_moves kernel
         ref_key_cache = key_cache_by_layer[l].clone()
@@ -655,7 +669,7 @@ def test_kvcompress_schedule_evictions(
         ref_key_cache_by_layer.append(ref_key_cache)
         ref_value_cache_by_layer.append(ref_value_cache)
 
-    # Final check - check that values match for every head of k/v caches aside from evicted tokens
+    # Final check - check that values match for every head of k/v caches for all non-evicted tokens
     
     # setup remaining (unevicted KVs in each block)
     remaining_kvs_per_block = [
@@ -670,55 +684,88 @@ def test_kvcompress_schedule_evictions(
                 print((s, h, last_v_blk), (l,s,h))
                 remaining_kvs_per_block[l][s, h, last_v_blk] = hanging_token_count[l,s,h]
 
+    # set up cache moves map
+    cache_moves_map = [
+        [
+            [
+                {
+                    ref_cache_moves_by_layer[l][s,h,i,1].item(): ref_cache_moves_by_layer[l][s,h,i,0].item()
+                    for i in range(ref_cache_move_cnt_by_layer[l][s,h])
+                }
+                for h in range(num_kv_heads)
+            ]
+            for s in range(num_seqs)
+        ]
+        for l in range(NUM_LAYERS)
+    ]
+
     total_evicted_blocks_by_seq = torch.zeros(num_seqs, dtype=torch.int)
     current_seq_idx = 0
+    done_evicting_for_current_seq = torch.zeros((NUM_LAYERS, num_kv_heads), dtype=torch.bool)
 
-    # all_kv_metrics = torch.concat(metrics_by_layer)
-    # all_seq_idxs = torch.concat(seq_idxs_by_layer)
-    # all_kv_head_idxs = torch.concat(kv_head_idxs_by_layer)
-    # all_layer_idxs = torch.concat(layer_idxs_by_layer)
-    # all_virtual_block_nums = torch.concat(virtual_block_nums_by_layer)
-    done_evicting_for_current_seq = False
-    for i in sorted_indices:
+    for idx, i in enumerate(sorted_indices):
         block_idx = i // block_size
         block_offset = i % block_size
         s = all_seq_idxs[block_idx]  # array is sorted by seq_idx, metric (ascending)
         l = all_layer_idxs[block_idx]
         h = all_kv_head_idxs[block_idx]
-        v_blk = all_virtual_block_nums[block_idx]
+        v_blk = all_virtual_block_nums[block_idx].item()
+        v_idx = v_blk * block_size + block_offset
 
-        # skip empty token slots
-        print(context_lens_by_layer.shape)
-        if v_blk * block_size + block_offset >= context_lens_by_layer[l,s,h].item():
+        # skip empty evicted token slots
+        #print(context_lens_by_layer.shape)
+        if v_idx >= context_lens_by_layer[l,s,h].item():
             continue
+
+        # register eviction if block is within the eviction range
+        if v_idx >= (context_lens_by_layer[l,s,h] - truncated_evicted_kv_count[s,l,h]).item():
+            print(f'EVICTION (oob): sort_idx {idx}, seq {s}, layer {l}, head {h}, v_idx {v_idx}, blk_idx {block_idx}, blk_offset {block_offset}')
+            remaining_kvs_per_block[l][s,h,v_blk] -= 1
+            if remaining_kvs_per_block[l][s,h,v_blk] == 0:
+                remaining_kvs_per_block[l][s,h,v_blk] = block_size
+                total_evicted_blocks_by_seq[s] += 1
+                print(f"Freed new block: {total_evicted_blocks_by_seq[s]}")
+            continue
+
+        # check if this KV was moved, following reference
+        if v_idx in cache_moves_map[l][s][h]:
+            print(f'MOVE: sort_idx {idx}, seq {s}, layer {l}, head {h}, v_idx {v_idx}, blk_idx {block_idx}, blk_offset {block_offset}')
+            v_idx = cache_moves_map[l][s][h][v_idx]
+            v_blk = v_idx // block_size
+            block_offset = v_idx % block_size
 
         if s != current_seq_idx:
             current_seq_idx = s
-            done_evicting_for_current_seq = False
+            done_evicting_for_current_seq.fill_(False)
         
         p_blk = block_tables_by_layer[l][s,h,v_blk]
-        print(key_cache_by_layer[l].shape)
+        #print(key_cache_by_layer[l].shape)
         key = key_cache_by_layer[l][p_blk,:,block_offset,:].flatten()
         value = value_cache_by_layer[l][p_blk,:,block_offset]
 
         key_kvc_cache = ref_key_cache_by_layer[l][p_blk,:,block_offset,:].flatten()
         value_kvc_cache = ref_value_cache_by_layer[l][p_blk,:,block_offset]
 
-        if not (
-            torch.allclose(key_kvc_cache, key) and
-            torch.allclose(value_kvc_cache, value)
+        if (
+            not (
+                torch.allclose(key_kvc_cache, key) and
+                torch.allclose(value_kvc_cache, value)
+            )
         ):
+            print(f'EVICTION: sort_idx {idx}, seq {s}, layer {l}, head {h}, v_idx {v_idx}, blk_idx {block_idx}, blk_offset {block_offset}')
             remaining_kvs_per_block[l][s,h,v_blk] -= 1
             if remaining_kvs_per_block[l][s,h,v_blk] == 0:
                 remaining_kvs_per_block[l][s,h,v_blk] = block_size
                 total_evicted_blocks_by_seq[s] += 1
+                print(f"Freed new block: {total_evicted_blocks_by_seq[s]}")
 
             # Once we stop evicting we should not start evicting until sequence changes.
             # This is because indices within each unique seq_idx should be sorted
             # by ascending metric and metric is used for eviction priority (descending)
-            assert not done_evicting_for_current_seq
+            assert not done_evicting_for_current_seq[l,h]
         else:
-            done_evicting_for_current_seq = True
+            print(f'equal: sort_idx {idx}, seq {s}, layer {l}, head {h}, v_idx {v_idx}, blk_idx {block_idx}, blk_offset {block_offset}')
+            done_evicting_for_current_seq[l,h] = True
 
     for i in range(num_seqs):
         print(f'seq {i}: evicted {total_evicted_blocks_by_seq[i]}/{evicted_blocks_per_seq[i]}')
