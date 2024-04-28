@@ -223,9 +223,8 @@ def test_kvcompress_paged_attention(
     total_t1_blocks = ((seq_context_lens + block_size - 1) // block_size).sum().item()
     total_t2_blocks = ((context_lens + block_size - 1) // block_size).sum().item()
     t1_block_tables = []
-    t2_block_tables = torch.zeros((total_t2_blocks, num_kv_heads), dtype=torch.int)
+    t2_block_tables = torch.zeros((total_t1_blocks, num_kv_heads), dtype=torch.int)
     print(t2_block_tables)
-    assert t2_block_tables.max().item() < total_t2_blocks
     print(((context_lens + block_size - 1) // block_size))
     # Track running T1/T2 block indices as we add blocks to the tables
     t1_block_idx = 0
