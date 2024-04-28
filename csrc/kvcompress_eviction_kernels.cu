@@ -23,7 +23,7 @@
 
 namespace kvcompress {
 
-template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_evictions_kernel(
+template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   int* __restrict__ evicted_kv_indices,             // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   int* __restrict__ evicted_kv_count,               // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ sorted_indices,           // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
@@ -57,7 +57,7 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   for (int i = 0; i < output_seq_stride; ++i) {
     evicted_kv_count[output_head_offset + i] = 0;
   }
-  
+
   if (blocks_to_evict == 0) {
     return;
   }
@@ -76,12 +76,12 @@ template<int BLOCK_SIZE, int MAX_TOTAL_KV_HEADS> __global__ void schedule_cache_
   printf("seq %d total toks: %d\n", seq_idx, seq_total_tokens);
 
   int evicted_block_count = 0;  // track number of evicted blocks for this sequence
-  printf("seq %d tot kv heads: %d/%d\n", seq_idx, output_seq_stride, MAX_TOTAL_KV_HEADS);
+  printf("seq %d tot kv heads: %d/%d\n", seq_idx, output_seq_stride, output_seq_stride);
 
   // use shared memory since MAX_TOTAL_KV_HEADS will max out registers
   extern __shared__ char shmem[];
   int* remaining_kv_count = reinterpret_cast<int*>(shmem);  // [num_seqs_per_block, MAX_TOTAL_KV_HEADS]
-  const int thread_offset = threadIdx.x * MAX_TOTAL_KV_HEADS;
+  const int thread_offset = threadIdx.x * output_seq_stride;
 
   //int remaining_kv_count[MAX_TOTAL_KV_HEADS];  // track number of number of KVs remaining in current block for each head
   for (int i = 0; i < output_seq_stride; ++i) {
@@ -156,7 +156,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
   int evict_count = 0;  // number of KVs scheduled for eviction that we've skipped over without moving into an earlier slot (and will therefore be lost)
   for (int i = 0; i < evicted_kv_cnt; ++i) {
     const int src_kv_idx = context_lens[seq_head_idx] - 1 - i;
-    const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count - move_count];
+    const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count];
     const int dst_kv_idx = evicted_kv_indices[seq_layer_head_offset + move_count];
 
     printf("seq: %d, head: %d, i: %d, src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d, move_cnt: %d, evict_cnt: %d\n",
@@ -181,7 +181,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     printf("moving: seq: %d, head: %d, i: %d, src_kv_idx: %d, src_p_idx: %d, dst_kv_idx: %d, dst_p_idx: %d\n",
       seq_idx, head_idx, i, src_kv_idx, src_physical_kv_idx, dst_kv_idx, dst_physical_kv_idx);
 
-    const int cache_moves_idx_idx = cache_moves_offset + (move_count++);
+    const int cache_moves_idx_idx = cache_moves_offset + (move_count++) * 2;
     cache_moves_idx[cache_moves_idx_idx] = dst_physical_kv_idx;
     cache_moves_idx[cache_moves_idx_idx + 1] = src_physical_kv_idx;
   }
@@ -248,7 +248,7 @@ template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
     printf("moving: seq: %d, head: %d, i: %d, src_kv_idx: %d, src_p_idx: %d, dst_kv_idx: %d, dst_p_idx: %d\n",
       seq_idx, head_idx, i, src_kv_idx, src_physical_kv_idx, dst_kv_idx, dst_physical_kv_idx);
 
-    const int cache_moves_idx_idx = cache_moves_offset + (move_count++);
+    const int cache_moves_idx_idx = cache_moves_offset + (move_count++) * 2;
     cache_moves_idx[cache_moves_idx_idx] = dst_physical_kv_idx;
     cache_moves_idx[cache_moves_idx_idx + 1] = src_physical_kv_idx;
   }
@@ -276,16 +276,17 @@ __global__ void execute_cache_moves_kernel(
   const int moved_kv_count = cache_move_count[seq_head_idx];
   const int moved_kv_offset = blockIdx.x * blockDim.x + threadIdx.x;
   const int max_parallel_kv = gridDim.x * blockDim.x;
-  const int move_table_offset = seq_head_idx * max_num_moves * 2;
+  const int move_table_offset = seq_head_idx * max_num_moves;
 
   for (
     int i = move_table_offset + moved_kv_offset;
     i < move_table_offset + moved_kv_count;
     i += max_parallel_kv) {
-    const int src_idx = cache_move_idx[i+1];
+    const int move_pair_idx = i * 2;
+    const int src_idx = cache_move_idx[move_pair_idx+1];
     const int src_block_start = src_idx / BLOCK_SIZE * BLOCK_STRIDE;
     const int src_block_offset = src_idx % BLOCK_SIZE;
-    const int dst_idx = cache_move_idx[i];
+    const int dst_idx = cache_move_idx[move_pair_idx];
     const int dst_block_start = dst_idx / BLOCK_SIZE * BLOCK_STRIDE;
     const int dst_block_offset = dst_idx % BLOCK_SIZE;
 
@@ -294,27 +295,33 @@ __global__ void execute_cache_moves_kernel(
     const int dst_k_start = dst_block_start + dst_block_offset * VEC_SIZE;
     const int dst_v_start = dst_block_start + dst_block_offset;
 
+    printf("src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
+      src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
+
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += K_STRIDE) {
       const int dst_k_group_start = dst_k_start + j;
       const int src_k_group_start = src_k_start + j;
 #pragma unroll
       for (int k = 0; k < VEC_SIZE; ++k) {
+        printf("(j=%d, k=%d), ", j, k);
         k_cache[dst_k_group_start + k] = k_cache[src_k_group_start + k];
       }
     }
-  
+    printf("\nj: ");
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += BLOCK_SIZE) {
+      printf("%d, ", j);
       v_cache[dst_v_start + j] = v_cache[src_v_start + j];
     }
+    printf("\n");
   }
 }
 
 }  // namespace kvcompress
 
-#define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, TOTAL_KV_HEADS) \
-  kvcompress::schedule_cache_evictions_kernel<BLOCK_SIZE, TOTAL_KV_HEADS><<<grid,block,shared_mem,stream>>>( \
+#define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE) \
+  kvcompress::schedule_cache_evictions_kernel<BLOCK_SIZE><<<grid,block,shared_mem,stream>>>( \
     evicted_kv_indices_ptr, \
     evicted_kv_count_ptr, \
     sorted_indices_ptr, \
@@ -330,32 +337,19 @@ __global__ void execute_cache_moves_kernel(
     total_blocks, \
     max_evicted_tokens);
 
-#define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE, TOTAL_KV_HEADS) \
-  if (TOTAL_KV_HEADS <= 1) { \
-    SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 1) \
-  } else if (TOTAL_KV_HEADS <= 2) { \
-    SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 2) \
-  } else if (TOTAL_KV_HEADS <= 4) { \
-    SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 4) \
-  } else if (TOTAL_KV_HEADS <= 8) { \
-    SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE_TOTAL_KV_HEADS(BLOCK_SIZE, 8) \
-  } else { \
-    TORCH_CHECK(false, "Unsupported num kv heads * num layers: ", TOTAL_KV_HEADS); \
-  }
-
-#define SCHEDULE_EVICTIONS_KERNEL(BLOCK_SIZE, TOTAL_KV_HEADS) \
+#define SCHEDULE_EVICTIONS_KERNEL(BLOCK_SIZE) \
   switch (BLOCK_SIZE) { \
     case 1: \
-      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(1, TOTAL_KV_HEADS) \
+      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(1) \
       break; \
     case 2: \
-      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(2, TOTAL_KV_HEADS) \
+      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(2) \
       break; \
     case 4: \
-      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(4, TOTAL_KV_HEADS) \
+      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(4) \
       break; \
     case 8: \
-      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(8, TOTAL_KV_HEADS) \
+      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(8) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
@@ -378,7 +372,6 @@ void schedule_cache_evictions(
   const int num_kv_heads = evicted_kv_indices.size(2);
   const int max_evicted_tokens = evicted_kv_indices.size(3);
   const int total_blocks = layer_by_block.size(0);
-  const int total_kv_heads = num_layers * num_kv_heads;
 
   int* evicted_kv_indices_ptr = reinterpret_cast<int*>(evicted_kv_indices.data_ptr());
   int* evicted_kv_count_ptr = reinterpret_cast<int*>(evicted_kv_count.data_ptr());
@@ -397,7 +390,7 @@ void schedule_cache_evictions(
   const at::cuda::OptionalCUDAGuard device_guard(device_of(evicted_kv_indices));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  SCHEDULE_EVICTIONS_KERNEL(block_size, total_kv_heads)
+  SCHEDULE_EVICTIONS_KERNEL(block_size)
 }
 
 #define T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(BLOCK_SIZE) \
@@ -541,13 +534,13 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
       break; \
     case 2: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
+      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 2) \
       break; \
     case 4: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
+      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 4) \
       break; \
     case 8: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 1) \
+      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 8) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
