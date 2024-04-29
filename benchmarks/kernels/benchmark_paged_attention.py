@@ -27,7 +27,6 @@ def main(
     do_profile: bool,
     device: str = "cuda",
     kv_cache_dtype: Optional[str] = None,
-    benchmark_kvc: bool = False,
 ) -> None:
     random.seed(seed)
     torch.random.manual_seed(seed)
@@ -64,12 +63,6 @@ def main(
         block_tables.append(block_table)
     block_tables = torch.tensor(block_tables, dtype=torch.int, device=device)
 
-    if benchmark_kvc:
-        # context_lens should be [num_seqs X num_kv_heads] tensor
-        context_lens = context_lens[:,None].repeat(1, num_kv_heads)
-        # block_table should be [num_seqs X num_kv_heads X max_num_blocks_per_seq] tensor
-        block_tables = block_tables[:,None].repeat(1, num_kv_heads, 1)
-
     # Create the KV cache.
     key_caches, value_caches = create_kv_caches_with_random(NUM_BLOCKS,
                                                             block_size,
@@ -78,8 +71,7 @@ def main(
                                                             head_size,
                                                             kv_cache_dtype,
                                                             dtype,
-                                                            device=device,
-                                                            use_kvc=benchmark_kvc)
+                                                            device=device)
     key_cache, value_cache = key_caches[0], value_caches[0]
 
     # Prepare for the paged attention kernel.
@@ -99,7 +91,7 @@ def main(
         )
         max_logits = torch.empty_like(exp_sums)
 
-    def run_cuda_benchmark(num_iters: int, profile: bool = False, kvc: bool = False) -> float:
+    def run_cuda_benchmark(num_iters: int, profile: bool = False) -> float:
         torch.cuda.synchronize()
         if profile:
             torch.cuda.cudart().cudaProfilerStart()
@@ -109,7 +101,6 @@ def main(
         kv_scale = 1.0
 
         for _ in range(num_iters):
-<<<<<<< HEAD
             if version == "v1":
                 ops.paged_attention_v1(
                     output,
@@ -145,95 +136,8 @@ def main(
                     kv_cache_dtype,
                     kv_scale,
                 )
-            elif version == "kvc":
-                ops.kvcompress_paged_attention_v1(
-                    output,
-                    query,
-                    key_cache,
-                    value_cache,
-                    num_kv_heads,
-                    scale,
-                    block_tables,
-                    context_lens,
-                    block_size,
-                    max_context_len,
-                    alibi_slopes,
-                    kv_cache_dtype,
-                )
-=======
-            if kvc:
-                if version == "v1":
-                    ops.kvcompress_paged_attention_v1(
-                        output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        num_kv_heads,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                        kv_cache_dtype,
-                    )
-                elif version == "v2":
-                    ops.kvcompress_paged_attention_v2(
-                        output,
-                        exp_sums,
-                        max_logits,
-                        tmp_output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        num_kv_heads,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                        kv_cache_dtype,
-                    )
-                else:
-                    raise ValueError(f"Invalid version: {version}")
->>>>>>> 5a32c542 (add equality check to kernel benchmarking script)
             else:
-                if version == "v1":
-                    ops.paged_attention_v1(
-                        output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        num_kv_heads,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                        kv_cache_dtype,
-                    )
-                elif version == "v2":
-                    ops.paged_attention_v2(
-                        output,
-                        exp_sums,
-                        max_logits,
-                        tmp_output,
-                        query,
-                        key_cache,
-                        value_cache,
-                        num_kv_heads,
-                        scale,
-                        block_tables,
-                        context_lens,
-                        block_size,
-                        max_context_len,
-                        alibi_slopes,
-                        kv_cache_dtype,
-                    )
-                else:
-                    raise ValueError(f"Invalid version: {version}")
+                raise ValueError(f"Invalid version: {version}")
         torch.cuda.synchronize()
 
         end_time = time.perf_counter()
@@ -252,23 +156,6 @@ def main(
     else:
         latency = run_benchmark(num_iters=100, profile=False)
     print(f"Kernel running time: {latency * 1000000:.3f} us")
-
-    # Benchmark KV-Compress kernels.
-    if benchmark_kvc:
-        vanilla_output = output.clone().cpu()
-
-        print("Cooling down for KV-Compress benchmark...")
-        time.sleep(1)
-        print("Warming up KV-Compress kernel...")
-        run_benchmark(num_iters=3, profile=False, kvc=True)
-        
-        if do_profile:
-            latency = run_benchmark(num_iters=1, profile=True, kvc=True)
-        else:
-            latency = run_benchmark(num_iters=100, profile=False, kvc=True)
-
-        print(f"KV-Compress kernel running time: {latency * 1000000:.3f} us")
-        assert torch.allclose(vanilla_output, output.cpu()), f"Outputs not equal: {(vanilla_output - output.cpu()).abs().max()}"
 
 
 if __name__ == '__main__':
@@ -322,5 +209,4 @@ if __name__ == '__main__':
         seed=args.seed,
         do_profile=args.profile,
         kv_cache_dtype=args.kv_cache_dtype,
-        benchmark_kvc=args.kv_compress,
     )
