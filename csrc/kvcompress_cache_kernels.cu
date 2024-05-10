@@ -29,7 +29,9 @@ __global__ void single_tier_reshape_and_cache_kernel(
   const scalar_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
   cache_t* __restrict__ key_cache,            // [num_blocks, head_size/x, block_size, x]
   cache_t* __restrict__ value_cache,          // [num_blocks, head_size, block_size]
+  float* __restrict__ kv_metrics,             // [num_blocks, block_size]
   const int64_t* __restrict__ slot_mapping,   // [num_tokens, num_heads]
+  const float* __restrict__ kv_metric_head_bias,  // [num_heads]
   const int key_stride,
   const int value_stride,
   const int num_heads,
@@ -46,6 +48,11 @@ __global__ void single_tier_reshape_and_cache_kernel(
     if (slot_idx < 0) {
       // Padding token that should be ignored.
       continue;
+    }
+
+    // Initialize metric for current KV to the bias for its head
+    if (i % head_size == 0) {
+      kv_metrics[slot_idx] = kv_metric_head_bias[head_idx];
     }
 
     const int64_t block_idx = slot_idx / block_size;
@@ -92,7 +99,9 @@ __global__ void single_tier_reshape_and_cache_kernel(
     reinterpret_cast<KV_T*>(value.data_ptr()),                                                     \
     reinterpret_cast<CACHE_T*>(key_cache.data_ptr()),                                              \
     reinterpret_cast<CACHE_T*>(value_cache.data_ptr()),                                            \
+    kv_metrics.data_ptr<float>(),                                                                  \
     slot_mapping.data_ptr<int64_t>(),                                                              \
+    kv_metric_head_bias.data_ptr<float>(),                                                         \
     key_stride,                                                                                    \
     value_stride,                                                                                  \
     num_heads,                                                                                     \
@@ -106,7 +115,9 @@ void kvcompress_reshape_and_cache(
   torch::Tensor& value,         // [num_tokens, num_heads, head_size]
   torch::Tensor& key_cache,     // [num_blocks, num_heads, head_size/x, block_size, x]
   torch::Tensor& value_cache,   // [num_blocks, num_heads, head_size, block_size]
+  torch::Tensor& kv_metrics,    // [num_blocks, block_size]
   torch::Tensor& slot_mapping,  // [num_tokens, num_heads]
+  torch::Tensor& kv_metric_head_bias, // [num_heads]
   const std::string& kv_cache_dtype,
   const float kv_scale)
 {
