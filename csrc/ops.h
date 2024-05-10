@@ -30,7 +30,8 @@ void kvcompress_paged_attention_v1(
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-  const std::string& kv_cache_dtype);
+  const std::string& kv_cache_dtype,
+  float kv_scale);
 
 void kvcompress_t2_paged_attention_v1(
   torch::Tensor& out,
@@ -46,7 +47,8 @@ void kvcompress_t2_paged_attention_v1(
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-  const std::string& kv_cache_dtype);
+  const std::string& kv_cache_dtype,
+  float kv_scale);
 
 void paged_attention_v2(
   torch::Tensor& out,
@@ -83,7 +85,8 @@ void kvcompress_paged_attention_v2(
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-  const std::string& kv_cache_dtype);
+  const std::string& kv_cache_dtype,
+  float kv_scale);
 
 void kvcompress_t2_paged_attention_v2(
   torch::Tensor& out,
@@ -103,7 +106,8 @@ void kvcompress_t2_paged_attention_v2(
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-  const std::string& kv_cache_dtype);
+  const std::string& kv_cache_dtype,
+  float kv_scale);
 
 void schedule_cache_evictions(
   torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
