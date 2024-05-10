@@ -161,6 +161,7 @@ endif()
 
 set(VLLM_EXT_SRC
   "csrc/cache_kernels.cu"
+  "csrc/kvcompress_cache_kernels.cu"
   "csrc/attention/attention_kernels.cu"
   "csrc/attention/kvcompress_attention_kernels.cu"
   "csrc/attention/kvcompress_t2_attention_kernels.cu"
