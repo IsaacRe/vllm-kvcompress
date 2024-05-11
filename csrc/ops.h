@@ -123,14 +123,13 @@ void schedule_cache_evictions(
   const int block_size);
 
 void schedule_t1_cache_moves(
-  torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
-  torch::Tensor& cache_moves_count,         // [num_seqs, num_kv_heads]
+  torch::Tensor& cache_moves_idx,           // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
+  torch::Tensor& cache_moves_count,         // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
-  torch::Tensor& block_tables,              // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
-  torch::Tensor& context_lens,              // [num_seqs, num_kv_heads]
-  const int block_size,
-  const int layer_idx);
+  torch::Tensor& block_tables,              // [num_layers, num_seqs, num_kv_heads, max_num_blocks_per_seq]
+  torch::Tensor& context_lens,              // [num_layers, num_seqs, num_kv_heads]
+  const int block_size);
 
 void schedule_t2_cache_moves(
   torch::Tensor& cache_moves_idx,           // [num_seqs, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)
@@ -146,8 +145,8 @@ void schedule_t2_cache_moves(
 void execute_cache_moves(
   torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
-  torch::Tensor& cache_moves_idx,       // [num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
-  torch::Tensor& cache_moves_count,     // [num_seqs, num_kv_heads]
+  torch::Tensor& cache_moves_idx,       // [num_layers, num_seqs, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
+  torch::Tensor& cache_moves_count,     // [num_layers, num_seqs, num_kv_heads]
   int blocks_per_head,
   int threads_per_head);
 
