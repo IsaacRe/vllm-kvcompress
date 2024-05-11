@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from vllm.block import LogicalTokenBlock
+from vllm.kvcompress.block import BlockStateView
 from vllm.lora.request import LoRARequest
 from vllm.sampling_params import SamplingParams
 
@@ -481,17 +482,17 @@ class SequenceGroup:
     def get_seqs(
         self,
         status: Optional[SequenceStatus] = None,
-    ) -> List[Sequence]:
+    ) -> List[SequenceType]:
         return list(self.seqs_dict.values()) if status is None else [
             seq for seq in self.seqs_dict.values() if seq.status == status
         ]
 
-    def get_unfinished_seqs(self) -> List[Sequence]:
+    def get_unfinished_seqs(self) -> List[SequenceType]:
         return [
             seq for seq in self.seqs_dict.values() if not seq.is_finished()
         ]
 
-    def get_finished_seqs(self) -> List[Sequence]:
+    def get_finished_seqs(self) -> List[SequenceType]:
         return [seq for seq in self.seqs_dict.values() if seq.is_finished()]
 
     def update_num_computed_tokens(self, num_new_computed_tokens: int):
@@ -572,7 +573,7 @@ class SequenceGroupMetadata:
         is_prompt: bool,
         seq_data: Dict[int, SequenceData],
         sampling_params: SamplingParams,
-        block_tables: Dict[int, List[int]],
+        block_tables: Dict[int, Union[List[int], BlockStateView]],
         token_chunk_size: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
         computed_block_nums: Optional[List[int]] = None,

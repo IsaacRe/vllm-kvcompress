@@ -287,7 +287,7 @@ class LlamaModel(nn.Module):
                 positions,
                 hidden_states,
                 kv_caches[i],
-                attn_metadata,
+                attn_metadata.set_layer(i),
                 residual,
             )
         hidden_states, _ = self.norm(hidden_states, residual)

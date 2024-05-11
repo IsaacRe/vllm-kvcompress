@@ -613,3 +613,6 @@ def find_nccl_library():
             raise ValueError("NCCL only supports CUDA and ROCm backends.")
         logger.info(f"Found nccl from library {so_file}")
     return so_file
+
+def get_dtype_size(dtype: torch.dtype) -> int:
+    return torch.tensor([], dtype=dtype).element_size()

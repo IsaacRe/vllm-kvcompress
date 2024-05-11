@@ -7,7 +7,7 @@ import vllm
 from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig, LoadConfig,
                          LoRAConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpeculativeConfig,
-                         VisionLanguageConfig)
+                         VisionLanguageConfig, KVCompressConfig)
 from vllm.core.scheduler import Scheduler, SchedulerOutputs
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics import StatLogger, Stats
@@ -19,6 +19,7 @@ from vllm.engine.ray_utils import initialize_ray_cluster
 from vllm.executor.executor_base import ExecutorBase
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
+from vllm.kvcompress.state import KVCompressState
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (MultiModalData, SamplerOutput, Sequence,
@@ -91,6 +92,7 @@ class LLMEngine:
         vision_language_config: Optional[VisionLanguageConfig],
         speculative_config: Optional[SpeculativeConfig],
         decoding_config: Optional[DecodingConfig],
+        kvcompress_config: Optional[KVCompressConfig],
         executor_class: Type[ExecutorBase],
         log_stats: bool,
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
@@ -131,6 +133,7 @@ class LLMEngine:
         self.speculative_config = speculative_config
         self.load_config = load_config
         self.decoding_config = decoding_config or DecodingConfig()
+        self.kvcompress_config = kvcompress_config
         self.log_stats = log_stats
 
         if not self.model_config.skip_tokenizer_init:
@@ -145,6 +148,15 @@ class LLMEngine:
         self.generation_config_fields = _load_generation_config_dict(
             model_config)
 
+        # Initialize KV-Compress block tables before profiling
+        # for model memory usage/KV cache allocation
+        self.kvcompress_metrics = None
+        if self.kvcompress_config:
+            kvcompress_shared_state = KVCompressState(
+
+            ) # TODO return "KVCMetadata" to executor instead to make both metrics available in cache and block tables available during attention
+            self.kvcompress_metrics = kvcompress_shared_state.kv_metrics
+            
         self.model_executor = executor_class(
             model_config=model_config,
             cache_config=cache_config,
@@ -152,6 +164,9 @@ class LLMEngine:
             scheduler_config=scheduler_config,
             device_config=device_config,
             lora_config=lora_config,
+            kvcompress_config=kvcompress_config,
+            kvc_block_tables=(kvcompress_shared_state.block_state
+                              if kvcompress_config else None),
             vision_language_config=vision_language_config,
             speculative_config=speculative_config,
             load_config=load_config,
@@ -202,7 +217,12 @@ class LLMEngine:
         # Create the scheduler.
         # NOTE: the cache_config here have been updated with the numbers of
         # GPU and CPU blocks, which are profiled in the distributed executor.
-        self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        self.scheduler = Scheduler(
+            scheduler_config,
+            cache_config,
+            lora_config,
+            kvcompress_config,
+            kvcompress_shared_state if kvcompress_config else None)
 
         # Metric Logging.
         if self.log_stats:
@@ -554,15 +574,26 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
+        seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
 
         if not scheduler_outputs.is_empty():
+            if self.kvcompress_config:
+                # Temp metrics must be cleared before each forward pass to ensure correct
+                # metric aggregation afterward
+                self.kvcompress_metrics.clear_temp_metrics()
+            if cache_moves:
+                self.model_executor.execute_cache_moves(cache_moves, self.kvcompress_metrics)
             output = self.model_executor.execute_model(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
                 blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                 blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                num_lookahead_slots=scheduler_outputs.num_lookahead_slots)
+                num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
+                kv_metrics=self.kvcompress_metrics)
+            if self.kvcompress_config:
+                # Aggregate KV metrics that were collected to be used in sorting during
+                # later iterations.
+                self.kvcompress_metrics.aggregate()
         else:
             output = []
 

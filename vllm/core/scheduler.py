@@ -3,10 +3,15 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
+import torch
 
-from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
+from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig, KVCompressConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.core.policy import Policy, PolicyFactory
+from vllm.kvcompress.block_manager import BlockSpaceManagerKVC
+from vllm.kvcompress.block import BlockState, BlockStateView
+from vllm.kvcompress.scheduler import CompressionScheduler, CacheMoves
+from vllm.kvcompress.state import KVCompressState
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
@@ -242,6 +247,8 @@ class Scheduler:
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
         lora_config: Optional[LoRAConfig],
+        kvcompress_config: Optional[KVCompressConfig],
+        kvcompress_shared_state: Optional[KVCompressState],
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
@@ -249,6 +256,7 @@ class Scheduler:
         # simple and NOT fair. It can lead to starvation of some
         # LoRAs. This should be improved in the future.
         self.lora_config = lora_config
+        self.kvcompress_config = kvcompress_config
 
         if self.scheduler_config.chunked_prefill_enabled:
             self.prompt_limit = self.scheduler_config.max_model_len
@@ -257,17 +265,35 @@ class Scheduler:
                 self.scheduler_config.max_model_len,
                 self.scheduler_config.max_num_batched_tokens)
 
-        BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(
-            version="v2" if self.scheduler_config.
-            use_v2_block_manager else "v1")
+        # Create the block space manager. If using KV-Compress initialize
+        # the compression scheduler.
+        self.kvcompress_scheduler = None
+        if self.kvcompress_config:
+            assert kvcompress_shared_state is not None
+            # Do not yet support swap with KV-Compress since any swaps would need
+            # coordination with the metrics tensor
+            self.scheduler_config.disable_swap = True
+            self.block_manager = BlockSpaceManagerKVC(
+                block_size=cache_config.block_size,
+                num_gpu_blocks=cache_config.num_gpu_blocks,
+                num_cpu_blocks=cache_config.num_cpu_blocks,
+                config=self.kvcompress_config,
+                block_state=kvcompress_shared_state.block_state)
+            self.kvcompress_scheduler = CompressionScheduler(
+                config=self.kvcompress_config,
+                block_manager=self.block_manager,
+                compression_metrics=kvcompress_shared_state.kv_metrics)
+        else:
+            BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(
+                version="v2" if self.scheduler_config.
+                use_v2_block_manager else "v1")
 
-        # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=self.cache_config.num_gpu_blocks,
-            num_cpu_blocks=self.cache_config.num_cpu_blocks,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching)
+            self.block_manager = BlockSpaceManagerImpl(
+                block_size=self.cache_config.block_size,
+                num_gpu_blocks=self.cache_config.num_gpu_blocks,
+                num_cpu_blocks=self.cache_config.num_cpu_blocks,
+                sliding_window=self.cache_config.sliding_window,
+                enable_caching=self.cache_config.enable_prefix_caching)
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
@@ -289,6 +315,10 @@ class Scheduler:
     @property
     def lora_enabled(self) -> bool:
         return bool(self.lora_config)
+    
+    @property
+    def kvcompress_enabled(self) -> bool:
+        return bool(self.kvcompress_config)
 
     @property
     def num_decoding_tokens_per_seq(self) -> int:
@@ -862,6 +892,25 @@ class Scheduler:
         else:
             return self._schedule_default()
 
+    def _schedule_kvcompress(self) -> Optional[CacheMoves]:
+        """Check whether to schedule KV cache compression this 
+        iteration. If compression is scheduled, the KV-Compress
+        scheduler will determine which sequences to compress, and
+        return a dict of freed blocks for each compressed sequence
+        and tensor of physical cache moves that must be actioned
+        for the compression to take effect. The freed blocks must
+        be recorded by the scheduler before the current round of
+        inference scheduling and the cache moves must be executed
+        by the cache engine before the current inference step.
+        """
+        kvc_output = self.kvcompress_scheduler.schedule_compression()
+        # Free blocks that were removed by compression
+        self.block_manager.free_compressed_blocks(
+            kvc_output.freed_block_count
+        )
+        # Return physical cache moves to be executed by cache engine
+        return kvc_output.cache_moves
+
     def _can_append_slots(self, seq_group: SequenceGroup) -> bool:
         """Determine whether or not we have enough space in the KV cache to
         continue generation of the sequence group.
@@ -883,10 +932,14 @@ class Scheduler:
             num_lookahead_slots=self._get_num_lookahead_slots(is_prefill),
         )
 
-    def schedule(self) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
+    def schedule(
+        self
+    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, Optional[CacheMoves]]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
+        cache_moves = (self._schedule_kvcompress()
+                       if self.kvcompress_enabled else None)
         scheduler_outputs = self._schedule()
         now = time.time()
 
@@ -901,12 +954,12 @@ class Scheduler:
             # seq_id -> SequenceData
             seq_data: Dict[int, SequenceData] = {}
             # seq_id -> physical block numbers
-            block_tables: Dict[int, List[int]] = {}
+            block_tables: Dict[int, Union[List[int], BlockStateView]] = {}
 
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
-                block_tables[seq_id] = self.block_manager.get_block_table(seq)
+                block_tables[seq_id] = self.block_manager.get_block_table(seq_id)
                 self.block_manager.access_all_blocks_in_seq(seq, now)
 
             common_computed_block_nums = (
@@ -943,7 +996,7 @@ class Scheduler:
             self.block_manager.mark_blocks_as_computed(
                 scheduled_seq_group.seq_group)
 
-        return seq_group_metadata_list, scheduler_outputs
+        return seq_group_metadata_list, scheduler_outputs, cache_moves
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)
@@ -1003,6 +1056,8 @@ class Scheduler:
         # over sequence groups with a single sequence.
         # TODO(woosuk): Support recomputation for sequence groups with multiple
         # sequences. This may require a more sophisticated CUDA kernel.
+        if self.scheduler_config.disable_swap:
+            preemption_mode = PreemptionMode.RECOMPUTE
         if preemption_mode is None:
             if seq_group.get_max_num_running_seqs() == 1:
                 preemption_mode = PreemptionMode.RECOMPUTE
@@ -1032,6 +1087,7 @@ class Scheduler:
         seq_group: SequenceGroup,
         blocks_to_swap_out: Dict[int, int],
     ) -> None:
+        assert not self.scheduler_config.disable_swap
         self._swap_out(seq_group, blocks_to_swap_out)
 
     def _swap_in(

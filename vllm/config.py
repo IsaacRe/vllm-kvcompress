@@ -9,6 +9,7 @@ from packaging.version import Version
 from transformers import PretrainedConfig
 
 from vllm.logger import init_logger
+from vllm.utils import get_dtype_size
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.transformers_utils.config import get_config, get_hf_text_config
 from vllm.utils import (get_cpu_memory, get_nvcc_cuda_version, is_cpu, is_hip,
@@ -298,14 +299,17 @@ class CacheConfig:
         num_gpu_blocks_override: Optional[int] = None,
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
+        enable_kvcompress: bool = False,
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
-        self.swap_space_bytes = swap_space * _GB
+        # Swap-preemption not yet supported with KV-Compress
+        self.swap_space_bytes = 0 if enable_kvcompress else swap_space * _GB
         self.num_gpu_blocks_override = num_gpu_blocks_override
         self.cache_dtype = cache_dtype
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
+        self.enable_kvcompress = enable_kvcompress
         self._verify_args()
         self._verify_cache_dtype()
 
@@ -319,6 +323,11 @@ class CacheConfig:
         return {key: str(value) for key, value in self.__dict__.items()}
 
     def _verify_args(self) -> None:
+        if self.enable_kvcompress:
+            if self.sliding_window is not None:
+                raise ValueError(
+                    "Sliding window and KV-Compress are not compatible")
+
         if self.gpu_memory_utilization > 1.0:
             raise ValueError(
                 "GPU memory utilization must be less than 1.0. Got "
@@ -539,6 +548,118 @@ class ParallelConfig:
                              "run with Ray.")
 
 
+class KVCompressConfig:
+    """Configuration for KV-Compress
+    
+    Since all KVs for a particular sequence need to be compressed at the
+    same time, a set of sequences will be selected each iteration
+    so that the total KV count between them remains under the configured
+    max_kv_per_compression. The need for limiting the number of KVs during
+    compression is due to the reliance on running torch.sort over the metrics
+    for all KVs implicated in the compression. Runtime for torch.sort begins
+    scaling linearly with array length for large arrays, so to keep the 
+    compression latency minimal, the number of KVs per iteration
+    needs to be kept small (< ~100,000,000). Additionally, the memory
+    overhead for torch.sort for large tensors is ~8x the footprint
+    of the input array, so we keep it small to leave more space for
+    KV cache. 
+
+    Args:
+        target_compression_rate: The target compression rate for each
+            sequence.
+        max_compression_rate: Maximum compression rate we can reach
+            before resorting to preemption.
+        use_tiered_block_table: Whether two use two-tiered block-table
+            to reduce memory footprint of the block tables.
+        max_num_t1_blocks: For KV-Compress tiered block table, max number
+            of blocks in the tier-1 block table.
+        max_kv_per_compression: The maximum number of KVs that will be
+            compressed during each iteration of KV-Compress.
+        protected_window_size: The minimum sequence length before we
+            begin compression for a sequence. We do not compress the last
+            min_compressible_len tokens.
+    """
+    def __init__(
+        self,
+        target_compression_rate: float,
+        max_compression_rate: float,
+        compression_interval: int,
+        use_tiered_block_tables: bool,
+        num_layers: int,
+        num_kv_heads: int,
+        max_num_t1_blocks: int,
+        max_num_t2_blocks: int,
+        max_kv_per_compression: int,
+        protected_window_size: int,
+    ) -> None:
+        self.target_compression_rate = target_compression_rate
+        self.max_compression_rate = max_compression_rate
+        self.compression_interval = compression_interval
+        self.num_layers = num_layers
+        self.num_kv_heads = num_kv_heads
+        self.use_tiered_block_tables = use_tiered_block_tables
+        self.max_num_t1_blocks = max_num_t1_blocks
+        self.max_num_t2_blocks = max_num_t2_blocks
+        self.max_kv_per_compression = max_kv_per_compression
+        self.protected_window_size = protected_window_size
+
+        self._verify_args()
+
+    def _verify_args(self) -> None:
+        if (self.use_tiered_block_tables):
+            raise ValueError("use_tiered_block_tables not yet supported")
+
+        if (self.target_compression_rate < 0.0
+            or self.target_compression_rate >= 1.0):
+            raise ValueError("target_compression_rate must be in [0, 1)")
+        
+        if (self.max_compression_rate < 0.0
+            or self.max_compression_rate >= 1.0):
+            raise ValueError("max_compression_rate must be in [0, 1)")
+        
+        if self.compression_interval < 1:
+            raise ValueError("compression_interval must be >= 1")
+        
+        if self.use_tiered_block_tables and self.max_num_t1_blocks <= 0:
+            raise ValueError("max_num_t1_blocks must be positive")
+        
+        if (self.use_tiered_block_tables
+            and self.max_num_t2_blocks <= self.max_num_t1_blocks):
+            raise ValueError("max_num_t2_blocks must be >= max_num_t1_blocks")
+        
+        if self.num_layers <= 0 or self.num_kv_heads <= 0:
+            raise ValueError(
+                "num_layers and num_kv_heads should both be > 0")
+
+    def get_cache_block_size(
+        self,
+        block_size: int,
+        head_size: int,
+        cache_dtype_size: int) -> int:
+        key_cache_block = block_size * head_size * cache_dtype_size
+        value_cache_block = key_cache_block
+
+        # Compute KV-Compress overhead
+        int_size = get_dtype_size(torch.int)
+        float_size = get_dtype_size(torch.float)
+
+        # Overhead per block
+        per_block_overhead = 1 * int_size  # layer index
+        per_block_overhead += 1 * int_size  # head index
+        per_block_overhead += 1 * int_size  # logical block index
+        
+        # Overhead per KV
+        per_kv_overhead = 1 * int_size  # sequence index
+        metrics_per_kv = 1
+        per_kv_overhead += metrics_per_kv * float_size  # metrics tensor
+
+        block_size = (
+            key_cache_block + value_cache_block +
+            per_block_overhead + block_size * per_kv_overhead)
+        
+        return block_size
+
+
 class SchedulerConfig:
     """Scheduler configuration.
 
@@ -558,6 +679,7 @@ class SchedulerConfig:
             prompt latency) before scheduling next prompt.
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
+        disable_swaps: If true, we only allow the `recompute` preemption mode
     """
 
     def __init__(
@@ -569,6 +691,7 @@ class SchedulerConfig:
         num_lookahead_slots: int = 0,
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
+        disable_swap: bool = False,
     ) -> None:
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
@@ -589,6 +712,7 @@ class SchedulerConfig:
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
+        self.disable_swap = disable_swap
 
         self._verify_args()
 

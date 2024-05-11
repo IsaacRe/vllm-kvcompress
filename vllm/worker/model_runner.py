@@ -1,7 +1,7 @@
 import contextlib
 import time
 from enum import IntEnum
-from typing import Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Dict, List, NamedTuple, Optional, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -10,7 +10,8 @@ import torch.nn as nn
 from vllm.attention import (AttentionMetadata, AttentionMetadataPerStage,
                             get_attn_backend)
 from vllm.config import (DeviceConfig, LoadConfig, LoRAConfig, ModelConfig,
-                         ParallelConfig, SchedulerConfig, VisionLanguageConfig)
+                         ParallelConfig, SchedulerConfig, VisionLanguageConfig,
+                         KVCompressConfig)
 from vllm.distributed import broadcast_tensor_dict, with_pynccl_for_all_reduce
 from vllm.distributed.device_communicators import (custom_all_reduce,
                                                    pynccl_utils)
@@ -18,6 +19,9 @@ from vllm.logger import init_logger
 from vllm.lora.layers import LoRAMapping
 from vllm.lora.request import LoRARequest
 from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
+from vllm.kvcompress.block import (BlockStateView,
+                                   merge_block_table_views)
+from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.model_executor import SamplingMetadata
 from vllm.model_executor.model_loader import get_model
 from vllm.sampling_params import SamplingParams, SamplingType
@@ -49,7 +53,7 @@ class PreparePromptMetadata(NamedTuple):
     lora_prompt_mapping: List[int]
     lora_requests: Set[LoRARequest]
     multi_modal_input: Optional[torch.Tensor]
-    slot_mapping: List[int]
+    slot_mapping: Union[List[int], torch.Tensor]
 
     @classmethod
     def empty(cls):
@@ -74,7 +78,7 @@ class PrepareDecodeMetadata(NamedTuple):
     lora_index_mapping: List[int]
     lora_prompt_mapping: List[int]
     lora_requests: Set[LoRARequest]
-    slot_mapping: List[int]
+    slot_mapping: Union[List[int], torch.Tensor]
 
     @classmethod
     def empty(cls):
@@ -109,6 +113,7 @@ class ModelRunner:
         device_config: DeviceConfig,
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
+        kvcompress_config: Optional[KVCompressConfig],
         kv_cache_dtype: Optional[str] = "auto",
         is_driver_worker: bool = False,
         vision_language_config: Optional[VisionLanguageConfig] = None,
@@ -118,6 +123,7 @@ class ModelRunner:
         self.scheduler_config = scheduler_config
         self.lora_config = lora_config
         self.load_config = load_config
+        self.kvcompress_config = kvcompress_config
         self.is_driver_worker = is_driver_worker
 
         # model_config can be None in tests/samplers/test_sampler.py.
@@ -219,7 +225,38 @@ class ModelRunner:
     def get_max_block_per_batch(self) -> int:
         block_size = self.block_size
         return (self.max_context_len_to_capture + block_size - 1) // block_size
-
+    
+    def _get_pad_slot_mapping(self):
+        return (
+            torch.tensor(
+                [
+                    [_PAD_SLOT_ID for _ in range(self.kvcompress_config.num_kv_heads)]
+                    for _ in range(self.kvcompress_config.num_layers)
+                ],
+                dtype=torch.int,
+                device=self.device,
+            )
+            if self.kvcompress_config else
+            _PAD_SLOT_ID
+        )
+    
+    def _get_pad_context_len(self):
+        return (
+            torch.tensor(
+                [
+                    [1 for _ in range(self.kvcompress_config.num_kv_heads)]
+                    for _ in range(self.kvcompress_config.num_layers)
+                ],
+                dtype=torch.int,
+                device=self.device,
+            )
+            if self.kvcompress_config else
+            1
+        )
+    
+    def _get_pad_block_table(self):
+        return None if self.kvcompress_config else []
+    
     def _prepare_prompt(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -313,7 +350,7 @@ class ModelRunner:
             if seq_group_metadata.block_tables is None:
                 # During memory profiling, the block tables are not initialized
                 # yet. In this case, we just use a dummy slot mapping.
-                slot_mapping.extend([_PAD_SLOT_ID] * prompt_len)
+                slot_mapping.extend([self._get_pad_slot_mapping()] * prompt_len)
                 continue
 
             # Compute the slot mapping.
@@ -332,13 +369,19 @@ class ModelRunner:
 
             for i in range(computed_len, prefill_end):
                 if i < start_idx:
-                    slot_mapping.append(_PAD_SLOT_ID)
-                    continue
+                    slot_mapping.append(self._get_pad_slot_mapping())
+                    continue 
 
-                block_number = block_table[i // self.block_size]
-                block_offset = i % self.block_size
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append(slot)
+                if self.kvcompress_config:
+                    # Block manager should have allocated KV cache space
+                    # already, so the block table's context lengths should
+                    # be aligned to the sequence length
+                    slot_mapping.append(block_table.get_slot_mapping())
+                else:
+                    block_number = block_table[i // self.block_size]
+                    block_offset = i % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append(slot)
 
         max_subquery_len = max(subquery_lens)
         max_prompt_len = max(prompt_lens)
@@ -455,23 +498,30 @@ class ModelRunner:
                 position = seq_len - 1
                 input_positions.append(position)
 
-                context_len = seq_len if self.sliding_window is None else min(
-                    seq_len, self.sliding_window)
-                context_lens.append(context_len)
-
-                block_table = seq_group_metadata.block_tables[seq_id]
-                block_number = block_table[position // self.block_size]
-                block_offset = position % self.block_size
-                slot = block_number * self.block_size + block_offset
-                slot_mapping.append(slot)
                 lora_index_mapping.append(lora_id)
                 lora_prompt_mapping.append(lora_id)
 
-                if self.sliding_window is not None:
-                    sliding_window_blocks = (self.sliding_window //
-                                             self.block_size)
-                    block_table = block_table[-sliding_window_blocks:]
-                block_tables.append(block_table)
+                block_table = seq_group_metadata.block_tables[seq_id]
+                # If using KV-Compress
+                if isinstance(block_table, BlockStateView):
+                    context_lens.append(block_table.get_context_lens())
+                    slot_mapping.append(block_table.get_slot_mapping())
+                    block_tables.append(block_table.get_block_tables())
+                else:
+                    context_len = seq_len if self.sliding_window is None else min(
+                        seq_len, self.sliding_window)
+                    context_lens.append(context_len)
+
+                    block_number = block_table[position // self.block_size]
+                    block_offset = position % self.block_size
+                    slot = block_number * self.block_size + block_offset
+                    slot_mapping.append(slot)
+
+                    if self.sliding_window is not None:
+                        sliding_window_blocks = (self.sliding_window //
+                                                self.block_size)
+                        block_table = block_table[-sliding_window_blocks:]
+                    block_tables.append(block_table)
 
         # vLLM uses cuda graph only for decoding requests.
         # See `capture_model` API for more details.
@@ -488,17 +538,25 @@ class ModelRunner:
             for _ in range(graph_batch_size - batch_size):
                 input_tokens.append(0)
                 input_positions.append(0)
-                slot_mapping.append(_PAD_SLOT_ID)
-                context_lens.append(1)
-                block_tables.append([])
+                slot_mapping.append(self._get_pad_slot_mapping())
+                context_lens.append(self._get_pad_context_len())
+                block_tables.append(self._get_pad_block_table())
                 lora_index_mapping.append(0)
             batch_size = graph_batch_size
 
-        context_lens_tensor = torch.tensor(context_lens,
-                                           dtype=torch.int,
-                                           device=self.device)
+        if self.kvcompress_config:
+            slot_mapping = torch.stack(slot_mapping, dim=-1).to(self.device)
+            context_lens_tensor = torch.stack(context_lens, dim=1).to(self.device)
+        else:
+            context_lens_tensor = torch.tensor(context_lens,
+                                               dtype=torch.int,
+                                               device=self.device)
 
-        if use_captured_graph:
+        # When using KV-Compress block tables tensor will alreay be padded
+        # to max blocks per sequence
+        if self.kvcompress_config:
+            block_tables = merge_block_table_views(block_tables).to(self.device)
+        elif use_captured_graph:
             # When using cuda-graph all these tensors should be
             # padded.
             assert context_lens_tensor.shape[0] == len(input_tokens)
@@ -651,6 +709,7 @@ class ModelRunner:
     def prepare_input_tensors(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
+        kv_metrics: Optional[CompressionMetrics]
     ) -> Tuple[torch.Tensor, torch.Tensor, AttentionMetadata, SamplingMetadata,
                Set[LoRARequest], LoRAMapping, torch.Tensor]:
         if self.is_driver_worker:
@@ -710,9 +769,17 @@ class ModelRunner:
             input_positions = torch.tensor(input_positions,
                                            dtype=torch.long,
                                            device=self.device)
-            slot_mapping = torch.tensor(slot_mapping,
-                                        dtype=torch.long,
-                                        device=self.device)
+            if self.kvcompress_config:
+                # [ num_layers, num_tokens, num_heads ]
+                slot_mapping = (
+                    torch.stack(slot_mapping, dim=1)
+                         .type(torch.long)
+                         .to(self.device)
+                )
+            else:
+                slot_mapping = torch.tensor(slot_mapping,
+                                            dtype=torch.long,
+                                            device=self.device)
 
             if self.lora_config:
                 lora_mapping = LoRAMapping(
@@ -801,6 +868,12 @@ class ModelRunner:
                 metadata_dict = broadcast_tensor_dict(src=0)
                 decode_attn_metadata = self.attn_backend.make_metadata(
                     **metadata_dict)
+        
+        if self.kvcompress_config:
+            if prefill_attn_metadata is not None:
+                prefill_attn_metadata.kv_metrics = kv_metrics
+            if decode_attn_metadata is not None:
+                decode_attn_metadata.kv_metrics = kv_metrics
 
         attn_metadata = AttentionMetadata(
             num_prefills=num_prefills,
@@ -821,10 +894,11 @@ class ModelRunner:
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: List[torch.Tensor],
+        kv_metrics: Optional[CompressionMetrics] = None,
     ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
          lora_requests, lora_mapping, multi_modal_input
-         ) = self.prepare_input_tensors(seq_group_metadata_list)
+         ) = self.prepare_input_tensors(seq_group_metadata_list, kv_metrics)
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)

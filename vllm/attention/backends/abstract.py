@@ -88,11 +88,19 @@ class AttentionMetadata(Generic[T]):
     kv_cache_dtype: str
 
     def __post_init__(self):
+        # If layer-specific metadata is required during attention, layer_index
+        # should be set before each call to the attention backend.
+        self.layer_index = None
         if self.num_prefill_tokens > 0:
             assert self.num_prefills > 0
             assert self.prefill_metadata is not None
         if self.num_decode_tokens > 0:
             assert self.decode_metadata is not None
+
+    def set_layer(self, layer_index: int) -> "AttentionMetadata":
+        """Record the active layer and return."""
+        self.layer_index = layer_index
+        return self
 
 
 class AttentionImpl(ABC):

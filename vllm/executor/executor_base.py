@@ -3,8 +3,12 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ParallelConfig, SchedulerConfig,
-                         SpeculativeConfig, VisionLanguageConfig)
+                         SpeculativeConfig, VisionLanguageConfig,
+                         KVCompressConfig)
 from vllm.lora.request import LoRARequest
+from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.scheduler import CacheMoves
+from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 
 
@@ -25,6 +29,8 @@ class ExecutorBase(ABC):
         device_config: DeviceConfig,
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
+        kvcompress_config: Optional[KVCompressConfig],
+        kvc_block_tables: Optional[BlockState],
         vision_language_config: Optional[VisionLanguageConfig],
         speculative_config: Optional[SpeculativeConfig],
     ) -> None:
@@ -32,6 +38,8 @@ class ExecutorBase(ABC):
         self.cache_config = cache_config
         self.lora_config = lora_config
         self.load_config = load_config
+        self.kvcompress_config = kvcompress_config
+        self.kvc_block_tables = kvc_block_tables
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.device_config = device_config
@@ -73,8 +81,13 @@ class ExecutorBase(ABC):
                       blocks_to_swap_in: Dict[int, int],
                       blocks_to_swap_out: Dict[int, int],
                       blocks_to_copy: Dict[int, List[int]],
-                      num_lookahead_slots: int) -> List[SamplerOutput]:
+                      num_lookahead_slots: int,
+                      kv_metrics: Optional[CompressionMetrics] = None) -> List[SamplerOutput]:
         """Executes at least one model step on the given sequences."""
+        raise NotImplementedError
+    
+    @abstractmethod
+    def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
         raise NotImplementedError
 
     @abstractmethod

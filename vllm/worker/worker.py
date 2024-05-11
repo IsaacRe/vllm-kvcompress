@@ -8,7 +8,7 @@ import torch.distributed
 
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ParallelConfig, SchedulerConfig,
-                         VisionLanguageConfig)
+                         VisionLanguageConfig, KVCompressConfig)
 from vllm.distributed import (broadcast_tensor_dict,
                               ensure_model_parallel_initialized,
                               init_distributed_environment)
@@ -16,6 +16,9 @@ from vllm.distributed.device_communicators import pynccl_utils
 from vllm.distributed.device_communicators.custom_all_reduce import (
     init_custom_ar)
 from vllm.lora.request import LoRARequest
+from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.scheduler import CacheMoves
+from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.model_executor import set_random_seed
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 from vllm.worker.cache_engine import CacheEngine
@@ -43,6 +46,8 @@ class Worker(WorkerBase):
         rank: int,
         distributed_init_method: str,
         lora_config: Optional[LoRAConfig] = None,
+        kvcompress_config: Optional[KVCompressConfig] = None,
+        kvc_block_tables: Optional[BlockState] = None,
         vision_language_config: Optional[VisionLanguageConfig] = None,
         is_driver_worker: bool = False,
     ) -> None:
@@ -56,6 +61,11 @@ class Worker(WorkerBase):
         self.distributed_init_method = distributed_init_method
         self.lora_config = lora_config
         self.load_config = load_config
+        self.kvcompress_config = kvcompress_config
+        self.kvc_block_tables = kvc_block_tables
+        if self.kvcompress_config:
+            assert self.kvc_block_tables, ("KV-Compress is enabled but "
+                                           "no block tables were passed.")
         self.is_driver_worker = is_driver_worker
         if self.is_driver_worker:
             assert self.rank == 0, "The driver worker must have rank 0."
@@ -215,6 +225,7 @@ class Worker(WorkerBase):
         blocks_to_swap_out: Optional[Dict[int, int]] = None,
         blocks_to_copy: Optional[Dict[int, List[int]]] = None,
         num_lookahead_slots: int = 0,
+        kv_metrics: Optional[CompressionMetrics] = None,
     ) -> List[SamplerOutput]:
 
         if self.is_driver_worker:
@@ -247,11 +258,16 @@ class Worker(WorkerBase):
             return []
 
         output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache)
+                                                 self.gpu_cache, kv_metrics)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
         return [output]
+    
+    def execute_cache_moves(
+        self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics
+    ) -> None:
+        self.cache_engine.execute_cache_moves(cache_moves, kv_metrics)
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
@@ -275,7 +291,8 @@ class Worker(WorkerBase):
         """
         return CacheEngine.get_cache_block_size(self.cache_config,
                                                 self.model_config,
-                                                self.parallel_config)
+                                                self.parallel_config,
+                                                self.kvcompress_config)
 
 
 def init_worker_distributed_environment(

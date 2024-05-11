@@ -8,13 +8,102 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Type
 
 import torch
+import torch.nn.functional as F
+from einops import rearrange
 from flash_attn import flash_attn_varlen_func
 
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionMetadata,
                                               AttentionMetadataPerStage)
-from vllm.attention.ops.paged_attn import (PagedAttention,
+from vllm.attention.ops.paged_attn import (PagedAttention, KVCAttention,
                                            PagedAttentionMetadata)
+
+
+"""Copied from https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py"""
+def construct_local_mask(
+    seqlen_q,
+    seqlen_k,
+    window_size=(-1, -1),  # -1 means infinite window size
+    query_padding_mask=None,
+    key_padding_mask=None,
+    device=None,
+):
+    row_idx = rearrange(torch.arange(seqlen_q, device=device, dtype=torch.long), "s -> s 1")
+    col_idx = torch.arange(seqlen_k, device=device, dtype=torch.long)
+    sk = (
+        seqlen_k
+        if key_padding_mask is None
+        else rearrange(key_padding_mask.sum(-1), "b -> b 1 1 1")
+    )
+    sq = (
+        seqlen_q
+        if query_padding_mask is None
+        else rearrange(query_padding_mask.sum(-1), "b -> b 1 1 1")
+    )
+    if window_size[0] < 0:
+        return col_idx > row_idx + sk - sq + window_size[1]
+    else:
+        sk = torch.full_like(col_idx, seqlen_k) if key_padding_mask is None else sk
+        return torch.logical_or(
+            col_idx > torch.minimum(row_idx + sk - sq + window_size[1], sk),
+            col_idx < row_idx + sk - sq - window_size[0],
+        )
+
+
+"""Copied from https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py"""
+def convert_flash_attn_S_to_softmax(
+    S,
+    seqlen_q,
+    seqlen_k,
+    query_padding_mask,
+    key_padding_mask,
+    head_dim,
+    is_dropout,
+    causal=False,
+    window_size=(-1, -1),  # -1 means infinite window size
+):
+    """FlashAttention stores the S matrix in a different way.
+    Arguments:
+        S: (batch_size, nheads, seqlen_q_rounded, seqlen_k_rounded)
+        query_padding_mask: (batch_size, seqlen_q_rounded)
+        key_padding_mask: (batch_size, seqlen_k_rounded)
+    """
+    if causal:
+        window_size = (window_size[0], 0)
+    seqlen_q_rounded, seqlen_k_rounded = S.shape[-2:]
+    S_converted = S
+    if window_size[0] >= 0 or window_size[1] >= 0:
+        local_mask = construct_local_mask(
+            seqlen_q,
+            seqlen_k,
+            window_size,
+            query_padding_mask,
+            key_padding_mask,
+            S.device,
+        )
+        local_mask = F.pad(
+            local_mask,
+            (0, seqlen_k_rounded - seqlen_k, 0, seqlen_q_rounded - seqlen_q),
+            value=True,
+        )
+        S_converted = S_converted.masked_fill(local_mask, 0.0)
+
+    # Need to zero out things not in attention_mask in case S was initialized with random values
+    # and some of those values aren't overwritten.
+    seqlen_q_og = (
+        query_padding_mask.shape[-1] if query_padding_mask is not None else seqlen_q_rounded
+    )
+    if query_padding_mask is not None:
+        query_padding_mask = F.pad(query_padding_mask, (0, seqlen_q_rounded - seqlen_q_og))
+        S_converted = S_converted.masked_fill(rearrange(~query_padding_mask, "b s -> b 1 s 1"), 0.0)
+    seqlen_k_og = key_padding_mask.shape[-1] if key_padding_mask is not None else seqlen_k
+    if key_padding_mask is not None:
+        key_padding_mask = F.pad(key_padding_mask, (0, seqlen_k_rounded - seqlen_k_og))
+        S_converted = S_converted.masked_fill(rearrange(~key_padding_mask, "b s -> b 1 1 s"), 0.0)
+    S_converted = F.pad(S_converted, (0, 0, 0, seqlen_q_og - seqlen_q_rounded))
+    S_converted = F.pad(S_converted, (0, seqlen_k_og - seqlen_k_rounded))
+    return S_converted[:, :, :seqlen_q, :seqlen_k]
+
 
 
 class FlashAttentionBackend(AttentionBackend):
@@ -136,6 +225,7 @@ class FlashAttentionImpl(AttentionImpl):
         num_kv_heads: Optional[int] = None,
         alibi_slopes: Optional[List[float]] = None,
         sliding_window: Optional[int] = None,
+        kvcompress_enabled: bool = False,
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -143,6 +233,7 @@ class FlashAttentionImpl(AttentionImpl):
         self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         self.sliding_window = ((sliding_window, sliding_window)
                                if sliding_window is not None else (-1, -1))
+        self.kvcompress_enabled = kvcompress_enabled
         if alibi_slopes is not None:
             alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
         self.alibi_slopes = alibi_slopes
@@ -182,6 +273,10 @@ class FlashAttentionImpl(AttentionImpl):
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
+        layer_index = attn_metadata.layer_index
+        kv_metrics = (attn_metadata.decode_metadata.kv_metrics
+                      if self.kvcompress_enabled else None)
+
         if kv_cache is not None:
             key_cache, value_cache = PagedAttention.split_kv_cache(
                 kv_cache, self.num_kv_heads, self.head_size)
@@ -189,11 +284,24 @@ class FlashAttentionImpl(AttentionImpl):
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
-            PagedAttention.write_to_paged_cache(key, value, key_cache,
-                                                value_cache,
-                                                attn_metadata.slot_mapping,
-                                                attn_metadata.kv_cache_dtype,
-                                                kv_scale)
+            if self.kvcompress_enabled:
+                assert kv_metrics
+                assert layer_index is not None
+                # Extract layer-dependent metadata
+                kv_metric_head_bias = kv_metrics.kv_metric_head_bias[layer_index]
+                slot_mapping = attn_metadata.slot_mapping[layer_index]
+                KVCAttention.write_to_paged_cache(key, value, key_cache,
+                                                  value_cache, kv_metrics.metrics,
+                                                  slot_mapping,
+                                                  kv_metric_head_bias,
+                                                  attn_metadata.kv_cache_dtype,
+                                                  kv_scale)
+            else:
+                PagedAttention.write_to_paged_cache(key, value, key_cache,
+                                                    value_cache,
+                                                    attn_metadata.slot_mapping,
+                                                    attn_metadata.kv_cache_dtype,
+                                                    kv_scale)
 
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens
@@ -213,7 +321,35 @@ class FlashAttentionImpl(AttentionImpl):
 
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
-            if kv_cache is None or prefill_meta.block_tables.numel() == 0:
+            if self.kvcompress_enabled:
+                raise NotImplementedError("Need to test")
+                # For prefill, all metadata will be identical to non-kv-compress
+                out, _, S_dmask = flash_attn_varlen_func(
+                    q=query,
+                    k=key,
+                    v=value,
+                    cu_seqlens_q=prefill_meta.seq_start_loc,
+                    cu_seqlens_k=prefill_meta.seq_start_loc,
+                    max_seqlen_q=prefill_meta.max_prompt_len,
+                    max_seqlen_k=prefill_meta.max_prompt_len,
+                    softmax_scale=self.scale,
+                    causal=True,
+                    window_size=self.sliding_window,
+                    alibi_slopes=self.alibi_slopes,
+                    return_attn_probs=True,
+                )
+                attn_weights = convert_flash_attn_S_to_softmax(
+                    S_dmask,
+                    prefill_meta.context_lens,
+                    prefill_meta,context_lens,
+                    query_padding_mask,
+                    key_padding_mask,
+                    d,
+                    dropout_p > 0.0,
+                    causal=causal,
+                    window_size=window_size,
+                )
+            elif kv_cache is None or prefill_meta.block_tables.numel() == 0:
                 # normal attention
                 # When block_tables are not filled, it means q and k are the
                 # prompt, and they have the same length.
@@ -252,19 +388,38 @@ class FlashAttentionImpl(AttentionImpl):
                 )
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
-            output[num_prefill_tokens:] = PagedAttention.forward_decode(
-                decode_query,
-                key_cache,
-                value_cache,
-                decode_meta.block_tables,
-                decode_meta.context_lens,
-                decode_meta.max_context_len,
-                attn_metadata.kv_cache_dtype,
-                self.num_kv_heads,
-                self.scale,
-                self.alibi_slopes,
-                kv_scale,
-            )
+            if self.kvcompress_enabled:
+                # Extract layer-dependent metadata
+                block_tables = decode_meta.block_tables[layer_index]
+                context_lens = decode_meta.context_lens[layer_index]
+                output[num_prefill_tokens:] = KVCAttention.forward_decode(
+                    decode_query,
+                    key_cache,
+                    value_cache,
+                    block_tables,
+                    context_lens,
+                    decode_meta.max_context_len,
+                    attn_metadata.kv_cache_dtype,
+                    self.num_kv_heads,
+                    self.scale,
+                    self.alibi_slopes,
+                    kv_scale,
+                    kv_metrics.temp_metrics,
+                )
+            else:
+                output[num_prefill_tokens:] = PagedAttention.forward_decode(
+                    decode_query,
+                    key_cache,
+                    value_cache,
+                    decode_meta.block_tables,
+                    decode_meta.context_lens,
+                    decode_meta.max_context_len,
+                    attn_metadata.kv_cache_dtype,
+                    self.num_kv_heads,
+                    self.scale,
+                    self.alibi_slopes,
+                    kv_scale,
+                )
 
         # Reshape the output tensor.
         return output.view(num_tokens, hidden_size)
