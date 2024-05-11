@@ -486,7 +486,7 @@ __global__ void two_tier_paged_attention_v1_kernel(
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
-  const int kv_block_stride
+  const int kv_block_stride,
   const float kv_scale) {
   two_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_KV_CACHE>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
@@ -677,7 +677,7 @@ __global__ void two_tier_paged_attention_v2_reduce_kernel(
     max_num_blocks_per_seq,                                                                   \
     alibi_slopes_ptr,                                                                         \
     q_stride,                                                                                 \
-    kv_block_stride,
+    kv_block_stride,                                                                          \
     kv_scale);
 
 // TODO(woosuk): Tune NUM_THREADS.

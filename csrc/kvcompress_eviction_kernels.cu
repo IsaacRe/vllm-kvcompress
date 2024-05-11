@@ -149,7 +149,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     layer_idx * num_seqs * num_kv_heads +
     seq_idx * num_kv_heads +
     head_idx;
-  const int layer_seq_head_block_offset = layer_seq_head_idx * max_num_blocks_per_seq
+  const int layer_seq_head_block_offset = layer_seq_head_idx * max_num_blocks_per_seq;
   const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
   const int cache_moves_offset = seq_layer_head_idx * max_evicted_tokens * 2;
 

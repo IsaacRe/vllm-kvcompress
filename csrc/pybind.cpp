@@ -1,4 +1,6 @@
 #include "cache.h"
+#include "kvcompress_cache.h"
+#include "kvcompress_eviction.h"
 #include "cuda_utils.h"
 #include "ops.h"
 #include <torch/extension.h>
@@ -32,10 +34,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "kvcompress_t2_paged_attention_v2",
     &kvcompress_t2_paged_attention_v2,
     "PagedAttention V2 with KV-Compress using two-tiered block tables.");
-  ops.def(
-    "kvcompress_schedule_evictions",
-    &kvcompress_schedule_evictions,
-    "KV-Compress kernel for eviction scheduling.");
 
   // Activation ops
   ops.def(

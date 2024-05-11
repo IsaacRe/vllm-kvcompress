@@ -136,19 +136,19 @@ void kvcompress_reshape_and_cache(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   if (kv_cache_dtype == "auto") {
     if (key.dtype() == at::ScalarType::Float) {
-      CALL_RESHAPE_AND_CACHE(float, float, false);
+      CALL_KVC_RESHAPE_AND_CACHE(float, float, false);
     } else if (key.dtype() == at::ScalarType::Half) {
-      CALL_RESHAPE_AND_CACHE(uint16_t, uint16_t, false);
+      CALL_KVC_RESHAPE_AND_CACHE(uint16_t, uint16_t, false);
     } else if (key.dtype() == at::ScalarType::BFloat16) {
-      CALL_RESHAPE_AND_CACHE(__nv_bfloat16, __nv_bfloat16, false);
+      CALL_KVC_RESHAPE_AND_CACHE(__nv_bfloat16, __nv_bfloat16, false);
     }
   } else if (kv_cache_dtype == "fp8") {
     if (key.dtype() == at::ScalarType::Float) {
-      CALL_RESHAPE_AND_CACHE(float, uint8_t, true);
+      CALL_KVC_RESHAPE_AND_CACHE(float, uint8_t, true);
     } else if (key.dtype() == at::ScalarType::Half) {
-      CALL_RESHAPE_AND_CACHE(uint16_t, uint8_t, true);
+      CALL_KVC_RESHAPE_AND_CACHE(uint16_t, uint8_t, true);
     } else if (key.dtype() == at::ScalarType::BFloat16) {
-      CALL_RESHAPE_AND_CACHE(__nv_bfloat16, uint8_t, true);
+      CALL_KVC_RESHAPE_AND_CACHE(__nv_bfloat16, uint8_t, true);
     }
   } else {
     TORCH_CHECK(false, "Unsupported data type of kv cache: ", kv_cache_dtype);
