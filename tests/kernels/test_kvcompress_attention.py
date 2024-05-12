@@ -189,6 +189,7 @@ def test_kvcompress_paged_attention(
     kv_cache_dtype = 'auto'
     seed = 0
     device = 'cuda:0'
+    num_layers = 5
 
     random.seed(seed)
     np.random.seed(seed)
@@ -208,10 +209,13 @@ def test_kvcompress_paged_attention(
         alibi_slopes = torch.randn(num_query_heads, dtype=torch.float)
 
     context_lens = [
-        [random.randint(1, MAX_SEQ_LEN) for _ in range(num_kv_heads)]
-        for _ in range(num_seqs)
+        [
+            [random.randint(1, MAX_SEQ_LEN) for _ in range(num_kv_heads)]
+            for _ in range(num_seqs)
+        ]
+        for _ in range(num_layers)
     ]
-    context_lens[-1][-1] = MAX_SEQ_LEN
+    context_lens[0][-1][-1] = MAX_SEQ_LEN
     max_context_len = MAX_SEQ_LEN
     context_lens = torch.tensor(context_lens, dtype=torch.int)
     print(context_lens)
@@ -223,20 +227,23 @@ def test_kvcompress_paged_attention(
     total_blocks = ((context_lens + block_size - 1) // block_size).sum().item()
     block_idx = 0
     all_block_nums = np.random.choice(total_blocks, total_blocks, replace=False)
-    for i in range(num_seqs):
-        kv_head_block_tables = []
-        for j in range(num_kv_heads):
-            ctx_len = context_lens[i,j].item()
-            num_blocks = (ctx_len + (block_size - 1)) // block_size
-            assert num_blocks <= max_num_blocks_per_seq
-            kv_head_block_tables.append(
-                torch.concat([
-                    torch.tensor(all_block_nums[block_idx:block_idx+num_blocks]),
-                    torch.empty(max_num_blocks_per_seq - num_blocks)
-                ]).type(torch.int)
-            )
-            block_idx += num_blocks
-        block_tables.append(torch.stack(kv_head_block_tables))
+    for l in range(num_layers):
+        seq_block_tables = []
+        for i in range(num_seqs):
+            kv_head_block_tables = []
+            for j in range(num_kv_heads):
+                ctx_len = context_lens[l,i,j].item()
+                num_blocks = (ctx_len + (block_size - 1)) // block_size
+                assert num_blocks <= max_num_blocks_per_seq
+                kv_head_block_tables.append(
+                    torch.concat([
+                        torch.tensor(all_block_nums[block_idx:block_idx+num_blocks]),
+                        torch.empty(max_num_blocks_per_seq - num_blocks)
+                    ]).type(torch.int)
+                )
+                block_idx += num_blocks
+            seq_block_tables.append(torch.stack(kv_head_block_tables))
+        block_tables.append(torch.stack(seq_block_tables))
     block_tables = torch.stack(block_tables)
 
     # Create the KV caches.
@@ -247,6 +254,10 @@ def test_kvcompress_paged_attention(
     key_cache, value_cache = key_caches[0], value_caches[0]
     key_cache = key_cache.squeeze(1)
     value_cache = value_cache.squeeze(1)
+
+    # Get the first layer of block tables/context lenghts
+    block_tables = block_tables[0]
+    context_lens = context_lens[0]
 
     # print(f"block_tables: {block_tables.shape}, context_lens: {context_lens.shape}, key_cache: {key_cache.shape}, value_cache: {value_cache.shape}")
 
