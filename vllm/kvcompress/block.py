@@ -3,9 +3,7 @@ from typing import Any, List, Tuple, Dict, Optional
 import torch
 import math
 
-from vllm.config import KVCompressConfig, SchedulerConfig, CacheConfig
 from vllm.utils import Device
-from vllm.block import LogicalTokenBlock
 
 
 class PhysicalTokenBlock:

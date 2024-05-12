@@ -7,9 +7,7 @@ import math
 import numpy as np
 
 from vllm.lora.request import LoRARequest
-from vllm.sampling_params import SamplingParams
 from vllm.sequence import Sequence
-from vllm.kvcompress.block import LogicalKVBlock
 
 
 class CompressibleSequence(Sequence):

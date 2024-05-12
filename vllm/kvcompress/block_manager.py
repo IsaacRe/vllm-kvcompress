@@ -9,7 +9,6 @@ import torch
 
 from vllm.kvcompress.block import BlockState, PhysicalTokenBlock, BlockStateView
 from vllm.kvcompress.sequence import CompressibleSequence
-from vllm.kvcompress.scheduler import FreedBlockCounts
 from vllm.config import KVCompressConfig
 from vllm.core.evictor import EvictionPolicy, Evictor, make_evictor
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
@@ -18,6 +17,10 @@ from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 from vllm.utils import Device
 
 logger = init_logger(__name__)
+
+
+# seq_id -> counts [ num_layers, num_kv_heads ]
+FreedBlockCounts = Dict[int, torch.Tensor]
 
 
 class BlockAllocatorBase(ABC):

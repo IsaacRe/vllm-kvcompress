@@ -6,13 +6,10 @@ import math
 from vllm._custom_ops import schedule_cache_evictions, schedule_cache_moves
 from vllm.config import KVCompressConfig
 from vllm.sequence import Sequence
-from vllm.kvcompress.block_manager import BlockSpaceManagerKVC
+from vllm.kvcompress.block_manager import BlockSpaceManagerKVC, FreedBlockCounts
 from vllm.kvcompress.metrics import CompressionMetrics
 
 MAX_INT = 2147483000
-
-# seq_id -> counts [ num_layers, num_kv_heads ]
-FreedBlockCounts = Dict[int, torch.Tensor]
 
 
 @dataclass
