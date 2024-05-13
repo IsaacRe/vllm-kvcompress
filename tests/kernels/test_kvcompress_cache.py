@@ -65,7 +65,7 @@ def test_reshape_and_cache(
     # Create a random slot mapping.
     num_slots = block_size * num_blocks
     slot_mapping = np.random.choice(num_slots,
-                                    (num_layers, num_heads, num_tokens),
+                                    (num_layers, num_tokens, num_heads),
                                     replace=False)
     slot_mapping = torch.tensor(slot_mapping, dtype=torch.long)
     slot_mapping = slot_mapping[layer_index]
@@ -75,10 +75,10 @@ def test_reshape_and_cache(
 
     # Create the KV caches.
     key_caches, value_caches = kv_cache_factory(num_blocks, block_size, 1,
-                                                num_heads, head_size,
+                                                1, head_size,
                                                 kv_cache_dtype, dtype, seed,
                                                 device)
-    key_cache, value_cache = key_caches[0], value_caches[0]
+    key_cache, value_cache = key_caches[0].squeeze(1), value_caches[0].squeeze(1)
 
     # Create KV metrics
     kv_metrics = torch.randn(num_blocks, block_size,
@@ -119,11 +119,11 @@ def test_reshape_and_cache(
     block_offsets = block_offsets.cpu()
     for i in range(num_tokens):
         for h in range(num_heads):
-            block_idx = block_indicies[layer_index,i,h]
-            block_offset = block_offsets[layer_index,i,h]
+            block_idx = block_indicies[i,h]
+            block_offset = block_offsets[i,h]
             cloned_key_cache[block_idx, :, block_offset, :] = reshaped_key[i,h]
             cloned_value_cache[block_idx, :, block_offset] = value[i,h]
-            cloned_kv_metrics[block_idx, block_offset] = kv_metric_head_bias[layer_index,h]
+            cloned_kv_metrics[block_idx, block_offset] = kv_metric_head_bias[h]
 
     if kv_cache_dtype == "fp8":
         assert torch.allclose(result_key_cache,

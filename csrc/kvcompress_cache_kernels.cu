@@ -113,8 +113,8 @@ __global__ void single_tier_reshape_and_cache_kernel(
 void kvcompress_reshape_and_cache(
   torch::Tensor& key,           // [num_tokens, num_heads, head_size]
   torch::Tensor& value,         // [num_tokens, num_heads, head_size]
-  torch::Tensor& key_cache,     // [num_blocks, num_heads, head_size/x, block_size, x]
-  torch::Tensor& value_cache,   // [num_blocks, num_heads, head_size, block_size]
+  torch::Tensor& key_cache,     // [num_blocks, head_size/x, block_size, x]
+  torch::Tensor& value_cache,   // [num_blocks, head_size, block_size]
   torch::Tensor& kv_metrics,    // [num_blocks, block_size]
   torch::Tensor& slot_mapping,  // [num_tokens, num_heads]
   torch::Tensor& kv_metric_head_bias, // [num_heads]
@@ -124,8 +124,8 @@ void kvcompress_reshape_and_cache(
   int num_tokens = key.size(0);
   int num_heads = key.size(1);
   int head_size = key.size(2);
-  int block_size = key_cache.size(3);
-  int x = key_cache.size(4);
+  int block_size = key_cache.size(2);
+  int x = key_cache.size(3);
 
   int key_stride = key.stride(0);
   int value_stride = value.stride(0);
