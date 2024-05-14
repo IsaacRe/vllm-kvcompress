@@ -179,7 +179,7 @@ def test_kvcompress_paged_attention(
     # num_seqs = NUM_GEN_SEQS[0]
     # version = 'v2'
     # print(MAX_SEQ_LEN)
-    version = 'v1'
+    version = 'v2'
     num_seqs = 7
     num_heads = (64, 8)
     head_size = 112
@@ -265,6 +265,9 @@ def test_kvcompress_paged_attention(
     output = torch.empty_like(query)
     kv_metric_output = torch.empty((total_blocks, block_size, num_queries_per_kv), dtype=torch.float32, device=key_cache.device)
     
+    # Using default kv_scale
+    kv_scale = 1.0
+
     # print('SHAPES:')
     # print(f'output={output.shape}')
     # print(f'kv_metric_output={kv_metric_output.shape}')
@@ -289,6 +292,7 @@ def test_kvcompress_paged_attention(
             max_context_len,
             alibi_slopes,
             kv_cache_dtype,
+            kv_scale,
         )
     elif version == "v2":
         num_partitions = ((max_context_len + PARTITION_SIZE - 1) //
@@ -323,6 +327,7 @@ def test_kvcompress_paged_attention(
             max_context_len,
             alibi_slopes,
             kv_cache_dtype,
+            kv_scale,
         )
     else:
         raise AssertionError(f"Unknown version: {version}")
