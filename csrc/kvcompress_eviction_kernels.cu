@@ -153,22 +153,22 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
   const int seq_layer_head_offset = seq_layer_head_idx * max_evicted_tokens;
   const int cache_moves_offset = seq_layer_head_idx * max_evicted_tokens * 2;
 
-  printf("KERNEL: seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", seq_layer_head_idx, seq_head_idx, seq_idx);
+  printf("KERNEL: layer: %d, seq_layer_head_idx: %d, seq_head_idx: %d, seq_idx: %d\n", layer_idx, seq_layer_head_idx, seq_head_idx, seq_idx);
   // get range of src KVs that will be handled by this thread
   const int evicted_kv_cnt = evicted_kv_count[seq_layer_head_idx];
 
   int move_count = 0;  // number of KVs not scheduled for eviction that we've moved into earlier slots of KVs that HAVE been scheduled for eviction
   int evict_count = 0;  // number of KVs scheduled for eviction that we've skipped over without moving into an earlier slot (and will therefore be lost)
   for (int i = 0; i < evicted_kv_cnt; ++i) {
-    const int src_kv_idx = context_lens[seq_head_idx] - 1 - i;
+    const int src_kv_idx = context_lens[layer_seq_head_idx] - 1 - i;
     const int src_kv_stop_idx = evicted_kv_indices[seq_layer_head_offset + evicted_kv_cnt - 1 - evict_count];
     const int dst_kv_idx = evicted_kv_indices[seq_layer_head_offset + move_count];
 
-    printf("seq: %d, head: %d, i: %d, src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d, move_cnt: %d, evict_cnt: %d\n",
-      seq_idx, head_idx, i, src_kv_idx, src_kv_stop_idx, dst_kv_idx, move_count, evict_count);
+    printf("layer: %d, seq: %d, head: %d, i: %d, src_kv_idx: %d, src_kv_stop_idx: %d, dst_kv_idx: %d, move_cnt: %d, evict_cnt: %d\n",
+      layer_idx, seq_idx, head_idx, i, src_kv_idx, src_kv_stop_idx, dst_kv_idx, move_count, evict_count);
 
     if (dst_kv_idx >= src_kv_idx) {
-      cache_moves_count[seq_head_idx] = move_count;  // record final move count
+      cache_moves_count[seq_layer_head_idx] = move_count;  // record final move count
       return;  // all KVs in slots with index > src_kv_idx were either scheduled for eviction or have been moved into earlier slots, so we can safely return
     }
 
@@ -183,15 +183,15 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     const int dst_physical_block_number = block_tables[layer_seq_head_block_offset + dst_kv_idx / BLOCK_SIZE];
     const int dst_physical_kv_idx = dst_physical_block_number * BLOCK_SIZE + dst_kv_idx % BLOCK_SIZE;
 
-    printf("moving: seq: %d, head: %d, i: %d, src_kv_idx: %d, src_p_idx: %d, dst_kv_idx: %d, dst_p_idx: %d\n",
-      seq_idx, head_idx, i, src_kv_idx, src_physical_kv_idx, dst_kv_idx, dst_physical_kv_idx);
+    printf("moving: cache_moves_offset: %d, moves_count: %d, seq_head_idx: %d, layer: %d, seq: %d, head: %d, i: %d, src_kv_idx: %d, src_p_idx: %d, dst_kv_idx: %d, dst_p_idx: %d\n",
+      cache_moves_offset, move_count, layer_idx, seq_idx, head_idx, i, src_kv_idx, src_physical_kv_idx, dst_kv_idx, dst_physical_kv_idx);
 
     const int cache_moves_idx_idx = cache_moves_offset + (move_count++) * 2;
     cache_moves_idx[cache_moves_idx_idx] = dst_physical_kv_idx;
     cache_moves_idx[cache_moves_idx_idx + 1] = src_physical_kv_idx;
   }
 
-  cache_moves_count[seq_head_idx] = move_count;  // record final move count
+  cache_moves_count[seq_layer_head_idx] = move_count;  // record final move count
 }
 
 template<int BLOCK_SIZE> __global__ void two_tier_schedule_cache_moves_kernel(
@@ -300,8 +300,8 @@ __global__ void execute_cache_moves_kernel(
     const int dst_k_start = dst_block_start + dst_block_offset * VEC_SIZE;
     const int dst_v_start = dst_block_start + dst_block_offset;
 
-    printf("src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
-      src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
+    printf("seq_layer_head_idx: %d, move_pair_idx: %d, src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
+      seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
 
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += K_STRIDE) {
@@ -590,7 +590,7 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   torch::Tensor& cache_moves_count,     // [num_seqs, num_layers, num_kv_heads]
   const int blocks_per_head,
   const int threads_per_head) {
-  const int max_num_moves = cache_moves_idx.size(2);
+  const int max_num_moves = cache_moves_idx.size(3);
   const int head_size = v_cache.size(1);
   const int vec_size = k_cache.size(3);
   const int block_size = v_cache.size(2);
