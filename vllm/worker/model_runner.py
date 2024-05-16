@@ -868,12 +868,6 @@ class ModelRunner:
                 metadata_dict = broadcast_tensor_dict(src=0)
                 decode_attn_metadata = self.attn_backend.make_metadata(
                     **metadata_dict)
-        
-        if self.kvcompress_config:
-            if prefill_attn_metadata is not None:
-                prefill_attn_metadata.kv_metrics = kv_metrics
-            if decode_attn_metadata is not None:
-                decode_attn_metadata.kv_metrics = kv_metrics
 
         attn_metadata = AttentionMetadata(
             num_prefills=num_prefills,
@@ -883,6 +877,9 @@ class ModelRunner:
             prefill_metadata=prefill_attn_metadata,
             decode_metadata=decode_attn_metadata,
             kv_cache_dtype=self.kv_cache_dtype,
+            kv_metrics=kv_metrics,
+            kv_metric_buffer_len=(self.kvcompress_config.metric_collection_buffer_size
+                                  if self.kvcompress_config else 0),
         )
 
         return (input_tokens, input_positions, attn_metadata,

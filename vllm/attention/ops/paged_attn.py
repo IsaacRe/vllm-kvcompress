@@ -27,9 +27,6 @@ class PagedAttentionMetadata:
     # 2nd dimensions are padded up to max_blocks_per_seq if it is cuda-graph
     # captured.
     block_tables: Optional[torch.Tensor]
-    # Running metrics for KV cache compression. Must be recorded during
-    # paged attention kernel.
-    kv_metrics: Optional[CompressionMetrics] = None
 
 
 class PagedAttention:

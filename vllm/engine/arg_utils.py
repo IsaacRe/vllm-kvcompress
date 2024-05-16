@@ -6,7 +6,8 @@ from typing import Optional
 from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          EngineConfig, LoadConfig, LoRAConfig, ModelConfig,
                          ParallelConfig, SchedulerConfig, SpeculativeConfig,
-                         TokenizerPoolConfig, VisionLanguageConfig)
+                         TokenizerPoolConfig, VisionLanguageConfig,
+                         KVCompressConfig)
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.utils import str_to_int_tuple
 
@@ -74,6 +75,14 @@ class EngineArgs:
     speculative_model: Optional[str] = None
     num_speculative_tokens: Optional[int] = None
     speculative_max_model_len: Optional[int] = None
+
+    # KV-Compress configuration.
+    enable_kvcompress: bool = False
+    target_compression_rate: float = 0.1
+    compression_interval: int = 1
+    max_kv_per_compression: int = 5_000_000
+    protected_window_size: int = 64
+    metric_collection_buffer_size: int = 32
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -448,6 +457,54 @@ class EngineArgs:
                             'corresponding to the chosen load_format. '
                             'This should be a JSON string that will be '
                             'parsed into a dictionary.')
+        
+        # KV-Compress configuration
+        parser.add_argument('--enable-kvcompress',
+                            action='store_true',
+                            help='If set, run online KV cache compression '
+                            'with KV-Compress for better throughput.')
+        parser.add_argument('--target-compression-rate',
+                            type=float,
+                            default=0.1,
+                            help='KV cache compression rate for '
+                            'KV-Compress. Sequences scheduled for '
+                            'compression will be compressed down to '
+                            'this proportion of total sequence length '
+                            'during each compression iteration.')
+        
+        parser.add_argument('--compression-interval',
+                            type=int,
+                            default=1,
+                            help='Number of decoding iterations between '
+                            'each compression iteration. Raise to reduce '
+                            'overhead from running the compression. '
+                            'By default the compression will run every '
+                            'decoding iteration.')
+        
+        parser.add_argument('--max-kv-per-compression',
+                            type=int,
+                            default=5_000_000,
+                            help='Maximum number of KVs to process '
+                            'during each compression iteration. '
+                            'Should be set < 100_000_000 to avoid '
+                            'expensize memory and latency overhead from '
+                            'sorting metrics of all participating KVs.')
+        
+        parser.add_argument('--protected-window-size',
+                            type=int,
+                            default=64,
+                            help='Avoid compressing KVs that correspond '
+                            'to the last N tokens. This setting defines '
+                            'the value of N.')
+    
+        parser.add_argument('--metric-collection-buffer-size',
+                            type=int,
+                            default=32,
+                            help='Avoid collecting compression metrics '
+                            'between keys and queries that are less than '
+                            'N positions apart. This setting defines the '
+                            'value of N. Should be <= '
+                            'protected_window_size.')
 
         return parser
 
@@ -473,7 +530,8 @@ class EngineArgs:
                                    self.swap_space, self.kv_cache_dtype,
                                    self.num_gpu_blocks_override,
                                    model_config.get_sliding_window(),
-                                   self.enable_prefix_caching)
+                                   self.enable_prefix_caching,
+                                   self.enable_kvcompress)
         parallel_config = ParallelConfig(
             self.pipeline_parallel_size, self.tensor_parallel_size,
             self.worker_use_ray, self.max_parallel_loading_workers,
@@ -505,6 +563,7 @@ class EngineArgs:
                                  speculative_config.num_lookahead_slots),
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
+            disable_swap=self.enable_kvcompress,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,
@@ -539,6 +598,26 @@ class EngineArgs:
         decoding_config = DecodingConfig(
             guided_decoding_backend=self.guided_decoding_backend)
 
+        if self.enable_kvcompress:
+            max_blocks_per_head = (self.max_model_len + self.block_size
+                          - 1) // self.block_size
+            num_layers = model_config.get_num_layers()
+            num_kv_heads = model_config.get_total_num_kv_heads()
+            kvcompress_config = KVCompressConfig(
+                target_compression_rate=self.target_compression_rate,
+                compression_interval=self.compression_interval,
+                num_layers=num_layers,
+                num_kv_heads=num_kv_heads,
+                num_queries_per_kv=model_config.get_num_queries_per_kv(),
+                max_num_blocks_per_head=max_blocks_per_head,
+                max_blocks=(max_blocks_per_head * self.max_num_seqs * num_layers
+                            * num_kv_heads),
+                max_kv_per_compression=self.max_kv_per_compression,
+                metric_collection_buffer_size=self.metric_collection_buffer_size,
+            )
+        else:
+            kvcompress_config = None
+
         return EngineConfig(model_config=model_config,
                             cache_config=cache_config,
                             parallel_config=parallel_config,
@@ -548,7 +627,8 @@ class EngineArgs:
                             vision_language_config=vision_language_config,
                             speculative_config=speculative_config,
                             load_config=load_config,
-                            decoding_config=decoding_config)
+                            decoding_config=decoding_config,
+                            kvcompress_config=kvcompress_config)
 
 
 @dataclass

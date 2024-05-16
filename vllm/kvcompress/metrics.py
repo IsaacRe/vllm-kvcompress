@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 import torch
 
 
@@ -33,7 +33,7 @@ class CompressionMetrics:
         num_queries_per_kv: int,
         max_blocks: int,
         max_kv_per_sort: int,
-        kv_metric_head_bias: torch.Tensor,
+        kv_metric_head_bias: Optional[torch.Tensor],
         device: str = "cuda:0"
         ) -> None:
         self.block_size = block_size
@@ -46,6 +46,12 @@ class CompressionMetrics:
         # Recorded metric for each KV will be the actual metric
         # plus bias for its corresponding KV head.
         self.kv_metric_head_bias = kv_metric_head_bias
+        if self.kv_metric_head_bias is None:
+            self.kv_metric_head_bias = torch.zeros(
+                (num_layers, num_kv_heads),
+                dtype=torch.float32,
+                device=device,
+            )
 
         # Crucial for limiting runtime and memory
         # overhead of sort during each iteration.

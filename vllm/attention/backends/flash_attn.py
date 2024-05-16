@@ -19,93 +19,6 @@ from vllm.attention.ops.paged_attn import (PagedAttention, KVCAttention,
                                            PagedAttentionMetadata)
 
 
-"""Copied from https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py"""
-def construct_local_mask(
-    seqlen_q,
-    seqlen_k,
-    window_size=(-1, -1),  # -1 means infinite window size
-    query_padding_mask=None,
-    key_padding_mask=None,
-    device=None,
-):
-    row_idx = rearrange(torch.arange(seqlen_q, device=device, dtype=torch.long), "s -> s 1")
-    col_idx = torch.arange(seqlen_k, device=device, dtype=torch.long)
-    sk = (
-        seqlen_k
-        if key_padding_mask is None
-        else rearrange(key_padding_mask.sum(-1), "b -> b 1 1 1")
-    )
-    sq = (
-        seqlen_q
-        if query_padding_mask is None
-        else rearrange(query_padding_mask.sum(-1), "b -> b 1 1 1")
-    )
-    if window_size[0] < 0:
-        return col_idx > row_idx + sk - sq + window_size[1]
-    else:
-        sk = torch.full_like(col_idx, seqlen_k) if key_padding_mask is None else sk
-        return torch.logical_or(
-            col_idx > torch.minimum(row_idx + sk - sq + window_size[1], sk),
-            col_idx < row_idx + sk - sq - window_size[0],
-        )
-
-
-"""Copied from https://github.com/Dao-AILab/flash-attention/blob/main/tests/test_flash_attn.py"""
-def convert_flash_attn_S_to_softmax(
-    S,
-    seqlen_q,
-    seqlen_k,
-    query_padding_mask,
-    key_padding_mask,
-    head_dim,
-    is_dropout,
-    causal=False,
-    window_size=(-1, -1),  # -1 means infinite window size
-):
-    """FlashAttention stores the S matrix in a different way.
-    Arguments:
-        S: (batch_size, nheads, seqlen_q_rounded, seqlen_k_rounded)
-        query_padding_mask: (batch_size, seqlen_q_rounded)
-        key_padding_mask: (batch_size, seqlen_k_rounded)
-    """
-    if causal:
-        window_size = (window_size[0], 0)
-    seqlen_q_rounded, seqlen_k_rounded = S.shape[-2:]
-    S_converted = S
-    if window_size[0] >= 0 or window_size[1] >= 0:
-        local_mask = construct_local_mask(
-            seqlen_q,
-            seqlen_k,
-            window_size,
-            query_padding_mask,
-            key_padding_mask,
-            S.device,
-        )
-        local_mask = F.pad(
-            local_mask,
-            (0, seqlen_k_rounded - seqlen_k, 0, seqlen_q_rounded - seqlen_q),
-            value=True,
-        )
-        S_converted = S_converted.masked_fill(local_mask, 0.0)
-
-    # Need to zero out things not in attention_mask in case S was initialized with random values
-    # and some of those values aren't overwritten.
-    seqlen_q_og = (
-        query_padding_mask.shape[-1] if query_padding_mask is not None else seqlen_q_rounded
-    )
-    if query_padding_mask is not None:
-        query_padding_mask = F.pad(query_padding_mask, (0, seqlen_q_rounded - seqlen_q_og))
-        S_converted = S_converted.masked_fill(rearrange(~query_padding_mask, "b s -> b 1 s 1"), 0.0)
-    seqlen_k_og = key_padding_mask.shape[-1] if key_padding_mask is not None else seqlen_k
-    if key_padding_mask is not None:
-        key_padding_mask = F.pad(key_padding_mask, (0, seqlen_k_rounded - seqlen_k_og))
-        S_converted = S_converted.masked_fill(rearrange(~key_padding_mask, "b s -> b 1 1 s"), 0.0)
-    S_converted = F.pad(S_converted, (0, 0, 0, seqlen_q_og - seqlen_q_rounded))
-    S_converted = F.pad(S_converted, (0, seqlen_k_og - seqlen_k_rounded))
-    return S_converted[:, :, :seqlen_q, :seqlen_k]
-
-
-
 class FlashAttentionBackend(AttentionBackend):
 
     @staticmethod
@@ -225,8 +138,6 @@ class FlashAttentionImpl(AttentionImpl):
         num_kv_heads: Optional[int] = None,
         alibi_slopes: Optional[List[float]] = None,
         sliding_window: Optional[int] = None,
-        kvcompress_enabled: bool = False,
-        kvcompress_metric_buffer_len: int = 0,
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -234,8 +145,6 @@ class FlashAttentionImpl(AttentionImpl):
         self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
         self.sliding_window = ((sliding_window, sliding_window)
                                if sliding_window is not None else (-1, -1))
-        self.kvcompress_enabled = kvcompress_enabled
-        self.kv_metric_buffer_len = kvcompress_metric_buffer_len
         if alibi_slopes is not None:
             alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
         self.alibi_slopes = alibi_slopes
@@ -284,8 +193,9 @@ class FlashAttentionImpl(AttentionImpl):
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
         layer_index = attn_metadata.layer_index
-        kv_metrics = (attn_metadata.decode_metadata.kv_metrics
-                      if self.kvcompress_enabled else None)
+        kv_metrics = attn_metadata.kv_metrics
+        kvcompress_enabled = bool(kv_metrics)
+        kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
 
         if kv_cache is not None:
             key_cache, value_cache = PagedAttention.split_kv_cache(
@@ -294,7 +204,7 @@ class FlashAttentionImpl(AttentionImpl):
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
-            if self.kvcompress_enabled:
+            if kvcompress_enabled:
                 assert kv_metrics
                 assert layer_index is not None
                 # Extract layer-dependent metadata
@@ -331,7 +241,7 @@ class FlashAttentionImpl(AttentionImpl):
 
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
-            if self.kvcompress_enabled:
+            if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
                 if self.num_kv_heads != self.num_heads:
@@ -344,7 +254,7 @@ class FlashAttentionImpl(AttentionImpl):
                     value,
                     prefill_meta.prompt_lens,
                     self.scale,
-                    self.kv_metric_buffer_len,
+                    kv_metric_buffer_len,
                 )
                 kv_metrics.aggregate_prefill(kv_metric_out, slot_mapping[:num_prefill_tokens])
                 assert output[:num_prefill_tokens].shape == out.shape
@@ -388,7 +298,7 @@ class FlashAttentionImpl(AttentionImpl):
                 )
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
-            if self.kvcompress_enabled:
+            if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 block_tables = decode_meta.block_tables[layer_index]
                 context_lens = decode_meta.context_lens[layer_index]
@@ -449,6 +359,7 @@ def _naive_kvc_attention(
             key[start:end],
             value[start:end],
             scale,
+            kv_metric_buffer_len,
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
         output[start:end].copy_(out)

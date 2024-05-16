@@ -20,6 +20,8 @@ from vllm.executor.executor_base import ExecutorBase
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.kvcompress.state import KVCompressState
+from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (MultiModalData, SamplerOutput, Sequence,
@@ -153,8 +155,25 @@ class LLMEngine:
         self.kvcompress_metrics = None
         if self.kvcompress_config:
             kvcompress_shared_state = KVCompressState(
-
-            ) # TODO return "KVCMetadata" to executor instead to make both metrics available in cache and block tables available during attention
+                block_state=BlockState(
+                    block_size=self.cache_config.block_size,
+                    num_layers=self.kvcompress_config.num_layers,
+                    num_kv_heads=self.kvcompress_config.num_kv_heads,
+                    max_num_seqs=self.scheduler_config.max_num_seqs,
+                    max_num_blocks_per_head=self.kvcompress_config.max_num_blocks_per_head,
+                    max_num_t1_blocks=self.kvcompress_config.max_num_blocks_per_head,
+                    use_tiered_block_tables=False,
+                ),
+                kv_metrics=CompressionMetrics(
+                    block_size=self.cache_config.block_size,
+                    num_layers=self.kvcompress_config.num_layers,
+                    num_kv_heads=self.kvcompress_config.num_kv_heads,
+                    num_queries_per_kv=self.kvcompress_config.num_queries_per_kv,
+                    max_blocks=self.kvcompress_config.max_blocks,
+                    max_kv_per_sort=self.kvcompress_config.max_kv_per_compression,
+                    kv_metric_head_bias=None,
+                )
+            )
             self.kvcompress_metrics = kvcompress_shared_state.kv_metrics
             
         self.model_executor = executor_class(

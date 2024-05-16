@@ -77,7 +77,7 @@ class CompressionScheduler:
         """
         if compression_rate is None:
             compression_rate = self.config.target_compression_rate
-        # Total KV count should not go below min_compressible_len * num_kv_heads
+        # Total KV count should not go below protected_window_size * num_kv_heads
         compressible_token_count = (
             seq.data.get_len() - self.config.protected_window_size
         )

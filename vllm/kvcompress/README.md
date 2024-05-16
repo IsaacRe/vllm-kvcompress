@@ -34,6 +34,9 @@ KV metric reduction (pass through modified code)
 Get kv head sporadicity and num_queries_per_kv to the CompressionMetric.aggregate method
 Either profile mem for metric sorting/aggregation or allocate upfront
 Cache move needs to move the kv metrics as well
+Transpose context_lens input to schedule_cache_evictions kernel
+Pass kv_metric_buffer_len to kvc attention kernel to filter which keys have their emtrics aggregated to
+After benchmarking, move to main branch and remove t1/t2 block table references (just use t1)
 
 ### Open Questions
 Re-adjust watermark level

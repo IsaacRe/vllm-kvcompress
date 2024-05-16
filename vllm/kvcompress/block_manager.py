@@ -8,7 +8,6 @@ import itertools
 import torch
 
 from vllm.kvcompress.block import BlockState, PhysicalTokenBlock, BlockStateView
-from vllm.kvcompress.sequence import CompressibleSequence
 from vllm.config import KVCompressConfig
 from vllm.core.evictor import EvictionPolicy, Evictor, make_evictor
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
@@ -216,7 +215,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             ), "multi-child SequenceGroups are not compatible with KV-Compress"
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
-        seq: CompressibleSequence = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
 
         # Assume that sequence has not been previously compressed and has same
         # context length across all layers/heads
@@ -239,7 +238,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def allocate(self, seq_group: SequenceGroup) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
-        seq: CompressibleSequence = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
 
         self._add_sequence(seq_id=seq.seq_id, seq_len=seq.get_len())
 

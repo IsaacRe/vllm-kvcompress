@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 from typing import Any, Dict, Generic, List, Optional, Tuple, Type, TypeVar
+from vllm.kvcompress.metrics import CompressionMetrics
 
 import torch
 
@@ -86,6 +87,12 @@ class AttentionMetadata(Generic[T]):
     slot_mapping: torch.Tensor
     # The kv cache's data type.
     kv_cache_dtype: str
+    # Running metrics for KV cache compression. Must be recorded during
+    # paged attention kernel.
+    kv_metrics: Optional[CompressionMetrics] = None
+    # Minimum distance between a key and query for the query's attention to
+    # the key to be aggregated into the key's metric.
+    kv_metric_buffer_len: int = 0
 
     def __post_init__(self):
         # If layer-specific metadata is required during attention, layer_index

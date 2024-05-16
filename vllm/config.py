@@ -271,6 +271,10 @@ class ModelConfig:
         # parallel size so each GPU has at least one KV head.
         return max(1,
                    total_num_kv_heads // parallel_config.tensor_parallel_size)
+    
+    def get_num_queries_per_kv(self) -> int:
+        """Returns the number of query heads per KV head."""
+        return self.hf_text_config.num_attention_heads / self.get_total_num_kv_heads()
 
     def get_num_layers(self, parallel_config: "ParallelConfig") -> int:
         total_num_hidden_layers = self.hf_text_config.num_hidden_layers
@@ -371,6 +375,8 @@ class CacheConfig:
         elif cpu_memory_usage > 0.4 * total_cpu_memory:
             logger.warning("Possibly too large swap space. " + msg)
 
+        if self.enable_kvcompress and parallel_config.world_size > 1:
+            raise ValueError("KV-Compress with multi-GPU not yet supported")
 
 @dataclass
 class TokenizerPoolConfig:
@@ -567,42 +573,46 @@ class KVCompressConfig:
     Args:
         target_compression_rate: The target compression rate for each
             sequence.
-        max_compression_rate: Maximum compression rate we can reach
-            before resorting to preemption.
+        compression_interval: Number of decoding iterations between each
+            compression iteration.
         use_tiered_block_table: Whether two use two-tiered block-table
             to reduce memory footprint of the block tables.
-        max_num_t1_blocks: For KV-Compress tiered block table, max number
-            of blocks in the tier-1 block table.
+        max_num_blocks_per_head: The maximum number of cache blocks per
+            sequence per KV head.
         max_kv_per_compression: The maximum number of KVs that will be
             compressed during each iteration of KV-Compress.
         protected_window_size: The minimum sequence length before we
             begin compression for a sequence. We do not compress the last
-            min_compressible_len tokens.
+            protected_window_size tokens.
+        metric_collection_buffer_size: The minimum distance between a
+            query and key for the attention between them to be aggregated
+            into KV metrics. Must be <= protected_window_size.
     """
     def __init__(
         self,
         target_compression_rate: float,
-        max_compression_rate: float,
         compression_interval: int,
         use_tiered_block_tables: bool,
         num_layers: int,
         num_kv_heads: int,
-        max_num_t1_blocks: int,
-        max_num_t2_blocks: int,
+        num_queries_per_kv: int,
+        max_num_blocks_per_head: int,
+        max_blocks: int,
         max_kv_per_compression: int,
         protected_window_size: int,
+        metric_collection_buffer_size: int,
     ) -> None:
         self.target_compression_rate = target_compression_rate
-        self.max_compression_rate = max_compression_rate
         self.compression_interval = compression_interval
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads
+        self.num_queries_per_kv = num_queries_per_kv
         self.use_tiered_block_tables = use_tiered_block_tables
-        self.max_num_t1_blocks = max_num_t1_blocks
-        self.max_num_t2_blocks = max_num_t2_blocks
+        self.max_num_blocks_per_head = max_num_blocks_per_head
+        self.max_blocks = max_blocks
         self.max_kv_per_compression = max_kv_per_compression
         self.protected_window_size = protected_window_size
-
+        self.metric_collection_buffer_size = metric_collection_buffer_size
         self._verify_args()
 
     def _verify_args(self) -> None:
@@ -613,23 +623,21 @@ class KVCompressConfig:
             or self.target_compression_rate >= 1.0):
             raise ValueError("target_compression_rate must be in [0, 1)")
         
-        if (self.max_compression_rate < 0.0
-            or self.max_compression_rate >= 1.0):
-            raise ValueError("max_compression_rate must be in [0, 1)")
-        
         if self.compression_interval < 1:
             raise ValueError("compression_interval must be >= 1")
-        
-        if self.use_tiered_block_tables and self.max_num_t1_blocks <= 0:
-            raise ValueError("max_num_t1_blocks must be positive")
-        
+
         if (self.use_tiered_block_tables
-            and self.max_num_t2_blocks <= self.max_num_t1_blocks):
+            and self.max_num_blocks_per_head <= self.max_num_t1_blocks):
             raise ValueError("max_num_t2_blocks must be >= max_num_t1_blocks")
         
         if self.num_layers <= 0 or self.num_kv_heads <= 0:
             raise ValueError(
                 "num_layers and num_kv_heads should both be > 0")
+        
+        if self.metric_collection_buffer_size > self.protected_window_size:
+            raise ValueError(
+                "metric_collection_buffer_size cannot be greater than "
+                "protected_window_size")
 
     def get_cache_block_size(
         self,
@@ -1239,6 +1247,7 @@ class EngineConfig:
     vision_language_config: Optional[VisionLanguageConfig]
     speculative_config: Optional[SpeculativeConfig]
     decoding_config: Optional[DecodingConfig]
+    kvcompress_config: Optional[KVCompressConfig]
 
     def __post_init__(self):
         """Verify configs are valid & consistent with each other.
