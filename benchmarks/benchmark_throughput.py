@@ -80,6 +80,7 @@ def run_vllm(
     max_num_batched_tokens: int,
     gpu_memory_utilization: float = 0.9,
     download_dir: Optional[str] = None,
+    max_batch_size: Optional[int] = None,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -100,6 +101,7 @@ def run_vllm(
         download_dir=download_dir,
         enable_chunked_prefill=enable_chunked_prefill,
         max_num_batched_tokens=max_num_batched_tokens,
+        max_num_seqs=max_batch_size,
     )
 
     # Add the requests to the engine.
@@ -229,7 +231,8 @@ def main(args: argparse.Namespace):
             args.quantization_param_path, args.device,
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
-            args.download_dir)
+            args.download_dir, args.max_batch_size)
+
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -240,8 +243,16 @@ def main(args: argparse.Namespace):
                                args.output_len)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
-    total_num_tokens = sum(prompt_len + output_len
-                           for _, prompt_len, output_len in requests)
+    
+    if args.benchmark_input_only:
+        total_num_tokens = sum(prompt_len
+                               for _, prompt_len, _ in requests)
+    elif args.benchmark_output_only:
+        total_num_tokens = sum(output_len
+                               for _, _, output_len in requests)
+    else:
+        total_num_tokens = sum(prompt_len + output_len
+                               for _, prompt_len, output_len in requests)
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
 
@@ -356,6 +367,33 @@ if __name__ == "__main__":
                         default=None,
                         help='directory to download and load the weights, '
                         'default to the default cache dir of huggingface')
+    parser.add_argument(
+        "--max-batch-size",
+        type=int,
+        default=256,
+        help='set max batch size for vLLM backend',
+    )
+    parser.add_argument(
+        "--benchmark-input-only",
+        type=int,
+        help='Only use input tokens when computing tok/sec'
+    )
+    parser.add_argument(
+        "--benchmark-output-only",
+        action="store_true",
+        help='Only use output tokens when computing tok/sec'
+    )
+    parser.add_argument(
+        "--kvc-rate",
+        type=float,
+        default=1.0,
+        help="KV cache compression rate",
+    )
+    parser.add_argument(
+        "--enable-kvc",
+        action="store_true",
+        help="Enable KV cache compression",
+    )
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model
