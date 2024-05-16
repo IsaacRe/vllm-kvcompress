@@ -593,7 +593,7 @@ class LLMEngine:
             if self.kvcompress_config:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.
-                self.kvcompress_metrics.aggregate()
+                self.kvcompress_metrics.aggregate_decode()
         else:
             output = []
 

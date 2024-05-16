@@ -91,14 +91,38 @@ class CompressionMetrics:
             device=device,
         )
 
-    def clear_temp_metrics(self):
+    def clear_temp_metrics(self) -> None:
         """Temp metric output space must be set to zero before each
         forward pass to ensure that KVs for sequences that are not
         processed during the iteration remain unchanged after
         aggregation."""
         self.temp_metrics.zero_()
 
-    def aggregate(self):
+    def aggregate_prefill(
+        self,
+        prefill_metrics: torch.Tensor,  # [num_prefill_tokens, num_q_heads]
+        slot_mapping: torch.Tensor,     # [num_prefill_tokens, num_kv_heads]
+    ) -> None:
+        """Metrics returned from prefill are already L2 sums of key-attention
+        and have shape [key_seq_len, query_heads]"""
+        # TODO replace double gather with more efficient kernel
+        seq_len, _ = prefill_metrics.shape
+        # TODO validate dim order on reshape
+        per_head_metrics = (prefill_metrics
+                            .view(seq_len, self.num_kv_heads, -1)
+                            .sum(dim=-1))
+        assert per_head_metrics.shape == slot_mapping.shape
+        flat_slots = slot_mapping.flatten()
+        self.metrics.scatter_(
+            dim=0,
+            index=flat_slots,
+            src=(
+                self.metrics.gather(dim=0, index=flat_slots)
+                + per_head_metrics.flatten(),
+            ),
+        )
+
+    def aggregate_decode(self):
         """Simple heuristic from the paper: Total squared attention"""
         self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
 

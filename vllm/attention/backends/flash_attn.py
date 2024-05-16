@@ -226,6 +226,7 @@ class FlashAttentionImpl(AttentionImpl):
         alibi_slopes: Optional[List[float]] = None,
         sliding_window: Optional[int] = None,
         kvcompress_enabled: bool = False,
+        kvcompress_metric_buffer_len: int = 0,
     ) -> None:
         self.num_heads = num_heads
         self.head_size = head_size
@@ -234,6 +235,7 @@ class FlashAttentionImpl(AttentionImpl):
         self.sliding_window = ((sliding_window, sliding_window)
                                if sliding_window is not None else (-1, -1))
         self.kvcompress_enabled = kvcompress_enabled
+        self.kv_metric_buffer_len = kvcompress_metric_buffer_len
         if alibi_slopes is not None:
             alibi_slopes = torch.tensor(alibi_slopes, dtype=torch.float32)
         self.alibi_slopes = alibi_slopes
@@ -246,6 +248,14 @@ class FlashAttentionImpl(AttentionImpl):
             raise ValueError(
                 f"Head size {head_size} is not supported by PagedAttention. "
                 f"Supported head sizes are: {suppored_head_sizes}.")
+
+    def repeat_kv(self, x: torch.Tensor, n_rep: int) -> torch.Tensor:
+        """torch.repeat_interleave(x, dim=1, repeats=n_rep)"""
+        tokens, n_kv_heads, head_dim = x.shape
+        return (x[:, :,
+                  None, :].expand(tokens, n_kv_heads, n_rep,
+                                  head_dim).reshape(tokens, n_kv_heads * n_rep,
+                                                    head_dim))
 
     def forward(
         self,
@@ -322,33 +332,23 @@ class FlashAttentionImpl(AttentionImpl):
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
             if self.kvcompress_enabled:
-                raise NotImplementedError("Need to test")
-                # For prefill, all metadata will be identical to non-kv-compress
-                out, _, S_dmask = flash_attn_varlen_func(
-                    q=query,
-                    k=key,
-                    v=value,
-                    cu_seqlens_q=prefill_meta.seq_start_loc,
-                    cu_seqlens_k=prefill_meta.seq_start_loc,
-                    max_seqlen_q=prefill_meta.max_prompt_len,
-                    max_seqlen_k=prefill_meta.max_prompt_len,
-                    softmax_scale=self.scale,
-                    causal=True,
-                    window_size=self.sliding_window,
-                    alibi_slopes=self.alibi_slopes,
-                    return_attn_probs=True,
+                # Extract layer-dependent metadata
+                slot_mapping = attn_metadata.slot_mapping[layer_index]
+                if self.num_kv_heads != self.num_heads:
+                    # Interleave for MQA workaround.
+                    key = self.repeat_kv(key, self.num_queries_per_kv)
+                    value = self.repeat_kv(value, self.num_queries_per_kv)
+                out, kv_metric_out = _naive_kvc_attention(
+                    query,
+                    key,
+                    value,
+                    prefill_meta.prompt_lens,
+                    self.scale,
+                    self.kv_metric_buffer_len,
                 )
-                attn_weights = convert_flash_attn_S_to_softmax(
-                    S_dmask,
-                    prefill_meta.context_lens,
-                    prefill_meta,context_lens,
-                    query_padding_mask,
-                    key_padding_mask,
-                    d,
-                    dropout_p > 0.0,
-                    causal=causal,
-                    window_size=window_size,
-                )
+                kv_metrics.aggregate_prefill(kv_metric_out, slot_mapping[:num_prefill_tokens])
+                assert output[:num_prefill_tokens].shape == out.shape
+                output[:num_prefill_tokens] = out
             elif kv_cache is None or prefill_meta.block_tables.numel() == 0:
                 # normal attention
                 # When block_tables are not filled, it means q and k are the
@@ -423,3 +423,60 @@ class FlashAttentionImpl(AttentionImpl):
 
         # Reshape the output tensor.
         return output.view(num_tokens, hidden_size)
+
+
+# For KV-Compress we require aggregated attention allocated to each key
+def _naive_kvc_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    prompt_lens: List[int],
+    scale: float,
+    kv_metric_buffer_len: int = 0,
+) -> torch.Tensor:
+    output = torch.empty_like(query)
+    seq_len, head_size, _ = key.shape
+    kv_metric_output = torch.empty(
+        (seq_len, head_size),
+        dtype=torch.float,
+        device=key.device,
+    )
+    start = 0
+    for _, prompt_len in enumerate(prompt_lens):
+        end = start + prompt_len
+        out, kv_metrics = _naive_kvc_masked_attention(
+            query[start:end],
+            key[start:end],
+            value[start:end],
+            scale,
+        )
+        # TODO(woosuk): Unnecessary copy. Optimize.
+        output[start:end].copy_(out)
+        kv_metric_output[start:end].copy_(kv_metrics)
+        start += prompt_len
+
+    return output, kv_metric_output
+
+
+def _naive_kvc_masked_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    scale: float,
+    kv_metric_buffer_len: int = 0,
+) -> torch.Tensor:
+    seq_len, head_size, head_dim = query.shape
+    ones = torch.ones(seq_len,
+                      seq_len,
+                      dtype=query.dtype,
+                      device=query.device)
+    attn_mask = torch.triu(ones, diagonal=1)
+    attn_mask = attn_mask * torch.finfo(query.dtype).min
+    attn_weights = scale * torch.einsum("qhd,khd->hqk", query, key).float()
+    attn_weights = attn_weights + attn_mask.float()
+    attn_weights = torch.softmax(attn_weights, dim=-1)
+    out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
+    kv_metric_mask = torch.tril(ones, diagonal=kv_metric_buffer_len)
+    # sum L2 of attention over queries
+    kv_metrics = (attn_weights ** 2 * kv_metric_mask).sum(dim=-1)
+    return out, kv_metrics
