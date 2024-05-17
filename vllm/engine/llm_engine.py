@@ -169,7 +169,6 @@ class LLMEngine:
                     num_layers=self.kvcompress_config.num_layers,
                     num_kv_heads=self.kvcompress_config.num_kv_heads,
                     num_queries_per_kv=self.kvcompress_config.num_queries_per_kv,
-                    max_blocks=self.kvcompress_config.max_blocks,
                     max_kv_per_sort=self.kvcompress_config.max_kv_per_compression,
                     kv_metric_head_bias=None,
                 )
@@ -192,6 +191,7 @@ class LLMEngine:
         )
 
         self._initialize_kv_caches()
+        self.kvcompress_metrics.init_kv_metadata(self.cache_config.num_gpu_blocks)
 
         # If usage stat is enabled, collect relevant info.
         if is_usage_stats_enabled():

@@ -65,6 +65,7 @@ class BlockState:
         self._initialize()
 
     def _initialize(self):
+        print(f"Allocating context_lens - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         self.context_lens = torch.zeros(
             (self.num_layers,
              self.max_num_seqs,
@@ -85,6 +86,7 @@ class BlockState:
                 dtype=torch.int,
                 device="cuda:0")
         else:
+            print(f"Allocating block table - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
             self.block_tables = torch.empty(
                 (self.num_layers,
                  self.max_num_seqs,

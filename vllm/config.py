@@ -274,7 +274,7 @@ class ModelConfig:
     
     def get_num_queries_per_kv(self) -> int:
         """Returns the number of query heads per KV head."""
-        return self.hf_text_config.num_attention_heads / self.get_total_num_kv_heads()
+        return self.hf_text_config.num_attention_heads // self.get_total_num_kv_heads()
 
     def get_num_layers(self, parallel_config: "ParallelConfig") -> int:
         total_num_hidden_layers = self.hf_text_config.num_hidden_layers
@@ -592,7 +592,6 @@ class KVCompressConfig:
         self,
         target_compression_rate: float,
         compression_interval: int,
-        use_tiered_block_tables: bool,
         num_layers: int,
         num_kv_heads: int,
         num_queries_per_kv: int,
@@ -607,7 +606,6 @@ class KVCompressConfig:
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads
         self.num_queries_per_kv = num_queries_per_kv
-        self.use_tiered_block_tables = use_tiered_block_tables
         self.max_num_blocks_per_head = max_num_blocks_per_head
         self.max_blocks = max_blocks
         self.max_kv_per_compression = max_kv_per_compression
@@ -616,20 +614,13 @@ class KVCompressConfig:
         self._verify_args()
 
     def _verify_args(self) -> None:
-        if (self.use_tiered_block_tables):
-            raise ValueError("use_tiered_block_tables not yet supported")
-
-        if (self.target_compression_rate < 0.0
-            or self.target_compression_rate >= 1.0):
-            raise ValueError("target_compression_rate must be in [0, 1)")
+        if (self.target_compression_rate <= 0.0
+            or self.target_compression_rate > 1.0):
+            raise ValueError("target_compression_rate must be in (0, 1]")
         
         if self.compression_interval < 1:
             raise ValueError("compression_interval must be >= 1")
 
-        if (self.use_tiered_block_tables
-            and self.max_num_blocks_per_head <= self.max_num_t1_blocks):
-            raise ValueError("max_num_t2_blocks must be >= max_num_t1_blocks")
-        
         if self.num_layers <= 0 or self.num_kv_heads <= 0:
             raise ValueError(
                 "num_layers and num_kv_heads should both be > 0")

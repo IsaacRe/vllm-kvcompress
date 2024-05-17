@@ -31,15 +31,14 @@ class CompressionMetrics:
         num_layers: int,
         num_kv_heads: int,
         num_queries_per_kv: int,
-        max_blocks: int,
         max_kv_per_sort: int,
         kv_metric_head_bias: Optional[torch.Tensor],
         device: str = "cuda:0"
-        ) -> None:
+    ) -> None:
         self.block_size = block_size
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads
-        self.max_blocks = max_blocks
+        self.num_queries_per_kv = num_queries_per_kv
         self.device = device
 
         # Bias when aggregating metrics for each KV head.
@@ -47,6 +46,7 @@ class CompressionMetrics:
         # plus bias for its corresponding KV head.
         self.kv_metric_head_bias = kv_metric_head_bias
         if self.kv_metric_head_bias is None:
+            print(f"Allocating head bias - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
             self.kv_metric_head_bias = torch.zeros(
                 (num_layers, num_kv_heads),
                 dtype=torch.float32,
@@ -59,42 +59,61 @@ class CompressionMetrics:
         # as low as ~5,000,000 while maintaining
         # good performance.
         self.max_kv_per_sort = max_kv_per_sort
+
+        # Configured after profiling
+        self.num_blocks = None
+
+        # Allocated after profiling
+        self.metrics = None
+        self.temp_metrics = None
+        self.seq_index_by_block = None
+        self.layer_index_by_block = None
+        self.head_index_by_block = None
+        self.logical_block_num_by_block = None
+
+    def init_kv_metadata(self, num_blocks: int) -> None:
+        assert self.num_blocks is None, "already initialized"
+        self.num_blocks = num_blocks
+
         # Running metrics for every KV in cache
+        print(f"Allocating kv metrics - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         self.metrics = torch.empty(
-            (max_blocks, block_size),
+            (num_blocks, self.block_size),
             dtype=torch.float32,
-            device=device,
+            device=self.device,
         )
         # Reduction space where new metrics for each iteration
         # are recorded.
         # We record metrics of each key separately for each query
         # that attended to it and reduce over the queries
         # before aggregating into the running metrics tensor.
+        print(f"Allocating temp kv metrics - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         self.temp_metrics = torch.empty(
-            (max_blocks, block_size, num_queries_per_kv),
+            (num_blocks, self.block_size, self.num_queries_per_kv),
             dtype=torch.float32,
-            device=device,
+            device=self.device,
         )
+        print(f"Allocating block metadata - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         # Sequence index for every block in cache
         self.seq_index_by_block = torch.empty(
-            (max_blocks,),
+            (num_blocks,),
             dtype=torch.int,
-            device=device,
+            device=self.device,
         )
         self.layer_index_by_block = torch.empty(
-            (max_blocks,),
+            (num_blocks,),
             dtype=torch.int,
-            device=device,
+            device=self.device,
         )
         self.head_index_by_block = torch.empty(
-            (max_blocks,),
+            (num_blocks,),
             dtype=torch.int,
-            device=device,
+            device=self.device,
         )
         self.logical_block_num_by_block = torch.empty(
-            (max_blocks,),
+            (num_blocks,),
             dtype=torch.int,
-            device=device,
+            device=self.device,
         )
 
     def clear_temp_metrics(self) -> None:

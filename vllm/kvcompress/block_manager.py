@@ -115,7 +115,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.num_layers = kvcompress_config.num_layers
         self.num_total_gpu_blocks = num_gpu_blocks
         self.num_total_cpu_blocks = num_cpu_blocks
-        self.use_tiered_block_tables = kvcompress_config.use_tiered_block_tables
         self.device = device
 
         self.watermark = watermark

@@ -81,6 +81,8 @@ def run_vllm(
     gpu_memory_utilization: float = 0.9,
     download_dir: Optional[str] = None,
     max_batch_size: Optional[int] = None,
+    enable_kvc: bool = False,
+    kvc_rate: float = 1.0,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -102,6 +104,8 @@ def run_vllm(
         enable_chunked_prefill=enable_chunked_prefill,
         max_num_batched_tokens=max_num_batched_tokens,
         max_num_seqs=max_batch_size,
+        enable_kvcompress=enable_kvc,
+        target_compression_rate=kvc_rate,
     )
 
     # Add the requests to the engine.
@@ -231,7 +235,8 @@ def main(args: argparse.Namespace):
             args.quantization_param_path, args.device,
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
-            args.download_dir, args.max_batch_size)
+            args.download_dir, args.max_batch_size, args.enable_kvc,
+            args.kvc_rate)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1

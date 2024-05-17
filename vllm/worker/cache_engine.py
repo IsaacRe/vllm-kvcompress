@@ -90,6 +90,7 @@ class CacheEngine:
         assert device != "cpu", "CPU inference not supporte with KV-Compress"
         kv_cache_shape = self.attn_backend.get_kv_cache_shape(
             num_blocks, self.block_size, self.num_heads, self.head_size)
+        print(f"CUDA Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         return torch.empty(kv_cache_shape,
                            dtype=self.dtype,
                            pin_memory=False,
@@ -135,16 +136,18 @@ class CacheEngine:
             dtype = STR_DTYPE_TO_TORCH_DTYPE[cache_config.cache_dtype]
         dtype_size = _get_dtype_size(dtype)
 
-        if cache_config.enable_kvcompress:
-            return kvcompress_config.get_cache_block_size(
-                cache_config.block_size, head_size, dtype_size)
-
         num_heads = model_config.get_num_kv_heads(parallel_config)
         num_layers = model_config.get_num_layers(parallel_config)
 
         key_cache_block = cache_config.block_size * num_heads * head_size
         value_cache_block = key_cache_block
         total = num_layers * (key_cache_block + value_cache_block)
+
+        if cache_config.enable_kvcompress:
+            block_size = kvcompress_config.get_cache_block_size(
+                cache_config.block_size, head_size, dtype_size)
+            print(f'Original block size: {dtype_size * total}, KVC block size: {block_size}')
+            return block_size
         return dtype_size * total
 
 

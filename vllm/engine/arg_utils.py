@@ -599,9 +599,10 @@ class EngineArgs:
             guided_decoding_backend=self.guided_decoding_backend)
 
         if self.enable_kvcompress:
-            max_blocks_per_head = (self.max_model_len + self.block_size
+            max_model_len = self.max_model_len or model_config.max_model_len
+            max_blocks_per_head = (max_model_len + self.block_size
                           - 1) // self.block_size
-            num_layers = model_config.get_num_layers()
+            num_layers = model_config.get_num_layers(parallel_config)
             num_kv_heads = model_config.get_total_num_kv_heads()
             kvcompress_config = KVCompressConfig(
                 target_compression_rate=self.target_compression_rate,
@@ -613,6 +614,7 @@ class EngineArgs:
                 max_blocks=(max_blocks_per_head * self.max_num_seqs * num_layers
                             * num_kv_heads),
                 max_kv_per_compression=self.max_kv_per_compression,
+                protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
             )
         else:
