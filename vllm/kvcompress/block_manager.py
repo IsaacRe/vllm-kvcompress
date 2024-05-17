@@ -206,6 +206,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                     ] = self.gpu_allocator.allocate()
         self.block_state.context_lens[:,batch_slot_idx] += token_count
 
+    def get_block_table(self, seq: Sequence) -> List[int]:
+        return self.block_state.get_block_state_seq_view(
+            self.batch_slot_mapping[seq.seq_id]
+        )
+
     def get_block_state_batch_view(self, seqs: List[Sequence]) -> BlockStateView:
         return self.block_state.get_block_state_batch_view(
             [self.batch_slot_mapping[seq.seq_id] for seq in seqs]
@@ -339,9 +344,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def get_num_free_cpu_blocks(self) -> int:
         raise NotImplementedError("KV-Compress with swap-preemption not supported")
-    
-    def get_block_table(self, seq: Sequence) -> List[int]:
-        raise NotImplementedError
 
     def access_all_blocks_in_seq(
         self,
