@@ -869,6 +869,7 @@ class ModelRunner:
                 decode_attn_metadata = self.attn_backend.make_metadata(
                     **metadata_dict)
 
+        print(f"Making metadata - kv_metrics: {kv_metrics}")
         attn_metadata = AttentionMetadata(
             num_prefills=num_prefills,
             slot_mapping=slot_mapping,

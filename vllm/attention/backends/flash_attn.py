@@ -198,13 +198,12 @@ class FlashAttentionImpl(AttentionImpl):
         kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
 
         if kv_cache is not None:
-            key_cache, value_cache = PagedAttention.split_kv_cache(
-                kv_cache, self.num_kv_heads, self.head_size)
-
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
             if kvcompress_enabled:
+                key_cache, value_cache = KVCAttention.split_kv_cache(
+                    kv_cache, self.head_size)
                 assert kv_metrics
                 assert layer_index is not None
                 # Extract layer-dependent metadata
@@ -217,6 +216,8 @@ class FlashAttentionImpl(AttentionImpl):
                                                   attn_metadata.kv_cache_dtype,
                                                   kv_scale)
             else:
+                key_cache, value_cache = PagedAttention.split_kv_cache(
+                    kv_cache, self.num_kv_heads, self.head_size)
                 PagedAttention.write_to_paged_cache(key, value, key_cache,
                                                     value_cache,
                                                     attn_metadata.slot_mapping,

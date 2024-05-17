@@ -602,6 +602,7 @@ class LLMEngine:
                 self.kvcompress_metrics.clear_temp_metrics()
             if cache_moves:
                 self.model_executor.execute_cache_moves(cache_moves, self.kvcompress_metrics)
+            print(f"In LLMEngine - kv_metrics={self.kvcompress_metrics}")
             output = self.model_executor.execute_model(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,

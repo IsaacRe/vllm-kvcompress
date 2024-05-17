@@ -86,6 +86,7 @@ class Worker(WorkerBase):
             device_config,
             load_config=load_config,
             lora_config=self.lora_config,
+            kvcompress_config=self.kvcompress_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
             vision_language_config=vision_language_config,
@@ -227,7 +228,7 @@ class Worker(WorkerBase):
         num_lookahead_slots: int = 0,
         kv_metrics: Optional[CompressionMetrics] = None,
     ) -> List[SamplerOutput]:
-
+        print(f"In Worker - {kv_metrics=}")
         if self.is_driver_worker:
             assert seq_group_metadata_list is not None
             num_seq_groups = len(seq_group_metadata_list)
