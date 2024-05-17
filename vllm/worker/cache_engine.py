@@ -5,6 +5,7 @@ import torch
 
 from vllm._custom_ops import execute_cache_moves as _execute_cache_moves
 from vllm.attention import get_attn_backend
+from vllm.core.kv_cache import KVCache, UnifiedKVCache
 from vllm.config import CacheConfig, ModelConfig, ParallelConfig, KVCompressConfig
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
@@ -65,7 +66,7 @@ class CacheEngine:
         self,
         num_blocks: int,
         device: str,
-    ) -> List[torch.Tensor]:
+    ) -> KVCache:
         """Allocates KV cache on the specified device."""
         kv_cache_shape = self.attn_backend.get_kv_cache_shape(
             num_blocks, self.block_size, self.num_heads, self.head_size)
@@ -77,24 +78,25 @@ class CacheEngine:
                             dtype=self.dtype,
                             pin_memory=pin_memory,
                             device=device))
-        return kv_cache
+        return KVCache(kv_cache)
     
     def _allocate_unified_kv_cache(
         self,
         num_blocks: int,
         device: str,
-    ) -> torch.Tensor:
+    ) -> UnifiedKVCache:
         """Allocates unified KV cache tensor for all layers in contiguous
         memory.
         """
-        assert device != "cpu", "CPU inference not supporte with KV-Compress"
+        assert device != "cpu", "CPU inference not supported with KV-Compress"
         kv_cache_shape = self.attn_backend.get_kv_cache_shape(
             num_blocks, self.block_size, self.num_heads, self.head_size)
         print(f"CUDA Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
-        return torch.empty(kv_cache_shape,
-                           dtype=self.dtype,
-                           pin_memory=False,
-                           device=device)
+        kv_cache = torch.empty(kv_cache_shape,
+                               dtype=self.dtype,
+                               pin_memory=False,
+                               device=device)
+        return UnifiedKVCache(kv_cache)
 
     def swap_in(self, src_to_dst: Dict[int, int]) -> None:
         for i in range(self.num_layers):

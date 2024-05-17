@@ -29,6 +29,7 @@ from transformers import LlamaConfig
 
 from vllm.attention import Attention, AttentionMetadata
 from vllm.config import LoRAConfig
+from vllm.core.kv_cache import KVCacheBase
 from vllm.distributed import (get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size)
 from vllm.model_executor.layers.activation import SiluAndMul
@@ -272,7 +273,7 @@ class LlamaModel(nn.Module):
         self,
         input_ids: Optional[torch.Tensor],
         positions: torch.Tensor,
-        kv_caches: List[torch.Tensor],
+        kv_cache: KVCacheBase,
         attn_metadata: AttentionMetadata,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -286,7 +287,7 @@ class LlamaModel(nn.Module):
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
-                kv_caches[i],
+                kv_cache.get_layer(i),
                 attn_metadata.set_layer(i),
                 residual,
             )
