@@ -346,9 +346,9 @@ def _naive_kvc_attention(
     kv_metric_buffer_len: int = 0,
 ) -> torch.Tensor:
     output = torch.empty_like(query)
-    seq_len, head_size, _ = key.shape
+    seq_len, num_heads, _ = key.shape
     kv_metric_output = torch.empty(
-        (seq_len, head_size),
+        (seq_len, num_heads),
         dtype=torch.float,
         device=key.device,
     )
@@ -364,7 +364,8 @@ def _naive_kvc_attention(
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
         output[start:end].copy_(out)
-        kv_metric_output[start:end].copy_(kv_metrics)
+        print(kv_metric_output.shape, kv_metrics.shape, start, end)
+        kv_metric_output[start:end].copy_(kv_metrics.T)
         start += prompt_len
 
     return output, kv_metric_output
@@ -377,7 +378,7 @@ def _naive_kvc_masked_attention(
     scale: float,
     kv_metric_buffer_len: int = 0,
 ) -> torch.Tensor:
-    seq_len, head_size, head_dim = query.shape
+    seq_len, num_heads, head_dim = query.shape
     ones = torch.ones(seq_len,
                       seq_len,
                       dtype=query.dtype,

@@ -15,7 +15,7 @@ from vllm.config import (DeviceConfig, LoadConfig, LoRAConfig, ModelConfig,
 from vllm.distributed import broadcast_tensor_dict, with_pynccl_for_all_reduce
 from vllm.distributed.device_communicators import (custom_all_reduce,
                                                    pynccl_utils)
-from vllm.core.kv_cache import KVCacheBase
+from vllm.core.kv_cache import KVCacheBase, KVCache, UnifiedKVCache
 from vllm.logger import init_logger
 from vllm.lora.layers import LoRAMapping
 from vllm.lora.request import LoRARequest
@@ -996,7 +996,8 @@ class ModelRunner:
 
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
-        kv_caches = [None] * num_layers
+        kv_caches = (UnifiedKVCache(None) if self.kvcompress_config else
+                     KVCache([None] * num_layers))
         self.execute_model(seqs, kv_caches)
         torch.cuda.synchronize()
         return
