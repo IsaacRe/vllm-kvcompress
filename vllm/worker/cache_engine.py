@@ -60,6 +60,7 @@ class CacheEngine:
             if cache_config.enable_kvcompress else
             self._allocate_kv_cache(self.num_gpu_blocks, "cuda")
         )
+        print(f"GPU cache type: {type(self.gpu_cache)}")
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
 
     def _allocate_kv_cache(

@@ -15,6 +15,7 @@ from vllm.config import (DeviceConfig, LoadConfig, LoRAConfig, ModelConfig,
 from vllm.distributed import broadcast_tensor_dict, with_pynccl_for_all_reduce
 from vllm.distributed.device_communicators import (custom_all_reduce,
                                                    pynccl_utils)
+from vllm.core.kv_cache import KVCacheBase
 from vllm.logger import init_logger
 from vllm.lora.layers import LoRAMapping
 from vllm.lora.request import LoRARequest
@@ -891,7 +892,7 @@ class ModelRunner:
     def execute_model(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
-        kv_caches: List[torch.Tensor],
+        kv_caches: KVCacheBase,
         kv_metrics: Optional[CompressionMetrics] = None,
     ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,

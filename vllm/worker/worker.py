@@ -258,6 +258,7 @@ class Worker(WorkerBase):
         if num_seq_groups == 0:
             return []
 
+        print(f"GPU cache type: {type(self.gpu_cache)}")
         output = self.model_runner.execute_model(seq_group_metadata_list,
                                                  self.gpu_cache, kv_metrics)
 
