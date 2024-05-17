@@ -545,7 +545,7 @@ class ModelRunner:
             batch_size = graph_batch_size
 
         if self.kvcompress_config:
-            slot_mapping = torch.stack(slot_mapping, dim=-1).to(self.device)
+            slot_mapping = torch.stack(slot_mapping, dim=1).to(self.device)
             context_lens_tensor = torch.stack(context_lens, dim=1).to(self.device)
         else:
             context_lens_tensor = torch.tensor(context_lens,

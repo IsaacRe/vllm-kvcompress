@@ -185,10 +185,10 @@ class BlockStateView:
         else:
             block_numbers = (                   # [ num_layers, num_kv_heads, 1 ]
                 self.block_tables
-                    .gather(dim=-1, index=next_block[...,None])
+                    .gather(dim=-1, index=next_block[...,None].type(torch.int64))
                     .type(torch.int64)
             )
-            return block_numbers.unsqueeze(-1) * self.block_size + next_offset
+            return block_numbers * self.block_size + next_offset
 
     def get_context_lens(self) -> torch.Tensor:
         return self.context_lens

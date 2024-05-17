@@ -207,8 +207,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idx] += token_count
 
     def get_block_table(self, seq: Sequence) -> List[int]:
-        return self.block_state.get_block_state_seq_view(
-            self.batch_slot_mapping[seq.seq_id]
+        return self.block_state.get_block_state_batch_view(
+            [self.batch_slot_mapping[seq.seq_id]]
         )
 
     def get_block_state_batch_view(self, seqs: List[Sequence]) -> BlockStateView:
@@ -362,4 +362,4 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         return []
 
     def mark_blocks_as_computed(self, seq_group: SequenceGroup):
-        raise NotImplementedError("prefix caching with KV-Compress not supported")
+        pass
