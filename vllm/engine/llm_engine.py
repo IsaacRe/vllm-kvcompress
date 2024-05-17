@@ -593,8 +593,9 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
+        logger.info("In LLMEngine 1")
         seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
-
+        print("In LLMEngine 2")
         if not scheduler_outputs.is_empty():
             if self.kvcompress_config:
                 # Temp metrics must be cleared before each forward pass to ensure correct

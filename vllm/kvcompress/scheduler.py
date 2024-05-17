@@ -227,9 +227,9 @@ class CompressionScheduler:
         self._increment_iters_since_compression()
         return CompressionOutputs(cache_moves, freed_block_count)
 
-    def schedule_compression(self) -> Optional[CompressionOutputs]:
+    def schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         """Returns number of KV evictions per sequence"""
         self.iteration_count += 1
         if self.iteration_count >= self.config.compression_interval:
             self.iteration_count = 0
-            return self._schedule_compression()
+            return self._schedule_compression(seqs)

@@ -94,6 +94,12 @@ class SimpleBlockAllocator(BlockAllocatorBase):
 
     def get_num_free_blocks(self) -> int:
         return len(self.free_blocks)
+    
+    def contains_block(self, block_hash: int) -> bool:
+        raise NotImplementedError
+    
+    def update_hash(self, block_hash: int, block: PhysicalTokenBlock):
+        raise NotImplementedError
 
 
 class BlockSpaceManagerKVC(BlockSpaceManager):
@@ -333,6 +339,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def get_num_free_cpu_blocks(self) -> int:
         raise NotImplementedError("KV-Compress with swap-preemption not supported")
+    
+    def get_block_table(self, seq: Sequence) -> List[int]:
+        raise NotImplementedError
 
     def access_all_blocks_in_seq(
         self,

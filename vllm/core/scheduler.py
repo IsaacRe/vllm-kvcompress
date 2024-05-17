@@ -10,7 +10,7 @@ from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.core.policy import Policy, PolicyFactory
 from vllm.kvcompress.block_manager import BlockSpaceManagerKVC
 from vllm.kvcompress.block import BlockState, BlockStateView
-from vllm.kvcompress.scheduler import CompressionScheduler, CacheMoves
+from vllm.kvcompress.scheduler import CompressionScheduler, CacheMoves, CompressionOutputs
 from vllm.kvcompress.state import KVCompressState
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -277,7 +277,7 @@ class Scheduler:
                 block_size=cache_config.block_size,
                 num_gpu_blocks=cache_config.num_gpu_blocks,
                 num_cpu_blocks=cache_config.num_cpu_blocks,
-                config=self.kvcompress_config,
+                kvcompress_config=self.kvcompress_config,
                 block_state=kvcompress_shared_state.block_state)
             self.kvcompress_scheduler = CompressionScheduler(
                 config=self.kvcompress_config,
@@ -903,13 +903,17 @@ class Scheduler:
         inference scheduling and the cache moves must be executed
         by the cache engine before the current inference step.
         """
-        kvc_output = self.kvcompress_scheduler.schedule_compression()
-        # Free blocks that were removed by compression
-        self.block_manager.free_compressed_blocks(
-            kvc_output.freed_block_count
-        )
-        # Return physical cache moves to be executed by cache engine
-        return kvc_output.cache_moves
+        # Assume all sequence groups have a single sequence when using
+        # KV-Compress.
+        seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
+        kvc_output = self.kvcompress_scheduler.schedule_compression(seqs)
+        if kvc_output:
+            # Free blocks that were removed by compression
+            self.block_manager.free_compressed_blocks(
+                kvc_output.freed_block_count
+            )
+            # Return physical cache moves to be executed by cache engine
+            return kvc_output.cache_moves
 
     def _can_append_slots(self, seq_group: SequenceGroup) -> bool:
         """Determine whether or not we have enough space in the KV cache to
