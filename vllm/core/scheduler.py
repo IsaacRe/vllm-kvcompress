@@ -906,8 +906,8 @@ class Scheduler:
         # Assume all sequence groups have a single sequence when using
         # KV-Compress.
         seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
-        kvc_output = self.kvcompress_scheduler.schedule_compression(seqs)
-        if kvc_output:
+        if seqs and (kvc_output := 
+                     self.kvcompress_scheduler.schedule_compression(seqs)):
             # Free blocks that were removed by compression
             self.block_manager.free_compressed_blocks(
                 kvc_output.freed_block_count

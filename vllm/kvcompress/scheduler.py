@@ -47,6 +47,7 @@ class CompressionScheduler:
         block_manager: BlockSpaceManagerKVC,
         compression_metrics: CompressionMetrics,
     ) -> None:
+        self.device = block_manager.device
         self.config = config
         self.block_manager = block_manager
         self.compression_metrics = compression_metrics
