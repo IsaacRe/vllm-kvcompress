@@ -127,7 +127,6 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
-    print(f"RUNNING ENGINE {llm}")
     llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
     return end - start

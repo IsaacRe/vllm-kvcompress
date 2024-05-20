@@ -233,6 +233,9 @@ class CompressionScheduler:
 
     def schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         """Returns number of KV evictions per sequence"""
+        if self.config.target_compression_rate == 1.0:
+            # No compression
+            return
         self.iteration_count += 1
         if self.iteration_count >= self.config.compression_interval:
             self.iteration_count = 0
