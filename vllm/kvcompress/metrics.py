@@ -136,14 +136,15 @@ class CompressionMetrics:
         per_head_metrics = (prefill_metrics
                             .view(seq_len, self.num_kv_heads, -1)
                             .sum(dim=-1))
-        assert per_head_metrics.shape == slot_mapping.shape
+        assert per_head_metrics.shape == slot_mapping.shape, \
+            f"{per_head_metrics.shape} != {slot_mapping.shape}"
         flat_slots = slot_mapping.flatten()
-        self.metrics.scatter_(
+        self.metrics.view(-1).scatter_(
             dim=0,
             index=flat_slots,
             src=(
-                self.metrics.gather(dim=0, index=flat_slots)
-                + per_head_metrics.flatten(),
+                self.metrics.view(-1).gather(dim=0, index=flat_slots)
+                + per_head_metrics.flatten()
             ),
         )
 

@@ -72,7 +72,7 @@ class CompressionScheduler:
         self,
         seq: Sequence,
         compression_rate: Optional[float] = None,
-    ) -> Tuple[int]:
+    ) -> Tuple[int, int]:
         """Return the number of this sequence's blocks to be freed during
         the next compression iteration.
         """
@@ -83,7 +83,7 @@ class CompressionScheduler:
             seq.data.get_len() - self.config.protected_window_size
         )
         if compressible_token_count <= 0:
-            return 0
+            return 0, 0
         # Total count of KVs in compressible range if this sequence had never
         # been compressed
         uncompressed_kv_count = (
@@ -103,7 +103,7 @@ class CompressionScheduler:
         evict_block_count = evict_kv_count // self.block_manager.block_size
         return evict_kv_count, evict_block_count
     
-    def _schedule_compression(self, seqs: List[Sequence]) -> CompressionOutputs:
+    def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         self._update_sequences(seqs)
 
         # Select sequences to compress this iteration and determine blocks to
@@ -131,6 +131,9 @@ class CompressionScheduler:
             seqs_to_compress.append(seq)
             evicted_blocks_per_seq.append(evicted_kv_count)
             self._iters_since_compression[seq] = 0
+
+        if not seqs_to_compress:
+            return
 
         batch_size = len(seqs_to_compress)
         b_l_h = batch_size, self.config.num_layers, self.config.num_kv_heads

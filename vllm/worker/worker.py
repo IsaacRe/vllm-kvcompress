@@ -228,7 +228,6 @@ class Worker(WorkerBase):
         num_lookahead_slots: int = 0,
         kv_metrics: Optional[CompressionMetrics] = None,
     ) -> List[SamplerOutput]:
-        print(f"In Worker - {kv_metrics=}")
         if self.is_driver_worker:
             assert seq_group_metadata_list is not None
             num_seq_groups = len(seq_group_metadata_list)

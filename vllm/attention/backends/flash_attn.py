@@ -364,7 +364,6 @@ def _naive_kvc_attention(
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
         output[start:end].copy_(out)
-        print(kv_metric_output.shape, kv_metrics.shape, start, end)
         kv_metric_output[start:end].copy_(kv_metrics.T)
         start += prompt_len
 

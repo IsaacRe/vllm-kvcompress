@@ -60,7 +60,6 @@ class CacheEngine:
             if cache_config.enable_kvcompress else
             self._allocate_kv_cache(self.num_gpu_blocks, "cuda")
         )
-        print(f"GPU cache type: {type(self.gpu_cache)}")
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
 
     def _allocate_kv_cache(
@@ -149,7 +148,6 @@ class CacheEngine:
         if cache_config.enable_kvcompress:
             block_size = kvcompress_config.get_cache_block_size(
                 cache_config.block_size, head_size, dtype_size)
-            print(f'Original block size: {dtype_size * total}, KVC block size: {block_size}')
             return block_size
         return dtype_size * total
 

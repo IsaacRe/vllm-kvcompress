@@ -528,7 +528,8 @@ class ModelRunner:
         # See `capture_model` API for more details.
         # For decoding requests, batch_size == input_tokens.
         batch_size = len(input_tokens)
-        max_context_len = max(context_lens)
+        max_context_len = (max([ctx_len.max().item() for ctx_len in context_lens])
+                           if self.kvcompress_config else max(context_lens))
         use_captured_graph = (
             not self.model_config.enforce_eager
             and batch_size <= _BATCH_SIZES_TO_CAPTURE[-1]
@@ -546,7 +547,6 @@ class ModelRunner:
             batch_size = graph_batch_size
 
         if self.kvcompress_config:
-            slot_mapping = torch.stack(slot_mapping, dim=1).to(self.device)
             context_lens_tensor = torch.stack(context_lens, dim=1).to(self.device)
         else:
             context_lens_tensor = torch.tensor(context_lens,
@@ -773,7 +773,7 @@ class ModelRunner:
             if self.kvcompress_config:
                 # [ num_layers, num_tokens, num_heads ]
                 slot_mapping = (
-                    torch.stack(slot_mapping, dim=1)
+                    torch.concat(slot_mapping, dim=1)
                          .type(torch.long)
                          .to(self.device)
                 )
@@ -870,7 +870,6 @@ class ModelRunner:
                 decode_attn_metadata = self.attn_backend.make_metadata(
                     **metadata_dict)
 
-        print(f"Making metadata - kv_metrics: {kv_metrics}")
         attn_metadata = AttentionMetadata(
             num_prefills=num_prefills,
             slot_mapping=slot_mapping,

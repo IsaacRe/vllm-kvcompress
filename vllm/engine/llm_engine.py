@@ -595,7 +595,6 @@ class LLMEngine:
         """
         logger.info("In LLMEngine 1")
         seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
-        print("In LLMEngine 2")
         if not scheduler_outputs.is_empty():
             if self.kvcompress_config:
                 # Temp metrics must be cleared before each forward pass to ensure correct
@@ -603,7 +602,6 @@ class LLMEngine:
                 self.kvcompress_metrics.clear_temp_metrics()
             if cache_moves:
                 self.model_executor.execute_cache_moves(cache_moves, self.kvcompress_metrics)
-            print(f"In LLMEngine - kv_metrics={self.kvcompress_metrics}")
             output = self.model_executor.execute_model(
                 seq_group_metadata_list=seq_group_metadata_list,
                 blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,

@@ -161,6 +161,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         batch_slot_idx = self.free_batch_slots.pop()
         self.batch_slot_mapping[seq_id] = batch_slot_idx
+        print(f'BLOCK MANAGER BATCH SLOTS - {self.batch_slot_mapping}')
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
         self.block_state.block_tables[:,batch_slot_idx] = seq_blocks
 
@@ -172,13 +173,14 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         for layer in range(self.num_layers):
             for head in range(self.num_kv_heads):
-                block_count = block_counts[layer,batch_slot_idx,head,block_number]
+                block_count = block_counts[layer,batch_slot_idx,head]
                 for block_number in range(block_count):
                     block = self.block_state.block_tables[
                         layer, batch_slot_idx, head, block_number
                     ]
                     self.gpu_allocator.free(block)
         self.block_state.context_lens[:,batch_slot_idx] = 0
+        print(f'BLOCK MANAGER BATCH SLOTS - {self.batch_slot_mapping}')
         del self.batch_slot_mapping[seq_id]
 
     def _get_new_block_count(self, seq_id: int, token_count: int):
@@ -199,8 +201,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         for layer in range(self.num_layers):
             for head in range(self.num_kv_heads):
                 start_block_number = current_block_count[layer,head]
+                added_blocks = added_block_count[layer,head]
                 for block_number in range(start_block_number,
-                                          start_block_number + added_block_count):
+                                          start_block_number + added_blocks):
                     self.block_state.block_tables[
                         layer, batch_slot_idx, head, block_number
                     ] = self.gpu_allocator.allocate()
@@ -259,13 +262,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                 ), "lookahead allocation with KV-Compress not supported"
         assert (seq_group.num_seqs() <= 1,
                 ), "multi-sequence SequenceGroups with KV-Compress are not supported"
-        seq: Sequence = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+        seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
 
-        # Simple heuristic: If there are at least num_kv_heads free blocks
+        # Simple heuristic: If there are at least num_kv_heads * num_layers free blocks
         # for each sequence, we can append.
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
         new_block_count = self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
-        return new_block_count <= num_free_gpu_blocks
+        return new_block_count.sum() <= num_free_gpu_blocks
 
     def append_slots(
         self,
@@ -335,6 +338,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.free_batch_slots = set(range(self.block_state.max_num_seqs))
         self.block_state.clear()
         self.gpu_allocator.free_all()
+        print(f'BLOCK MANAGER BATCH SLOTS - {self.batch_slot_mapping}')
 
     def get_slot_index(self, seq: Sequence) -> int:
         return self.batch_slot_mapping[seq.seq_id]

@@ -181,14 +181,14 @@ class BlockStateView:
                     .gather(dim=1, index=t2_block_numbers[:,None,:])
                     .type(torch.int64)
             )
-            return block_numbers.unsqueeze(1) * self.block_size + next_offset
+            return block_numbers.squeeze(-1) * self.block_size + next_offset
         else:
             block_numbers = (                   # [ num_layers, num_kv_heads, 1 ]
                 self.block_tables
                     .gather(dim=-1, index=next_block[...,None].type(torch.int64))
                     .type(torch.int64)
             )
-            return block_numbers * self.block_size + next_offset
+            return block_numbers.squeeze(-1) * self.block_size + next_offset
 
     def get_context_lens(self) -> torch.Tensor:
         return self.context_lens
@@ -221,11 +221,11 @@ def _get_empty_block_tables(
 def merge_block_table_views(
     views: List[Optional[BlockStateView]],
 ) -> torch.Tensor:
-    first_not_empty = next(view for view in views if view)
+    first_not_empty = next(view for view in views if view is not None)
     num_layers, _, num_kv_heads, max_blocks = first_not_empty.shape
     return torch.stack(
         [
-            view if view else
+            view if view is not None else
             _get_empty_block_tables(1, max_blocks, num_layers, num_kv_heads)
             for view in views
         ],

@@ -134,7 +134,6 @@ class GPUExecutor(ExecutorBase):
         num_lookahead_slots: int,
         kv_metrics: Optional[CompressionMetrics],
     ) -> List[SamplerOutput]:
-        print(f"In GPUExecutor - {kv_metrics=}")
         output = self.driver_worker.execute_model(
             seq_group_metadata_list=seq_group_metadata_list,
             blocks_to_swap_in=blocks_to_swap_in,
