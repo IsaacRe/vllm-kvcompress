@@ -8,6 +8,7 @@ import itertools
 import torch
 
 from vllm.kvcompress.block import BlockState, PhysicalTokenBlock, BlockStateView
+from vllm.benchmark import BENCHMARKER
 from vllm.config import KVCompressConfig
 from vllm.core.evictor import EvictionPolicy, Evictor, make_evictor
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
@@ -273,7 +274,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         num_lookahead_slots: int = 0,
     ) -> Dict[int, List[int]]:
         """Allocate a physical slot for a new token."""
-        self._append_to_sequence(seq_id=seq.seq_id, token_count=1)
+        with BENCHMARKER.time("append_slots"):
+            self._append_to_sequence(seq_id=seq.seq_id, token_count=1)
         return {}  # no copy on writes since we disallow multi-seq block references
 
     def fork(self, parent_seq: Sequence, child_seq: Sequence) -> None:
@@ -303,7 +305,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         if seq.seq_id not in self.batch_slot_mapping:
             # Already freed or haven't been scheduled yet.
             return
-        self._remove_sequence(seq.seq_id)
+        with BENCHMARKER.time("free"):
+            self._remove_sequence(seq.seq_id)
 
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
         seq_ids, seq_indices = zip(*[

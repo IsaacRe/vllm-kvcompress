@@ -6,6 +6,7 @@ from typing import Deque, Dict, Iterable, List, Optional, Set, Tuple, Union
 import torch
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig, KVCompressConfig
+from vllm.benchmark import BENCHMARKER
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.core.policy import Policy, PolicyFactory
 from vllm.kvcompress.block_manager import BlockSpaceManagerKVC
@@ -909,9 +910,10 @@ class Scheduler:
         if seqs and (kvc_output := 
                      self.kvcompress_scheduler.schedule_compression(seqs)):
             # Free blocks that were removed by compression
-            self.block_manager.free_compressed_blocks(
-                kvc_output.freed_block_count
-            )
+            with BENCHMARKER.time("free_compressed_blocks"):
+                self.block_manager.free_compressed_blocks(
+                    kvc_output.freed_block_count
+                )
             # Return physical cache moves to be executed by cache engine
             return kvc_output.cache_moves
 
