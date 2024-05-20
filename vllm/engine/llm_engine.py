@@ -593,7 +593,6 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
-        logger.info("In LLMEngine 1")
         seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
         if not scheduler_outputs.is_empty():
             if self.kvcompress_config:

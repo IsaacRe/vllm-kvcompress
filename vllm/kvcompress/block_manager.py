@@ -161,7 +161,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         batch_slot_idx = self.free_batch_slots.pop()
         self.batch_slot_mapping[seq_id] = batch_slot_idx
-        print(f'BLOCK MANAGER BATCH SLOTS - {self.batch_slot_mapping}')
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
         self.block_state.block_tables[:,batch_slot_idx] = seq_blocks
 
@@ -180,8 +179,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                     ]
                     self.gpu_allocator.free(block)
         self.block_state.context_lens[:,batch_slot_idx] = 0
-        print(f'BLOCK MANAGER BATCH SLOTS - {self.batch_slot_mapping}')
-        del self.batch_slot_mapping[seq_id]
 
     def _get_new_block_count(self, seq_id: int, token_count: int):
         batch_slot_idx = self.batch_slot_mapping[seq_id]
@@ -338,7 +335,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.free_batch_slots = set(range(self.block_state.max_num_seqs))
         self.block_state.clear()
         self.gpu_allocator.free_all()
-        print(f'BLOCK MANAGER BATCH SLOTS - {self.batch_slot_mapping}')
 
     def get_slot_index(self, seq: Sequence) -> int:
         return self.batch_slot_mapping[seq.seq_id]

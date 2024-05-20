@@ -112,8 +112,8 @@ class CompressionScheduler:
         seqs_to_compress: List[Sequence] = []
         evicted_blocks_per_seq = []
         max_evicted_tokens = 0
-        for _, seq in sorted(
-            [(self._iters_since_compression[s.seq_id], s) for s in seqs],
+        for _, _, seq in sorted(
+            [(self._iters_since_compression[s.seq_id], s.seq_id, s) for s in seqs],
             reverse=True,
         ):
             # If sequence is not long enough for compression, skip.
