@@ -11,6 +11,7 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
 
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
+from vllm.benchmark import BENCHMARKER
 
 
 def sample_requests(
@@ -260,6 +261,7 @@ def main(args: argparse.Namespace):
                                for _, prompt_len, output_len in requests)
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+    BENCHMARKER.summarize()
 
 
 if __name__ == "__main__":

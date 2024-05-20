@@ -4,6 +4,7 @@ from typing import Iterable, List, Optional, Type, Union
 from transformers import GenerationConfig, PreTrainedTokenizer
 
 import vllm
+from vllm.benchmark import BENCHMARKER
 from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig, LoadConfig,
                          LoRAConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig, SpeculativeConfig,
@@ -594,25 +595,30 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
-        seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
+        with BENCHMARKER.time("schedule"):
+            seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
         if not scheduler_outputs.is_empty():
             if self.kvcompress_config:
                 # Temp metrics must be cleared before each forward pass to ensure correct
                 # metric aggregation afterward
-                self.kvcompress_metrics.clear_temp_metrics()
+                with BENCHMARKER.time("clear_temp_metrics"):
+                    self.kvcompress_metrics.clear_temp_metrics()
             if cache_moves:
-                self.model_executor.execute_cache_moves(cache_moves, self.kvcompress_metrics)
-            output = self.model_executor.execute_model(
-                seq_group_metadata_list=seq_group_metadata_list,
-                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
-                kv_metrics=self.kvcompress_metrics)
+                with BENCHMARKER.time("execute_cache_moves"):
+                    self.model_executor.execute_cache_moves(cache_moves, self.kvcompress_metrics)
+            with BENCHMARKER.time("execute_model"):
+                output = self.model_executor.execute_model(
+                    seq_group_metadata_list=seq_group_metadata_list,
+                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                    num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
+                    kv_metrics=self.kvcompress_metrics)
             if self.kvcompress_config:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.
-                self.kvcompress_metrics.aggregate_decode()
+                with BENCHMARKER.time("aggregate_decode_metrics"):
+                    self.kvcompress_metrics.aggregate_decode()
         else:
             output = []
 
