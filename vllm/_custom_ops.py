@@ -285,6 +285,7 @@ def schedule_cache_evictions(
     hanging_token_count: torch.Tensor,
     block_size: int,
 ) -> None:
+    print(f'BLOCK_SIZE: {block_size}')
     kvc_ops.schedule_cache_evictions(
         out_evicted_kv_indices,
         out_evicted_kv_count,

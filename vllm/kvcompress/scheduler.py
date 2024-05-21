@@ -154,7 +154,9 @@ class CompressionScheduler:
         context_lens = batch_block_state.get_context_lens().contiguous()
         block_tables = batch_block_state.get_block_tables().contiguous()
         hanging_token_count = (
-            batch_block_state.get_hanging_token_counts().contiguous()
+            batch_block_state.get_hanging_token_counts()
+                             .transpose(0, 1)
+                             .contiguous()
         )
 
         # Schedule evictions
@@ -197,7 +199,8 @@ class CompressionScheduler:
         )
 
         # Set non-evicted slots to inf so that they are last after sort
-        evicted_kv_indices[non_evicted_mask] = MAX_INT
+        print(evicted_kv_indices.shape, non_evicted_mask.shape)
+        evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
 
         # Sort evicted indices
         evicted_kv_indices = evicted_kv_indices.sort(dim=-1).values

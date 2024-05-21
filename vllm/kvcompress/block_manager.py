@@ -319,14 +319,14 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             self._remove_sequence(seq.seq_id)
 
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
-        seq_ids, seq_indices = zip(*[
-            (seq_id, self.batch_slot_mapping[seq_id])
+        seq_ids, seq_indices, removed_blocks = zip(*[
+            (seq_id, self.batch_slot_mapping[seq_id], freed_block_count[seq_id])
             for seq_id in freed_block_count.keys()
         ])
         # Update context lengths
         self.block_state.remove_trailing_blocks(
             seq_indices=seq_indices,
-            removed_block_count=freed_block_count,
+            removed_block_count=removed_blocks,
         )
         # Free blocks starting from the last non-empty block
         last_blocks = self.block_state.get_last_non_empty_blocks(seq_indices)

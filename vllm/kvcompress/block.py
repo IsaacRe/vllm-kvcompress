@@ -128,7 +128,7 @@ class BlockState:
     def remove_trailing_blocks(
         self,
         seq_indices: List[int],
-        removed_block_count: torch.Tensor,
+        removed_block_count: List[torch.Tensor],
     ) -> None:
         """Update context_lens to account for blocks that were
         removed due to KV cache compression.
@@ -138,7 +138,8 @@ class BlockState:
         batch_view = self.get_block_state_batch_view(seq_indices)
         hanging_token_count = batch_view.get_hanging_token_counts()
         remaining_slots = self.block_size - hanging_token_count
-        batch_view.context_lens -= (removed_block_count - remaining_slots)
+        batch_view.context_lens -= (torch.stack(removed_block_count, dim=1)
+                                    - remaining_slots)
 
 
 class BlockStateView:
