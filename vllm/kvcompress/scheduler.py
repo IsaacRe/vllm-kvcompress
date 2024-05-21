@@ -179,6 +179,7 @@ class CompressionScheduler:
             evicted_blocks_per_seq,
             context_lens,
             hanging_token_count,
+            batch_block_state.block_size,
         )
 
         # Truncate eviction counts to last full evicted block
