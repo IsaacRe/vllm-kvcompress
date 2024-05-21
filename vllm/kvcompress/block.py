@@ -152,7 +152,7 @@ class BlockStateView:
         t2_block_tables: torch.Tensor,
         context_lens: torch.Tensor,
     ) -> None:
-        self.is_batch_view = context_lens.dim() <= 2
+        self.is_batch_view = context_lens.dim() > 2
         self.block_size = block_size
         self.use_tiered_block_tables = use_tiered_block_tables
         self.block_tables = block_tables
@@ -202,6 +202,22 @@ class BlockStateView:
         # 0 if last block is not full else block_size
         full_last_block = (remaining_kv == 0).type(torch.int) * self.block_size
         return torch.maximum(remaining_kv, full_last_block)
+    
+    def allocated_block_mask(self) -> torch.Tensor:
+        """Returns a mask of allocated blocks"""
+        assert not self.is_batch_view, \
+            "allocated_block_mask only implemented for sequence view"
+        block_counts = (
+            (self.context_lens + self.block_size) // self.block_size
+        )
+        return (
+            torch.arange(self.block_tables.size(-1))[None,None]
+                 .to(block_counts.device)
+            < block_counts[...,None]
+        )
+    
+    def get_allocated_blocks(self) -> torch.Tensor:
+        return self.block_tables[self.allocated_block_mask()]
 
 
 def _get_empty_block_tables(
@@ -222,7 +238,7 @@ def merge_block_table_views(
     views: List[Optional[BlockStateView]],
 ) -> torch.Tensor:
     first_not_empty = next(view for view in views if view is not None)
-    num_layers, _, num_kv_heads, max_blocks = first_not_empty.shape
+    num_layers, num_kv_heads, max_blocks = first_not_empty.shape
     return torch.stack(
         [
             view if view is not None else

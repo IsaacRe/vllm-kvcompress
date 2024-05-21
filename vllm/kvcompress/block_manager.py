@@ -62,39 +62,69 @@ class BlockAllocatorBase(ABC):
         pass
 
 
-class SimpleBlockAllocator(BlockAllocatorBase):
-    """Manages free physical token blocks for a device.
+class BlockTableView(torch.Tensor):
 
-    The allocator maintains a list of free blocks and allocates a block when
-    requested. When a block is freed, its reference count is decremented. If
-    the reference count becomes zero, the block is added back to the free list.
+    def __init__(self, data: torch.Tensor):
+        self.data = data
+
+    def __setitem__(self, _, __):
+        raise ValueError("Attempted modification of BlockTableView")
+
+
+class ParallelBlockAllocator(BlockAllocatorBase):
+    """Manages free physical token blocks for a device.
+    
+    Becuase KV-Compress uses (num_layers * num_kv_heads) times more blocks
+    than the vanilla paged KV cache, I observe heavy latency in the scheduler
+    (up to 80ms!) when naively iterating over allocated/freed blocks.
+
+    To remedy this, the modified block allocator indexes blocks in parallel to
+    avoid latency with large number of concurrent allocation/frees.
+
+    Because block number and free state is stored on GPU, mem size per block
+    must be modified accordingly when determining the number of GPU blocks in
+    the CacheEngine whenever the ParallelBlockAllocator is used.
     """
 
     def __init__(
         self,
         num_blocks: int,
+        device: str = "cuda:0",
     ) -> None:
         self.num_blocks = num_blocks
+        self.device = device
 
         # Initialize the free blocks.
-        self.free_blocks = set(range(num_blocks))
+        self.block_numbers = torch.arange(
+            num_blocks, device=device
+        )
+        self.free_mask = torch.ones(
+            (num_blocks,), dtype=torch.bool, device=device
+        )
+        self.free_count = num_blocks
 
-    def allocate(self) -> int:
-        if not self.free_blocks:
+    def allocate(self, num_blocks: int) -> BlockTableView:
+        if num_blocks > self.free_count:
             raise ValueError("Out of memory! No free blocks are available.")
-        block = self.free_blocks.pop()
-        return block
+        self.free_count -= num_blocks
+        allocated = self.block_numbers[self.free_mask][:num_blocks]
+        self.free_mask[allocated] = False
+        return BlockTableView(allocated)
 
-    def free(self, block: int) -> None:
-        if block in self.free_blocks:
-            raise ValueError(f"Double free! {block} is already freed.")
-        self.free_blocks.add(block)
+    def free(self, block_numbers: torch.Tensor) -> None:
+        if self.free_mask[block_numbers].any():
+            raise ValueError("Double free! One or more blocks were freed twice.")
+        if block_numbers.unique(dim=0).numel() != block_numbers.numel():
+            raise ValueError("Double free! One or more blocks were freed twice.")
+        self.free_count += block_numbers.numel()
+        self.free_mask[block_numbers] = True
 
     def free_all(self) -> None:
-        self.free_blocks = set(range(self.num_blocks))
+        self.free_count = self.num_blocks
+        self.free_mask[:] = True
 
     def get_num_free_blocks(self) -> int:
-        return len(self.free_blocks)
+        return self.free_count
     
     def contains_block(self, block_hash: int) -> bool:
         raise NotImplementedError
@@ -130,7 +160,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.watermark_blocks = int(watermark * num_gpu_blocks)
 
         # No swapping with KV-Compress so we only use a GPU allocator
-        self.gpu_allocator = SimpleBlockAllocator(num_gpu_blocks)
+        self.gpu_allocator = ParallelBlockAllocator(num_gpu_blocks)
         
         # KV-Compress uses pre-allocated block tables that are shared between
         # the model executor and scheduler/block manager
@@ -146,20 +176,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # If we just filled a block, update the block count to add tokens
         # that will be generated during the next decoding step. 
         seq_block_count = (seq_len + self.block_size) // self.block_size
-        seq_blocks = torch.tensor(
-            [
-                [
-                    [
-                        self.gpu_allocator.allocate()
-                        for _ in range(seq_block_count)
-                    ]
-                    for _ in range(self.num_kv_heads)
-                ]
-                for _ in range(self.num_layers)
-            ],
-            dtype=torch.int,
-            device=self.device,
-        )
+        total_blocks = self.num_layers * self.num_kv_heads * seq_block_count
+        block_numbers = self.gpu_allocator.allocate(total_blocks)
+        seq_blocks = block_numbers.reshape(
+            self.num_layers, self.num_kv_heads, seq_block_count
+        ).type(torch.int).to(self.device)
         batch_slot_idx = self.free_batch_slots.pop()
         self.batch_slot_mapping[seq_id] = batch_slot_idx
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
@@ -168,17 +189,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def _remove_sequence(self, seq_id: int) -> None:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
         self.free_batch_slots.add(batch_slot_idx)
-        block_counts = (
-            (self.block_state.context_lens + self.block_size) // self.block_size
+        self.gpu_allocator.free(
+            self.block_state
+                .get_block_state_seq_view(batch_slot_idx)
+                .get_allocated_blocks()
+                .type(torch.int64)
+                .to(self.gpu_allocator.device)
         )
-        for layer in range(self.num_layers):
-            for head in range(self.num_kv_heads):
-                block_count = block_counts[layer,batch_slot_idx,head]
-                for block_number in range(block_count):
-                    block = self.block_state.block_tables[
-                        layer, batch_slot_idx, head, block_number
-                    ]
-                    self.gpu_allocator.free(block)
         self.block_state.context_lens[:,batch_slot_idx] = 0
 
     def _get_new_block_count(self, seq_id: int, token_count: int):
@@ -190,26 +207,19 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def _append_to_sequence(self, seq_id: int, token_count: int):
         batch_slot_idx = self.batch_slot_mapping[seq_id]
-        current_block_count = (
-            (self.block_state.context_lens[:,batch_slot_idx] + self.block_size)
-            // self.block_size
-        )
-        new_block_count = self._get_new_block_count(seq_id, token_count)
-        added_block_count = new_block_count - current_block_count
-        for layer in range(self.num_layers):
-            for head in range(self.num_kv_heads):
-                start_block_number = current_block_count[layer,head]
-                added_blocks = added_block_count[layer,head]
-                for block_number in range(start_block_number,
-                                          start_block_number + added_blocks):
-                    self.block_state.block_tables[
-                        layer, batch_slot_idx, head, block_number
-                    ] = self.gpu_allocator.allocate()
+
+        old_mask = self.block_state.get_block_state_seq_view(batch_slot_idx).allocated_block_mask()
         self.block_state.context_lens[:,batch_slot_idx] += token_count
+        new_mask = self.block_state.get_block_state_seq_view(batch_slot_idx).allocated_block_mask()
+        new_mask = (new_mask & ~old_mask)
+        self.block_state.block_tables[:,batch_slot_idx][new_mask] = (self.gpu_allocator
+                                                       .allocate(new_mask.sum())
+                                                       .to(self.device)
+                                                       .type(torch.int))        
 
     def get_block_table(self, seq: Sequence) -> List[int]:
-        return self.block_state.get_block_state_batch_view(
-            [self.batch_slot_mapping[seq.seq_id]]
+        return self.block_state.get_block_state_seq_view(
+            self.batch_slot_mapping[seq.seq_id]
         )
 
     def get_block_state_batch_view(self, seqs: List[Sequence]) -> BlockStateView:
@@ -320,18 +330,20 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         # Free blocks starting from the last non-empty block
         last_blocks = self.block_state.get_last_non_empty_blocks(seq_indices)
+
         for view_index, seq_idx, seq_id in enumerate(
             zip(seq_indices, seq_ids)
         ):
+            # Iterate over number of freed blocks
             freed_blocks = freed_block_count[seq_id]
-            for layer in range(self.num_layers):
-                for head in range(self.num_kv_heads):
-                    for i in range(freed_blocks[layer,head]):
-                        last_block = last_blocks[layer,view_index,head]
-                        block_number = self.block_state.block_tables[
-                            layer, seq_idx, head, last_block - i
-                        ]
-                        self.gpu_allocator.free(int(block_number))
+            for i in range(freed_blocks.max()):
+                mask = i < freed_blocks
+                self.gpu_allocator.free(
+                    self.block_state.block_tables[:, seq_idx][mask].gather(
+                        dim=-1,
+                        index=last_blocks[:, view_index, :, last_blocks - i, None][mask],
+                    ).view(-1)
+                )
 
     def reset(self) -> None:
         self.batch_slot_mapping = {}

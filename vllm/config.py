@@ -639,13 +639,17 @@ class KVCompressConfig:
         value_cache_block = key_cache_block
 
         # Compute KV-Compress overhead
+        bool_size = get_dtype_size(torch.bool)
         int_size = get_dtype_size(torch.int)
+        long_size = get_dtype_size(torch.int64)
         float_size = get_dtype_size(torch.float)
 
         # Overhead per block
-        per_block_overhead = 1 * int_size  # layer index
-        per_block_overhead += 1 * int_size  # head index
-        per_block_overhead += 1 * int_size  # logical block index
+        per_block_overhead = 1 * int_size  # layer index (for scheduling)
+        per_block_overhead += 1 * int_size  # head index (for scheduling)
+        per_block_overhead += 1 * int_size  # logical block index (for scheduling)
+        per_block_overhead += 1 * long_size  # block index (for allocation)
+        per_block_overhead += 1 * bool_size  # free block mask (for allocation)
         
         # Overhead per KV
         per_kv_overhead = 1 * int_size  # sequence index

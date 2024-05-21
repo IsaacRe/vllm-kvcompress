@@ -773,7 +773,7 @@ class ModelRunner:
             if self.kvcompress_config:
                 # [ num_layers, num_tokens, num_heads ]
                 slot_mapping = (
-                    torch.concat(slot_mapping, dim=1)
+                    torch.stack(slot_mapping, dim=1)
                          .type(torch.long)
                          .to(self.device)
                 )
