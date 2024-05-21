@@ -353,8 +353,8 @@ __global__ void execute_cache_moves_kernel(
     case 4: \
       SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(4) \
       break; \
-    case 8: \
-      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(8) \
+    case 16: \
+      SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(16) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
@@ -423,8 +423,8 @@ void schedule_cache_evictions(
     case 4: \
       T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(4) \
       break; \
-    case 8: \
-      T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(8) \
+    case 16: \
+      T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(16) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
@@ -543,8 +543,8 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
     case 4: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 4) \
       break; \
-    case 8: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 8) \
+    case 16: \
+      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE_BLOCK_SIZE(HEAD_SIZE, VEC_SIZE, 16) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
@@ -576,8 +576,8 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
     case 4: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE(4, VEC_SIZE, BLOCK_SIZE) \
       break; \
-    case 8: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE(8, VEC_SIZE, BLOCK_SIZE) \
+    case 128: \
+      EXECUTE_MOVES_KERNEL_HEAD_SIZE(128, VEC_SIZE, BLOCK_SIZE) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported head size: ", HEAD_SIZE); \
