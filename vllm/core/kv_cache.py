@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import List
+from typing import List, Any
 import torch
 
 
@@ -40,8 +40,8 @@ class UnifiedKVCache(KVCacheBase):
     def __len__(self) -> int:
         raise ValueError("len not defined for UnifiedKVCache")
 
-    def __getitem__(self, i: int) -> torch.Tensor:
-        raise ValueError("getitem not defined for UnifiedKVCache")
+    def __getitem__(self, i: Any) -> torch.Tensor:
+        return self.unified_cache[i]
 
     def get_layer(self, layer_index: int) -> torch.Tensor:
         return self.unified_cache

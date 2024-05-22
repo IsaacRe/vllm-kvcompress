@@ -5,6 +5,7 @@ import torch
 
 from vllm._custom_ops import execute_cache_moves as _execute_cache_moves
 from vllm.attention import get_attn_backend
+from vllm.attention.ops.paged_attn import KVCAttention
 from vllm.core.kv_cache import KVCache, UnifiedKVCache
 from vllm.config import CacheConfig, ModelConfig, ParallelConfig, KVCompressConfig
 from vllm.kvcompress.scheduler import CacheMoves
@@ -114,9 +115,10 @@ class CacheEngine:
         self.attn_backend.copy_blocks(self.gpu_cache, src_to_dsts)
 
     def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
+        k_cache, v_cache = KVCAttention.split_kv_cache(self.gpu_cache, self.head_size)
         _execute_cache_moves(
-            k_cache=self.gpu_cache[0],
-            v_cache=self.gpu_cache[1],
+            k_cache=k_cache,
+            v_cache=v_cache,
             kv_metrics=kv_metrics.metrics,
             cache_moves_indices=cache_moves.index,
             cache_moves_count=cache_moves.count,

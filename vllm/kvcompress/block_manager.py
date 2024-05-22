@@ -331,7 +331,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # Free blocks starting from the last non-empty block
         last_blocks = self.block_state.get_last_non_empty_blocks(seq_indices)
 
-        for view_index, seq_idx, seq_id in enumerate(
+        for view_index, (seq_idx, seq_id) in enumerate(
             zip(seq_indices, seq_ids)
         ):
             # Iterate over number of freed blocks

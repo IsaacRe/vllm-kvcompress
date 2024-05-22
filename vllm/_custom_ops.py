@@ -330,6 +330,7 @@ def execute_cache_moves(
     blocks_per_head: int,
     threads_per_head: int,
 ) -> None:
+    print(k_cache.shape, v_cache.shape, cache_moves_indices.shape)
     kvc_ops.execute_cache_moves(
         k_cache,
         v_cache,
