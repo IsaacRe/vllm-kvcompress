@@ -260,6 +260,7 @@ def ref_schedule_t2_cache_moves(
 def ref_execute_cache_moves(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
+    kv_metrics: torch.Tensor,
     cache_moves_idx: torch.Tensor,
     cache_moves_count: torch.Tensor,
     block_size: int
@@ -274,6 +275,7 @@ def ref_execute_cache_moves(
                     src_block_num = cache_moves_idx[i,layer_idx,j,k,1] // block_size
                     src_block_offset = cache_moves_idx[i,layer_idx,j,k,1] % block_size
                     print(f'move: ')
+                    kv_metrics[dst_block_num, dst_block_offset] = kv_metrics[src_block_num, src_block_offset]
                     k_cache[dst_block_num, :, dst_block_offset] = k_cache[src_block_num, :, src_block_offset]
                     v_cache[dst_block_num, :, dst_block_offset] = v_cache[src_block_num, :, src_block_offset]
 
@@ -426,7 +428,7 @@ def test_kvcompress_schedule_evictions(
         value_cache_by_layer.append(value_cache)
 
     # Add to metrics_by_layer, setting empty token slots to inf to prevent eviction
-    all_kv_metrics = torch.rand(total_blocks * block_size)
+    all_kv_metrics = torch.rand(total_blocks, block_size)
 
     print(f'context_lens: {context_lens_by_layer}')
     print(f'hanging_tokens: {hanging_token_count}')
@@ -484,7 +486,7 @@ def test_kvcompress_schedule_evictions(
     # print(f'DEBUG 21: blk#={21 // block_size}')
 
     # Sort indices by metric low to high (lowest will be evicted first)
-    sorted_indices = all_kv_metrics.sort(dim=0).indices
+    sorted_indices = all_kv_metrics.flatten().sort(dim=0).indices
 
     # Sort indices by seq_idx
     sorted_indices = sorted_indices.gather(
@@ -794,12 +796,15 @@ def test_kvcompress_schedule_evictions(
     # Call execute_moves kernel
     ref_key_cache = key_cache.clone()
     ref_value_cache = value_cache.clone()
+    ref_kv_metrics = all_kv_metrics.clone()
     out_key_cache = ref_key_cache.clone()
     out_value_cache = ref_value_cache.clone()
+    out_kv_metrics = ref_kv_metrics.clone()
 
     ref_execute_cache_moves(
         ref_key_cache,
         ref_value_cache,
+        ref_kv_metrics,
         ref_cache_moves_idx,
         ref_cache_moves_count,
         block_size,
@@ -812,10 +817,12 @@ def test_kvcompress_schedule_evictions(
     kvc_ops.execute_cache_moves(
         out_key_cache,
         out_value_cache,
+        out_kv_metrics,
         ref_cache_moves_idx,
         ref_cache_moves_count,
         1, 1,
     )
+    assert (ref_kv_metrics == out_kv_metrics).all()
 
     print('-- execeute_moves --')
     
