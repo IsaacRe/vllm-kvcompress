@@ -229,7 +229,10 @@ class BlockStateView:
         return torch.maximum(remaining_kv, full_last_block)
     
     def get_block_counts(self) -> torch.Tensor:
-        return (self.context_lens + self.block_size) // self.block_size
+        empty_seq_mask = self.context_lens == 0
+        counts = (self.context_lens + self.block_size) // self.block_size
+        counts[empty_seq_mask] = 0
+        return counts
     
     def allocated_block_mask(self) -> torch.Tensor:
         """Returns a mask of allocated blocks per head"""

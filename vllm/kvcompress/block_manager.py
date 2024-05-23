@@ -172,8 +172,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def _validate_allocator(self) -> None:
         free_blocks = self.gpu_allocator.block_numbers[self.gpu_allocator.free_mask]
         allocated_blocks = self.block_state.get_allocated_blocks()
+        assert (self.block_state.context_lens == 0).all()
+        print(f'CONTEXT_LENS (should be 0):\n{self.block_state.context_lens}')
+        print(allocated_blocks.shape)
         for b in tqdm(allocated_blocks):
-            assert (free_blocks != b).any()
+            assert (free_blocks != b).all()
 
     def _add_sequence(self, seq_id: int, seq_len: int) -> None:
         # Currently only support insertion of sequences
@@ -184,6 +187,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # that will be generated during the next decoding step. 
         seq_block_count = (seq_len + self.block_size) // self.block_size
         total_blocks = self.num_layers * self.num_kv_heads * seq_block_count
+        self._validate_allocator()
         block_numbers = self.gpu_allocator.allocate(total_blocks)
         seq_blocks = block_numbers.reshape(
             self.num_layers, self.num_kv_heads, seq_block_count
