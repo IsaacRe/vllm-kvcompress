@@ -562,8 +562,8 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
     case 2: \
       EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 2, BLOCK_SIZE) \
       break; \
-    case 4: \
-      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 4, BLOCK_SIZE) \
+    case 8: \
+      EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, 8, BLOCK_SIZE) \
       break; \
     default: \
       TORCH_CHECK(false, "Unsupported vec size: ", VEC_SIZE); \
