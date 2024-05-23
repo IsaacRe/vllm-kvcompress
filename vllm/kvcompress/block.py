@@ -95,7 +95,13 @@ class BlockState:
                 dtype=torch.int,
                 device="cuda:0")
             
-    def clear(self):
+    def _validate(self) -> None:
+        seq_ids = range(self.context_lens.shape[1])
+        full_batch_view = self.get_block_state_batch_view(seq_ids)
+        all_allocated_blocks = full_batch_view.get_allocated_blocks()
+        assert all_allocated_blocks.unique().numel() == all_allocated_blocks.numel()
+            
+    def clear(self) -> None:
         self._initialize()
 
     def get_block_state_batch_view(

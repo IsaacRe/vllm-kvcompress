@@ -186,6 +186,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
         # TODO debug
         self.block_state.block_tables[:,batch_slot_idx] = seq_blocks
+        self.block_state._validate()
 
     def _remove_sequence(self, seq_id: int) -> None:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
@@ -198,6 +199,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                 .to(self.gpu_allocator.device)
         )
         self.block_state.context_lens[:,batch_slot_idx] = 0
+        assert seq_id not in self.batch_slot_mapping
+        self.block_state._validate()
 
     def _get_new_block_count(self, seq_id: int, token_count: int):
         batch_slot_idx = self.batch_slot_mapping[seq_id]
@@ -336,6 +339,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             seq_indices=seq_indices,
             removed_block_count=removed_blocks,
         )
+        self.block_state._validate()
 
     def reset(self) -> None:
         self.batch_slot_mapping = {}
