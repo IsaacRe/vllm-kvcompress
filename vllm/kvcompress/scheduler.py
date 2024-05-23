@@ -57,7 +57,7 @@ class CompressionScheduler:
 
     def _update_sequences(self, seqs: List[Sequence]) -> None:
         all_seq_ids = set([seq.seq_id for seq in seqs])
-        for seq_id in self._iters_since_compression:
+        for seq_id in list(self._iters_since_compression):
             if seq_id not in all_seq_ids:
                 del self._iters_since_compression[seq_id]
         for seq_id in all_seq_ids:

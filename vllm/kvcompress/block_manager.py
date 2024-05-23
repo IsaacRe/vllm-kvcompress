@@ -184,6 +184,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         batch_slot_idx = self.free_batch_slots.pop()
         self.batch_slot_mapping[seq_id] = batch_slot_idx
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
+        # TODO debug
         self.block_state.block_tables[:,batch_slot_idx] = seq_blocks
 
     def _remove_sequence(self, seq_id: int) -> None:
@@ -212,6 +213,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idx] += token_count
         new_mask = self.block_state.get_block_state_seq_view(batch_slot_idx).allocated_block_mask()
         new_mask = (new_mask & ~old_mask)
+        # TODO debug
         self.block_state.block_tables[:,batch_slot_idx][new_mask] = (self.gpu_allocator
                                                        .allocate(new_mask.sum())
                                                        .to(self.device)
@@ -319,31 +321,21 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             self._remove_sequence(seq.seq_id)
 
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
-        seq_ids, seq_indices, removed_blocks = zip(*[
-            (seq_id, self.batch_slot_mapping[seq_id], freed_block_count[seq_id])
+        seq_indices, removed_blocks = zip(*[
+            (self.batch_slot_mapping[seq_id], freed_block_count[seq_id])
             for seq_id in freed_block_count.keys()
         ])
+        # Free blocks before updating context lengths
+        freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
+        self.gpu_allocator.free(
+            self.block_state.get_block_state_batch_view(seq_indices)
+                            .get_last_n_allocated_blocks(freed_block_counts_tensor)
+        )
         # Update context lengths
         self.block_state.remove_trailing_blocks(
             seq_indices=seq_indices,
             removed_block_count=removed_blocks,
         )
-        # Free blocks starting from the last non-empty block
-        last_blocks = self.block_state.get_last_non_empty_blocks(seq_indices)
-
-        for view_index, (seq_idx, seq_id) in enumerate(
-            zip(seq_indices, seq_ids)
-        ):
-            # Iterate over number of freed blocks
-            freed_blocks = freed_block_count[seq_id]
-            for i in range(freed_blocks.max()):
-                mask = i < freed_blocks
-                self.gpu_allocator.free(
-                    self.block_state.block_tables[:, seq_idx][mask].gather(
-                        dim=-1,
-                        index=last_blocks[:, view_index, :, last_blocks - i, None][mask],
-                    ).view(-1)
-                )
 
     def reset(self) -> None:
         self.batch_slot_mapping = {}

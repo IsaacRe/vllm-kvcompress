@@ -115,7 +115,7 @@ class CacheEngine:
         self.attn_backend.copy_blocks(self.gpu_cache, src_to_dsts)
 
     def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
-        k_cache, v_cache = KVCAttention.split_kv_cache(self.gpu_cache, self.head_size)
+        k_cache, v_cache = KVCAttention.split_kv_cache(self.gpu_cache.unified_cache, self.head_size)
         _execute_cache_moves(
             k_cache=k_cache,
             v_cache=v_cache,

@@ -159,6 +159,12 @@ class BlockStateView:
         self.block_tables = block_tables
         self.t2_block_tables = t2_block_tables
         self.context_lens = context_lens
+        self.block_table_indices = (
+            torch.arange(block_tables.size(-1))[None,None]
+                 .to(block_tables.device)
+        )
+        if self.is_batch_view:
+            self.block_table_indices = self.block_table_indices[None]
     
     def get_slot_mapping(self) -> torch.Tensor:
         """Return the slot mapping for each KV head of each layer at the next
@@ -204,21 +210,29 @@ class BlockStateView:
         full_last_block = (remaining_kv == 0).type(torch.int) * self.block_size
         return torch.maximum(remaining_kv, full_last_block)
     
-    def allocated_block_mask(self) -> torch.Tensor:
-        """Returns a mask of allocated blocks"""
-        assert not self.is_batch_view, \
-            "allocated_block_mask only implemented for sequence view"
-        block_counts = (
-            (self.context_lens + self.block_size) // self.block_size
-        )
-        return (
-            torch.arange(self.block_tables.size(-1))[None,None]
-                 .to(block_counts.device)
-            < block_counts[...,None]
-        )
+    def get_block_counts(self) -> torch.Tensor:
+        return (self.context_lens + self.block_size) // self.block_size
     
+    def allocated_block_mask(self) -> torch.Tensor:
+        """Returns a mask of allocated blocks per head"""
+        block_counts = self.get_block_counts()
+        return self.block_table_indices < block_counts[...,None]
+    
+    def last_n_allocated_block_mask(self, n: torch.Tensor) -> torch.Tensor:
+        """Returns a mask of the last n allocated blocks per head"""
+        block_counts = self.get_block_counts()
+        assert block_counts.shape == n.shape
+
+        return (
+            (self.block_table_indices < block_counts[...,None])
+            & (self.block_table_indices >= (block_counts - n)[...,None])
+        )
+
     def get_allocated_blocks(self) -> torch.Tensor:
         return self.block_tables[self.allocated_block_mask()]
+    
+    def get_last_n_allocated_blocks(self, n: torch.Tensor) -> torch.Tensor:
+        return self.block_tables[self.last_n_allocated_block_mask(n)]
 
 
 def _get_empty_block_tables(
