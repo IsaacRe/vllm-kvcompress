@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Optional, Set
 from typing import Sequence as GenericSequence
 import itertools
 import torch
+from tqdm.auto import tqdm
 
 from vllm.kvcompress.block import BlockState, PhysicalTokenBlock, BlockStateView
 from vllm.benchmark import BENCHMARKER
@@ -167,6 +168,12 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state = block_state
         self.free_batch_slots = set(range(block_state.max_num_seqs))
         self.batch_slot_mapping = {}
+
+    def _validate_allocator(self) -> None:
+        free_blocks = self.gpu_allocator.block_numbers[self.gpu_allocator.free_mask]
+        allocated_blocks = self.block_state.get_allocated_blocks()
+        for b in tqdm(allocated_blocks):
+            assert (free_blocks != b).any()
 
     def _add_sequence(self, seq_id: int, seq_len: int) -> None:
         # Currently only support insertion of sequences

@@ -100,9 +100,21 @@ class BlockState:
         full_batch_view = self.get_block_state_batch_view(seq_ids)
         all_allocated_blocks = full_batch_view.get_allocated_blocks()
         assert all_allocated_blocks.unique().numel() == all_allocated_blocks.numel()
-            
+
     def clear(self) -> None:
         self._initialize()
+
+    def get_allocated_blocks(self) -> torch.Tensor:
+        return self.get_block_state_full_view().get_allocated_blocks()
+            
+    def get_block_state_full_view(self) -> "BlockStateView":
+        return BlockStateView(
+            block_size=self.block_size,
+            use_tiered_block_tables=self.use_tiered_block_tables,
+            block_tables=self.block_tables,
+            t2_block_tables=self.t2_block_tables,
+            context_lens=self.context_lens,
+        )
 
     def get_block_state_batch_view(
         self, seq_indices: List[int]
