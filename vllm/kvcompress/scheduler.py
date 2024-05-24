@@ -185,6 +185,7 @@ class CompressionScheduler:
         )
 
         # Truncate eviction counts to last full evicted block
+        print(evicted_kv_count.shape, hanging_token_count.shape)
         no_eviction = evicted_kv_count < hanging_token_count
         evicted_kv_count = torch.where(
             no_eviction,

@@ -96,7 +96,7 @@ class BlockState:
                 device="cuda:0")
             
     def _validate(self) -> None:
-        seq_ids = range(self.context_lens.shape[1])
+        seq_ids = range(self.context_lens.size(1))
         full_batch_view = self.get_block_state_batch_view(seq_ids)
         all_allocated_blocks = full_batch_view.get_allocated_blocks()
         assert all_allocated_blocks.unique().numel() == all_allocated_blocks.numel()
@@ -110,10 +110,12 @@ class BlockState:
     def get_block_state_full_view(self) -> "BlockStateView":
         return BlockStateView(
             block_size=self.block_size,
+            seq_indices=list(range(self.block_tables.size(1))),
             use_tiered_block_tables=self.use_tiered_block_tables,
             block_tables=self.block_tables,
             t2_block_tables=self.t2_block_tables,
             context_lens=self.context_lens,
+            is_batch_view=True,
         )
 
     def get_block_state_batch_view(
@@ -121,10 +123,12 @@ class BlockState:
     ) -> "BlockStateView":
         return BlockStateView(
             block_size=self.block_size,
+            seq_indices=seq_indices,
             use_tiered_block_tables=self.use_tiered_block_tables,
-            block_tables=self.block_tables[:,seq_indices],
+            block_tables=self.block_tables,
             t2_block_tables=self.t2_block_tables,
-            context_lens=self.context_lens[:,seq_indices],
+            context_lens=self.context_lens,
+            is_batch_view=True,
         )
             
     def get_block_state_seq_view(self, seq_index: int) -> "BlockStateView":
@@ -132,10 +136,12 @@ class BlockState:
         # [ num_layers, max_num_blocks_per_seq]                 if two-tier
         return BlockStateView(
             block_size=self.block_size,
+            seq_indices=[seq_index],
             use_tiered_block_tables=self.use_tiered_block_tables,
-            block_tables=self.block_tables[:,seq_index],
+            block_tables=self.block_tables,
             t2_block_tables=self.t2_block_tables,
-            context_lens=self.context_lens[:,seq_index],
+            context_lens=self.context_lens,
+            is_batch_view=False,
         )
     
     def get_last_non_empty_blocks(
@@ -147,17 +153,39 @@ class BlockState:
         self,
         seq_indices: List[int],
         removed_block_count: List[torch.Tensor],
+        debug_freed_idx = None,
     ) -> None:
         """Update context_lens to account for blocks that were
         removed due to KV cache compression.
         Called by block manager after compression scheduling.
         Block manager is in charge of freeing the removed blocks.
         """
+        self._validate()
+        removed_kv_count = torch.stack(removed_block_count, dim=1) * self.block_size
+        init_ctx = self.context_lens.clone()
         batch_view = self.get_block_state_batch_view(seq_indices)
         hanging_token_count = batch_view.get_hanging_token_counts()
         remaining_slots = self.block_size - hanging_token_count
-        batch_view.context_lens -= (torch.stack(removed_block_count, dim=1)
-                                    - remaining_slots)
+        pre_mask = batch_view.allocated_block_mask()
+        # batch_view.context_lens -= (removed_kv_count
+        #                             - remaining_slots)
+
+        self.context_lens[:,seq_indices] -= (removed_kv_count
+                                             - remaining_slots)
+
+        # TODO here try data ptr
+        if debug_freed_idx is not None:
+            post_mask = self.get_block_state_batch_view(seq_indices).allocated_block_mask()
+            removed_mask = pre_mask & ~post_mask
+            print(torch.where(removed_mask))
+            print(torch.where(debug_freed_idx))
+            assert (debug_freed_idx == removed_mask).all()
+
+            print(debug_freed_idx)
+            print(torch.stack(removed_block_count, dim=1)[debug_freed_idx])
+            # assert (init_ctx != batch_view.context_lens)[debug_freed_idx]
+            assert (init_ctx != self.context_lens)[debug_freed_idx]
+        self._validate()
 
 
 class BlockStateView:
@@ -166,69 +194,58 @@ class BlockStateView:
     def __init__(
         self,
         block_size: int,
+        seq_indices: List[int],
         use_tiered_block_tables: bool,
         block_tables: torch.Tensor,
         t2_block_tables: torch.Tensor,
         context_lens: torch.Tensor,
+        is_batch_view: bool,
     ) -> None:
-        self.is_batch_view = context_lens.dim() > 2
+        self.seq_indices = seq_indices
+        self.is_batch_view = is_batch_view
         self.block_size = block_size
         self.use_tiered_block_tables = use_tiered_block_tables
         self.block_tables = block_tables
         self.t2_block_tables = t2_block_tables
         self.context_lens = context_lens
         self.block_table_indices = (
-            torch.arange(block_tables.size(-1))[None,None]
+            torch.arange(block_tables.size(-1))[None,None,None]
                  .to(block_tables.device)
         )
-        if self.is_batch_view:
-            self.block_table_indices = self.block_table_indices[None]
+
+    def _squeeze_out(self, out: torch.Tensor) -> torch.Tensor:
+        return out if self.is_batch_view else out[:,0]
     
     def get_slot_mapping(self) -> torch.Tensor:
         """Return the slot mapping for each KV head of each layer at the next
         position into the physical KV cache.
         """
         assert not self.is_batch_view, "only called for single sequence view"
-        next_pos = self.context_lens  # [ num_layers, num_kv_heads ]
+        next_pos = self.context_lens[:,self.seq_indices]  # [ num_layers, 1, num_kv_heads ]
         next_block = next_pos // self.block_size
         next_offset = next_pos % self.block_size
         assert next_block.max() < self.block_tables.shape[-1]
-        if self.use_tiered_block_tables:
-            t2_block_numbers = (                # [ num_layers, 1 ]
-                self.block_tables
-                    .gather(
-                        dim=-1,
-                        index=next_block.max(dim=-1).values[...,None])
-                    .type(torch.int64)
-            )
-            block_numbers = (                   # [ num_layers, 1, num_kv_heads ]
-                self.t2_block_tables
-                    .gather(dim=1, index=t2_block_numbers[:,None,:])
-                    .type(torch.int64)
-            )
-            return block_numbers.squeeze(-1) * self.block_size + next_offset
-        else:
-            block_numbers = (                   # [ num_layers, num_kv_heads, 1 ]
-                self.block_tables
-                    .gather(dim=-1, index=next_block[...,None].type(torch.int64))
-                    .type(torch.int64)
-            )
-            return block_numbers.squeeze(-1) * self.block_size + next_offset
+        block_numbers = (                   # [ num_layers, 1, num_kv_heads, 1 ]
+            self.block_tables[:,self.seq_indices]
+                .gather(dim=-1, index=next_block[...,None].type(torch.int64))
+                .type(torch.int64)
+        )
+        return self._squeeze_out(block_numbers[...,0] * self.block_size + next_offset)
 
     def get_context_lens(self) -> torch.Tensor:
-        return self.context_lens
+        return self._squeeze_out(self.context_lens[:,self.seq_indices])
     
     def get_block_tables(self) -> torch.Tensor:
-        return self.block_tables
+        return self._squeeze_out(self.block_tables[:,self.seq_indices])
     
     def get_hanging_token_counts(self) -> torch.Tensor:
         """Returns the number of KVs in the final block"""
-        remaining_kv = self.context_lens % self.block_size
+        remaining_kv = self.context_lens[:,self.seq_indices] % self.block_size
         # 0 if last block is not full else block_size
         full_last_block = (remaining_kv == 0).type(torch.int) * self.block_size
-        return torch.maximum(remaining_kv, full_last_block)
+        return self._squeeze_out(torch.maximum(remaining_kv, full_last_block))
     
-    def get_block_counts(self, increment_on_full: bool = False) -> torch.Tensor:
+    def get_block_counts(self, increment_on_full: bool = False, squeeze: bool = True) -> torch.Tensor:
         """Returns count of non-empty blocks per head given the current state
         of context_lens.
         
@@ -236,62 +253,68 @@ class BlockStateView:
             increment_on_full: if set, increment the block count by one for heads
                 whose last non-empty block is full.
         """
+        context_lens = self.context_lens[:,self.seq_indices]
         counts = (
-            (self.context_lens + self.block_size) // self.block_size
+            (context_lens + self.block_size) // self.block_size
             if increment_on_full else
-            (self.context_lens + self.block_size - 1) // self.block_size
+            (context_lens + self.block_size - 1) // self.block_size
         )
-        empty_seq_mask = self.context_lens == 0
+        empty_seq_mask = context_lens == 0
         counts[empty_seq_mask] = 0
-        return counts
+        return self._squeeze_out(counts) if squeeze else counts
     
-    def allocated_block_mask(self) -> torch.Tensor:
+    def allocated_block_mask(self, squeeze: bool = True) -> torch.Tensor:
         """Returns a mask of allocated blocks per head. In the case of heads
         whose last block is full, this includes an additional empty block for
         KVs generated during the next iteration.
         """
-        block_counts = self.get_block_counts(increment_on_full=True)
-        return self.block_table_indices < block_counts[...,None]
+        block_counts = self.get_block_counts(increment_on_full=True, squeeze=False)
+        out = self.block_table_indices < block_counts[...,None]
+        return self._squeeze_out(out) if squeeze else out
     
-    def last_n_allocated_block_mask(self, n: torch.Tensor) -> torch.Tensor:
+    def last_n_allocated_block_mask(self, n: torch.Tensor, squeeze: bool = True) -> torch.Tensor:
         """Returns a mask of the last n allocated blocks per head
         starting from the last block with at least one KV.
         """
-        block_counts = self.get_block_counts(increment_on_full=False)
+        block_counts = self.get_block_counts(increment_on_full=False, squeeze=False)
         assert block_counts.shape == n.shape
 
-        return (
+        out = (
             (self.block_table_indices < block_counts[...,None])
             & (self.block_table_indices >= (block_counts - n)[...,None])
         )
+        return self._squeeze_out(out) if squeeze else out
 
     def move_empty_trailing_blocks(self, n: torch.Tensor) -> None:
         """Moves the final block for each head back n positions ONLY if the
         block is empty.
         """
-        last_is_empty = self.context_lens % self.block_size == 0
-        last_index = self.get_block_counts(increment_on_full=True) - 1
+        last_is_empty = self.context_lens[:,self.seq_indices] % self.block_size == 0
+        last_index = self.get_block_counts(increment_on_full=True, squeeze=False) - 1
         assert last_index.shape == n.shape
 
         # Mask heads with empty last blocks and move
         last_index = last_index[last_is_empty]
         n = n[last_is_empty]
-        src = self.block_tables[last_is_empty].gather(
+        block_tables = self.block_tables[:,self.seq_indices]
+        src = block_tables[last_is_empty].gather(
             dim=-1,
             index=last_index.type(torch.int64)[...,None],
         )
-        self.block_tables[last_is_empty].scatter_(
+        block_tables[last_is_empty] = block_tables[last_is_empty].scatter(
             dim=-1,
             index=(last_index - n).type(torch.int64)[...,None],
             src=src,
         )
+        self.block_tables[:,self.seq_indices] = block_tables
+        return self._squeeze_out(src)
 
     def get_allocated_blocks(self) -> torch.Tensor:
-        return self.block_tables[self.allocated_block_mask()]
+        return self.block_tables[:,self.seq_indices][self.allocated_block_mask(squeeze=False)]
     
     def get_last_n_allocated_blocks(self, n: torch.Tensor) -> torch.Tensor:
-        mask = self.last_n_allocated_block_mask(n)
-        return self.block_tables[mask], mask
+        mask = self.last_n_allocated_block_mask(n, squeeze=False)
+        return self.block_tables[:,self.seq_indices][mask], mask
 
 
 def _get_empty_block_tables(
