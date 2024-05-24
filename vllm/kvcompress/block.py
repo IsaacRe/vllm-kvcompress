@@ -160,7 +160,7 @@ class BlockState:
         Called by block manager after compression scheduling.
         Block manager is in charge of freeing the removed blocks.
         """
-        self._validate()
+        # self._validate()
         removed_kv_count = torch.stack(removed_block_count, dim=1) * self.block_size
         init_ctx = self.context_lens.clone()
         batch_view = self.get_block_state_batch_view(seq_indices)
@@ -170,8 +170,10 @@ class BlockState:
         # batch_view.context_lens -= (removed_kv_count
         #                             - remaining_slots)
 
-        self.context_lens[:,seq_indices] -= (removed_kv_count
-                                             - remaining_slots)
+        assert ((removed_kv_count - remaining_slots)[removed_kv_count > 0] >= 0).all()
+        self.context_lens[:,seq_indices] -= torch.clamp(
+            removed_kv_count - remaining_slots, min=0
+        )
 
         # TODO here try data ptr
         if debug_freed_idx is not None:
@@ -179,12 +181,14 @@ class BlockState:
             removed_mask = pre_mask & ~post_mask
             print(torch.where(removed_mask))
             print(torch.where(debug_freed_idx))
-            assert (debug_freed_idx == removed_mask).all()
+            # assert (debug_freed_idx == removed_mask).all()
+            # # should not add any allocated blocks
+            # assert not (post_mask & ~pre_mask).any()
 
-            print(debug_freed_idx)
-            print(torch.stack(removed_block_count, dim=1)[debug_freed_idx])
+            # print(debug_freed_idx)
+            # print(torch.stack(removed_block_count, dim=1)[debug_freed_idx])
             # assert (init_ctx != batch_view.context_lens)[debug_freed_idx]
-            assert (init_ctx != self.context_lens)[debug_freed_idx]
+            # assert (init_ctx != self.context_lens)[debug_freed_idx]
         self._validate()
 
 

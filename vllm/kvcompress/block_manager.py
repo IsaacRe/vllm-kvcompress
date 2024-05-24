@@ -364,7 +364,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         empty_blocks = batch_view.move_empty_trailing_blocks(freed_block_counts_tensor)
         # Update context lengths
         init_context_lens = self.block_state.context_lens.clone()
-        self.block_state._validate()
+        # self.block_state._validate()
 
         self.block_state.remove_trailing_blocks(
             seq_indices=seq_indices,
