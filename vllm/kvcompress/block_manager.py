@@ -172,10 +172,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def _validate_allocator(self) -> None:
         free_blocks = self.gpu_allocator.block_numbers[self.gpu_allocator.free_mask]
         allocated_blocks = self.block_state.get_allocated_blocks()
-        assert (self.block_state.context_lens == 0).all()
-        print(f'CONTEXT_LENS (should be 0):\n{self.block_state.context_lens}')
-        print(allocated_blocks.shape)
-        for b in tqdm(allocated_blocks):
+        # assert (self.block_state.context_lens == 0).all()
+        for b in tqdm(allocated_blocks, total=allocated_blocks.shape[0]):
             assert (free_blocks != b).all()
 
     def _add_sequence(self, seq_id: int, seq_len: int) -> None:
@@ -198,6 +196,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # TODO debug
         self.block_state.block_tables[:,batch_slot_idx] = seq_blocks
         self.block_state._validate()
+        self._validate_allocator()
 
     def _remove_sequence(self, seq_id: int) -> None:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
@@ -335,22 +334,27 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             self._remove_sequence(seq.seq_id)
 
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
+        self._validate_allocator()
         seq_indices, removed_blocks = zip(*[
             (self.batch_slot_mapping[seq_id], freed_block_count[seq_id])
             for seq_id in freed_block_count.keys()
         ])
+        batch_view = self.block_state.get_block_state_batch_view(seq_indices)
         # Free blocks before updating context lengths
         freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
         self.gpu_allocator.free(
-            self.block_state.get_block_state_batch_view(seq_indices)
-                            .get_last_n_allocated_blocks(freed_block_counts_tensor)
+            batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
         )
+        # In case of empty last block, move the empty block to the new final
+        # logical block position after evicting non-empty blocks.
+        batch_view.move_empty_trailing_blocks(freed_block_counts_tensor)
         # Update context lengths
         self.block_state.remove_trailing_blocks(
             seq_indices=seq_indices,
             removed_block_count=removed_blocks,
         )
         self.block_state._validate()
+        self._validate_allocator()
 
     def reset(self) -> None:
         self.batch_slot_mapping = {}

@@ -228,25 +228,58 @@ class BlockStateView:
         full_last_block = (remaining_kv == 0).type(torch.int) * self.block_size
         return torch.maximum(remaining_kv, full_last_block)
     
-    def get_block_counts(self) -> torch.Tensor:
+    def get_block_counts(self, increment_on_full: bool = False) -> torch.Tensor:
+        """Returns count of non-empty blocks per head given the current state
+        of context_lens.
+        
+        Args:
+            increment_on_full: if set, increment the block count by one for heads
+                whose last non-empty block is full.
+        """
+        counts = (
+            (self.context_lens + self.block_size) // self.block_size
+            if increment_on_full else
+            (self.context_lens + self.block_size - 1) // self.block_size
+        )
         empty_seq_mask = self.context_lens == 0
-        counts = (self.context_lens + self.block_size) // self.block_size
         counts[empty_seq_mask] = 0
         return counts
     
     def allocated_block_mask(self) -> torch.Tensor:
-        """Returns a mask of allocated blocks per head"""
-        block_counts = self.get_block_counts()
+        """Returns a mask of allocated blocks per head. In the case of heads
+        whose last block is full, this includes an additional empty block for
+        KVs generated during the next iteration.
+        """
+        block_counts = self.get_block_counts(increment_on_full=True)
         return self.block_table_indices < block_counts[...,None]
     
     def last_n_allocated_block_mask(self, n: torch.Tensor) -> torch.Tensor:
-        """Returns a mask of the last n allocated blocks per head"""
-        block_counts = self.get_block_counts()
+        """Returns a mask of the last n allocated blocks per head
+        starting from the last block with at least one KV.
+        """
+        block_counts = self.get_block_counts(increment_on_full=False)
         assert block_counts.shape == n.shape
 
         return (
             (self.block_table_indices < block_counts[...,None])
             & (self.block_table_indices >= (block_counts - n)[...,None])
+        )
+
+    def move_empty_trailing_blocks(self, n: torch.Tensor) -> None:
+        """Moves the final block for each head back n positions ONLY if the
+        block is empty.
+        """
+        last_is_empty = self.context_lens % self.block_size == 0
+        last_index = self.get_block_counts(increment_on_full=True) - 1
+        assert last_index.shape == n.shape
+
+        # Mask heads with empty last blocks and move
+        last_index = last_index[last_is_empty]
+        n = n[last_is_empty]
+        self.block_tables[last_is_empty].scatter_(
+            dim=-1,
+            index=(last_index - n).type(torch.int64)[...,None],
+            src=last_index.type(torch.int64)[...,None],
         )
 
     def get_allocated_blocks(self) -> torch.Tensor:
