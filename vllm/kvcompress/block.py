@@ -276,17 +276,22 @@ class BlockStateView:
         # Mask heads with empty last blocks and move
         last_index = last_index[last_is_empty]
         n = n[last_is_empty]
+        src = self.block_tables[last_is_empty].gather(
+            dim=-1,
+            index=last_index.type(torch.int64)[...,None],
+        )
         self.block_tables[last_is_empty].scatter_(
             dim=-1,
             index=(last_index - n).type(torch.int64)[...,None],
-            src=last_index.type(torch.int64)[...,None],
+            src=src,
         )
 
     def get_allocated_blocks(self) -> torch.Tensor:
         return self.block_tables[self.allocated_block_mask()]
     
     def get_last_n_allocated_blocks(self, n: torch.Tensor) -> torch.Tensor:
-        return self.block_tables[self.last_n_allocated_block_mask(n)]
+        mask = self.last_n_allocated_block_mask(n)
+        return self.block_tables[mask], mask
 
 
 def _get_empty_block_tables(

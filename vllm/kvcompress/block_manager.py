@@ -342,8 +342,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         batch_view = self.block_state.get_block_state_batch_view(seq_indices)
         # Free blocks before updating context lengths
         freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
+        freed_blocks, evicted_mask = batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
         self.gpu_allocator.free(
-            batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
+            freed_blocks
         )
         # In case of empty last block, move the empty block to the new final
         # logical block position after evicting non-empty blocks.
