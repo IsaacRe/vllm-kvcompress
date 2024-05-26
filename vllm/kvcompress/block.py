@@ -390,7 +390,6 @@ class BlockStateView:
         indices = self.block_table_indices.expand_as(self.block_tables)[:,self.seq_indices]
         last_block = ((self.context_lens[:,self.seq_indices] + self.block_size - 1)
                 / self.block_size)[...,None].expand_as(indices)
-        print(indices.shape, last_block.shape)
         # divide w/o round so that equality is satisfied for one KV per block
         mask = (
             indices

@@ -185,7 +185,6 @@ class CompressionScheduler:
         )
 
         # Truncate eviction counts to last full evicted block
-        print(evicted_kv_count.shape, hanging_token_count.shape)
         no_eviction = evicted_kv_count < hanging_token_count
         evicted_kv_count = torch.where(
             no_eviction,
@@ -200,7 +199,6 @@ class CompressionScheduler:
         )
 
         # Set non-evicted slots to inf so that they are last after sort
-        print(evicted_kv_indices.shape, non_evicted_mask.shape)
         evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
 
         # Sort evicted indices

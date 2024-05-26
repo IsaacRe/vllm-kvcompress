@@ -177,7 +177,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         for b in tqdm(allocated_blocks, total=allocated_blocks.shape[0]):
             if (free_blocks == b).any():
                 failing_blocks.append(b.item())
-        print(f'{failing_blocks=}')
+        if failing_blocks:
+            print(f'{failing_blocks=}')
         assert not failing_blocks
 
     def _add_sequence(self, seq_id: int, seq_len: int) -> None:
@@ -198,7 +199,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.batch_slot_mapping[seq_id] = batch_slot_idx
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
         # TODO debug
-        self.block_state.block_tables[:,batch_slot_idx] = seq_blocks
+        self.block_state.block_tables[:,batch_slot_idx,:,:seq_block_count] = seq_blocks
         self.block_state._validate()
         self._validate_allocator()
 
@@ -352,11 +353,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
         freed_blocks, evicted_mask = batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
         freed_block_debug = None
-        if freed_blocks.numel() > 0 and freed_blocks[0] == 1024:
-            print('entered')
-            freed_block_debug = torch.where(self.block_state.block_tables == freed_blocks[0])[:3]
-            print(freed_block_counts_tensor[freed_block_debug])
-            assert freed_block_counts_tensor[freed_block_debug] > 0
+        # if freed_blocks.numel() > 0 and freed_blocks[0] == 1024:
+        #     print('entered')
+        #     freed_block_debug = torch.where(self.block_state.block_tables == freed_blocks[0])[:3]
+        #     print(freed_block_counts_tensor[freed_block_debug])
+        #     assert freed_block_counts_tensor[freed_block_debug] > 0
         evicted_indices = torch.where(evicted_mask)
         self.gpu_allocator.free(
             freed_blocks
@@ -375,13 +376,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             debug_freed_idx=evicted_mask,
         )
         self.block_state._validate()
-        print(f'{evicted_indices=}')
-        print(f'freed: {freed_blocks[:5]} ({freed_blocks.shape[0]} total)')
-        if freed_blocks.numel() > 0:
-            print(freed_block_debug)
-            print(self.block_state.context_lens[freed_block_debug])
-            print(init_context_lens[freed_block_debug])
-        print(f'{seq_indices=}')
+        # print(f'{evicted_indices=}')
+        # print(f'freed: {freed_blocks[:5]} ({freed_blocks.shape[0]} total)')
+        # if freed_blocks.numel() > 0:
+        #     print(freed_block_debug)
+        #     print(self.block_state.context_lens[freed_block_debug])
+        #     print(init_context_lens[freed_block_debug])
+        # print(f'{seq_indices=}')
         self._validate_allocator()
 
     def reset(self) -> None:
