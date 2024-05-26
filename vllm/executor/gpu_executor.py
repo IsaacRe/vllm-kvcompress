@@ -5,6 +5,7 @@ from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.state import KVCompressState
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 from vllm.utils import (get_distributed_init_method, get_ip, get_open_port,
                         make_async)
@@ -132,7 +133,7 @@ class GPUExecutor(ExecutorBase):
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
         num_lookahead_slots: int,
-        kv_metrics: Optional[CompressionMetrics],
+        kvc_state: Optional[KVCompressState],
     ) -> List[SamplerOutput]:
         output = self.driver_worker.execute_model(
             seq_group_metadata_list=seq_group_metadata_list,
@@ -140,7 +141,7 @@ class GPUExecutor(ExecutorBase):
             blocks_to_swap_out=blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             num_lookahead_slots=num_lookahead_slots,
-            kv_metrics=kv_metrics,
+            kvc_state=kvc_state,
         )
         return output
     

@@ -153,7 +153,7 @@ class LLMEngine:
 
         # Initialize KV-Compress block tables before profiling
         # for model memory usage/KV cache allocation
-        self.kvcompress_metrics = None
+        self.kvcompress_state = None
         if self.kvcompress_config:
             kvcompress_shared_state = KVCompressState(
                 block_state=BlockState(
@@ -174,7 +174,7 @@ class LLMEngine:
                     kv_metric_head_bias=None,
                 )
             )
-            self.kvcompress_metrics = kvcompress_shared_state.kv_metrics
+            self.kvcompress_state = kvcompress_shared_state
             
         self.model_executor = executor_class(
             model_config=model_config,
@@ -193,7 +193,7 @@ class LLMEngine:
 
         self._initialize_kv_caches()
         if self.kvcompress_config:
-            self.kvcompress_metrics.init_kv_metadata(self.cache_config.num_gpu_blocks)
+            self.kvcompress_state.init_kv_metadata(self.cache_config.num_gpu_blocks)
 
         # If usage stat is enabled, collect relevant info.
         if is_usage_stats_enabled():
@@ -602,10 +602,11 @@ class LLMEngine:
                 # Temp metrics must be cleared before each forward pass to ensure correct
                 # metric aggregation afterward
                 with BENCHMARKER.time("clear_temp_metrics"):
-                    self.kvcompress_metrics.clear_temp_metrics()
+                    self.kvcompress_state.kv_metrics.clear_temp_metrics()
             if cache_moves:
                 with BENCHMARKER.time("execute_cache_moves"):
-                    self.model_executor.execute_cache_moves(cache_moves, self.kvcompress_metrics)
+                    self.model_executor.execute_cache_moves(cache_moves,
+                                                            self.kvcompress_state.kv_metrics)
             with BENCHMARKER.time("execute_model"):
                 output = self.model_executor.execute_model(
                     seq_group_metadata_list=seq_group_metadata_list,
@@ -613,12 +614,12 @@ class LLMEngine:
                     blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
                     blocks_to_copy=scheduler_outputs.blocks_to_copy,
                     num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
-                    kv_metrics=self.kvcompress_metrics)
+                    kvc_state=self.kvcompress_state)
             if self.kvcompress_config:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.
                 with BENCHMARKER.time("aggregate_decode_metrics"):
-                    self.kvcompress_metrics.aggregate_decode()
+                    self.kvcompress_state.kv_metrics.aggregate_decode()
         else:
             output = []
 

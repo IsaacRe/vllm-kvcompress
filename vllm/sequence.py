@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 from vllm.block import LogicalTokenBlock
-from vllm.kvcompress.block import BlockStateView
 from vllm.lora.request import LoRARequest
 from vllm.sampling_params import SamplingParams
 
@@ -565,6 +564,10 @@ class SequenceGroupMetadata:
         state: Internal state tied to this sequence group.
         lora_request: LoRA request.
         multi_modal_data: Multi modal data.
+        block_state_index: Used with KV-Compress to index into shared block
+            state/KV metrics and retrieve block tables, context length and
+            other required metadata. KV-Compress currently only supports one
+            sequence per group, so we have a single index per group.
     """
 
     def __init__(
@@ -573,12 +576,13 @@ class SequenceGroupMetadata:
         is_prompt: bool,
         seq_data: Dict[int, SequenceData],
         sampling_params: SamplingParams,
-        block_tables: Dict[int, Union[List[int], BlockStateView]],
+        block_tables: Dict[int, List[int]],
         token_chunk_size: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
         computed_block_nums: Optional[List[int]] = None,
         state: Optional[SequenceGroupState] = None,
         multi_modal_data: Optional[MultiModalData] = None,
+        block_state_index: Optional[int] = None
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
@@ -588,6 +592,7 @@ class SequenceGroupMetadata:
         self.lora_request = lora_request
         self.computed_block_nums = computed_block_nums
         self.multi_modal_data = multi_modal_data
+        self.block_state_index = block_state_index
         self.state = SequenceGroupState() if state is None else state
         self._token_chunk_size = token_chunk_size
 

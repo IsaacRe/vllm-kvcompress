@@ -9,6 +9,7 @@ from vllm.lora.request import LoRARequest
 from vllm.kvcompress.block import BlockState
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.state import KVCompressState
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 
 
@@ -82,7 +83,7 @@ class ExecutorBase(ABC):
                       blocks_to_swap_out: Dict[int, int],
                       blocks_to_copy: Dict[int, List[int]],
                       num_lookahead_slots: int,
-                      kv_metrics: Optional[CompressionMetrics] = None) -> List[SamplerOutput]:
+                      kvc_state: Optional[KVCompressState] = None) -> List[SamplerOutput]:
         """Executes at least one model step on the given sequences."""
         raise NotImplementedError
     

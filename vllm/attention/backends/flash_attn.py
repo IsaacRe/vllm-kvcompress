@@ -245,6 +245,7 @@ class FlashAttentionImpl(AttentionImpl):
             if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
+                slot_mapping = slot_mapping[:num_prefill_tokens]
                 if self.num_kv_heads != self.num_heads:
                     # Interleave for MQA workaround.
                     key = self.repeat_kv(key, self.num_queries_per_kv)
@@ -257,7 +258,10 @@ class FlashAttentionImpl(AttentionImpl):
                     self.scale,
                     kv_metric_buffer_len,
                 )
-                kv_metrics.aggregate_prefill(kv_metric_out, slot_mapping[:num_prefill_tokens])
+                kv_metrics.aggregate_prefill(
+                    kv_metric_out,
+                    slot_mapping,
+                )
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
             elif kv_cache is None or prefill_meta.block_tables.numel() == 0:

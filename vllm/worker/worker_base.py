@@ -10,6 +10,7 @@ from vllm.logger import enable_trace_function_call, init_logger
 from vllm.lora.request import LoRARequest
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.state import KVCompressState
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 from vllm.utils import get_vllm_instance_id, update_environment_variables
 
@@ -56,13 +57,13 @@ class WorkerBase(ABC):
             blocks_to_swap_in: Dict[int, int], blocks_to_swap_out: Dict[int,
                                                                         int],
             blocks_to_copy: Dict[int, List[int]],
-            kv_metrics: Optional[CompressionMetrics]) -> List[SamplerOutput]:
+            kvc_state: Optional[KVCompressState]) -> List[SamplerOutput]:
         """Executes at least one model step on the given sequences, unless no
         sequences are provided."""
         raise NotImplementedError
     
     @abstractmethod
-    def execute_cache_moves(self, cache_moves: CacheMoves) -> None:
+    def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
         raise NotImplementedError
 
     @abstractmethod

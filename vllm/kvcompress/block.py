@@ -1,9 +1,17 @@
 """Token blocks."""
-from typing import Any, List, Tuple, Dict, Optional
+from typing import Any, List, Tuple, Dict, Optional, NamedTuple
 import torch
 import math
 
 from vllm.utils import Device
+
+
+class BlockMetadata(NamedTuple):
+    physical_blocks: torch.Tensor
+    logical_blocks: torch.Tensor
+    seq_indices: torch.Tensor
+    layer_indices: torch.Tensor
+    head_indices: torch.Tensor
 
 
 class PhysicalTokenBlock:
@@ -220,12 +228,42 @@ class BlockStateView:
     def _squeeze_out(self, out: torch.Tensor) -> torch.Tensor:
         return out if self.is_batch_view else out[:,0]
     
-    def get_slot_mapping(self) -> torch.Tensor:
+    def get_prefill_slot_mapping(self) -> torch.Tensor:
+        """Return the slot mapping for each KV head of each layer for every
+        token position in the prefill sequence. Since the sequence hasn't
+        been processed yet, we assume the same context length per head
+        (ie. no compression yet).
+        """
+        assert not self.is_batch_view, "only called for single sequence view"
+        ctx_lens = self.context_lens[:,self.seq_indices]  # [ num_layers, 1, num_kv_heads ]
+        assert ctx_lens.unique().numel() == 1, (
+            "varying context lengths for prefill sequence")
+        ctx_length = ctx_lens.view(-1)[0]
+        # [num_layers, num_tokens, num_kv_heads]
+        positions = torch.arange(ctx_length)[None,:,None].expand(
+            ctx_lens.size(0),
+            ctx_length,
+            ctx_lens.size(2),
+        )
+        logical_blocks = positions // self.block_size
+        offsets = positions % self.block_size
+        assert logical_blocks.max() < self.block_tables.shape[-1]
+        block_numbers = (                   # [ num_layers, num_tokens, num_kv_heads ]
+            self.block_tables[:,self.seq_indices]
+                .squeeze(1)
+                .transpose(1, 2)
+                .gather(dim=1, index=logical_blocks)
+                .type(torch.int64)
+        )
+        return block_numbers * self.block_size + offsets
+    
+    def get_decode_slot_mapping(self) -> torch.Tensor:
         """Return the slot mapping for each KV head of each layer at the next
         position into the physical KV cache.
         """
         assert not self.is_batch_view, "only called for single sequence view"
-        next_pos = self.context_lens[:,self.seq_indices]  # [ num_layers, 1, num_kv_heads ]
+        # [ num_layers, 1, num_kv_heads ]
+        next_pos = self.context_lens[:,self.seq_indices] - 1
         next_block = next_pos // self.block_size
         next_offset = next_pos % self.block_size
         assert next_block.max() < self.block_tables.shape[-1]
@@ -234,13 +272,13 @@ class BlockStateView:
                 .gather(dim=-1, index=next_block[...,None].type(torch.int64))
                 .type(torch.int64)
         )
-        return self._squeeze_out(block_numbers[...,0] * self.block_size + next_offset)
+        return block_numbers[...,0] * self.block_size + next_offset
 
     def get_context_lens(self) -> torch.Tensor:
-        return self._squeeze_out(self.context_lens[:,self.seq_indices])
+        return self.context_lens[:,self.seq_indices]
     
     def get_block_tables(self) -> torch.Tensor:
-        return self._squeeze_out(self.block_tables[:,self.seq_indices])
+        return self.block_tables[:,self.seq_indices]
     
     def get_hanging_token_counts(self) -> torch.Tensor:
         """Returns the number of KVs in the final block"""
@@ -320,31 +358,47 @@ class BlockStateView:
         mask = self.last_n_allocated_block_mask(n, squeeze=False)
         return self.block_tables[:,self.seq_indices][mask], mask
 
-
-def _get_empty_block_tables(
-    batch_size: int,
-    max_blocks: int,
-    num_layers: int,
-    num_kv_heads: int,
-) -> torch.Tensor:
-    # Currently only support single-tier
-    return torch.zeros(
-        (num_layers, batch_size, num_kv_heads, max_blocks),
-        dtype=torch.int,
-        device="cuda:0",
-    )
-
-
-def merge_block_table_views(
-    views: List[Optional[BlockStateView]],
-) -> torch.Tensor:
-    first_not_empty = next(view for view in views if view is not None)
-    num_layers, num_kv_heads, max_blocks = first_not_empty.shape
-    return torch.stack(
-        [
-            view if view is not None else
-            _get_empty_block_tables(1, max_blocks, num_layers, num_kv_heads)
-            for view in views
-        ],
-        dim=1,
-    )
+    def get_allocated_block_metadata(self) -> BlockMetadata:
+        """Returns block metadata for all allocated blocks"""
+        assert not self.is_batch_view
+        mask = self.allocated_block_mask()
+        logical_blocks = self.block_table_indices[:,self.seq_indices][mask]
+        physical_blocks = self.block_tables[:,self.seq_indices][mask]
+        seq_indices = torch.tensor(
+            self.seq_indices,
+            dtype=torch.int,
+            device=logical_blocks.device)
+        seq_indices = seq_indices.expand_as(logical_blocks)
+        layer_indices, _, head_indices = torch.where(mask)
+        return BlockMetadata(
+            physical_blocks,
+            logical_blocks,
+            seq_indices,
+            layer_indices,
+            head_indices,
+        )
+    
+    def get_new_block_metadata(self) -> BlockMetadata:
+        """Return block metadata for all blocks that were added
+        during the last scheduling iteration.
+        """
+        assert not self.is_batch_view
+        # divide w/o round so that equality is satisfied for one KV per block
+        mask = (self.block_table_indices
+                == ((self.context_lens[:,self.seq_indices] + self.block_size - 1)
+                    / self.block_size))
+        logical_blocks = self.block_table_indices[:,self.seq_indices][mask]
+        physical_blocks = self.block_tables[:,self.seq_indices][mask]
+        seq_indices = torch.tensor(
+            self.seq_indices,
+            dtype=torch.int,
+            device=logical_blocks.device)
+        seq_indices = seq_indices.expand_as(logical_blocks)
+        layer_indices, _, head_indices = torch.where(mask)
+        return BlockMetadata(
+            physical_blocks,
+            logical_blocks,
+            seq_indices,
+            layer_indices,
+            head_indices,
+        )

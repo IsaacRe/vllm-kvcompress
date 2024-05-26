@@ -236,6 +236,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                                        .to(self.device)
                                                        .type(torch.int))        
 
+    def get_batch_slot_index(self, seq: Sequence) -> int:
+        return self.batch_slot_mapping[seq.seq_id]
+
     def get_block_table(self, seq: Sequence) -> List[int]:
         return self.block_state.get_block_state_seq_view(
             self.batch_slot_mapping[seq.seq_id]

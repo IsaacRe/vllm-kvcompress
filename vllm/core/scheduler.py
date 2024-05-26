@@ -961,7 +961,15 @@ class Scheduler:
             seq_data: Dict[int, SequenceData] = {}
             # seq_id -> physical block numbers
             block_tables: Dict[int, Union[List[int], BlockStateView]] = {}
+            # For KV-Compress, index into global shared block state for
+            # the group's only sequence (multi-sequence groups not supported
+            # with KV-Compress).
+            block_state_index: Optional[int] = None
 
+            if self.kvcompress_enabled:
+                # Multi-sequence groups not supported with KV-Compress
+                [seq] = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+                block_state_index = self.block_manager.get_batch_slot_index(seq)
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
@@ -991,6 +999,7 @@ class Scheduler:
                 # `multi_modal_data` will be None.
                 multi_modal_data=seq_group.multi_modal_data
                 if scheduler_outputs.num_prefill_groups > 0 else None,
+                block_state_index=block_state_index,
             )
             seq_group_metadata_list.append(seq_group_metadata)
 

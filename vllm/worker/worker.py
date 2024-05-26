@@ -19,6 +19,7 @@ from vllm.lora.request import LoRARequest
 from vllm.kvcompress.block import BlockState
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.state import KVCompressState
 from vllm.model_executor import set_random_seed
 from vllm.sequence import SamplerOutput, SequenceGroupMetadata
 from vllm.worker.cache_engine import CacheEngine
@@ -226,7 +227,7 @@ class Worker(WorkerBase):
         blocks_to_swap_out: Optional[Dict[int, int]] = None,
         blocks_to_copy: Optional[Dict[int, List[int]]] = None,
         num_lookahead_slots: int = 0,
-        kv_metrics: Optional[CompressionMetrics] = None,
+        kvc_state: Optional[KVCompressState] = None,
     ) -> List[SamplerOutput]:
         if self.is_driver_worker:
             assert seq_group_metadata_list is not None
@@ -258,7 +259,7 @@ class Worker(WorkerBase):
             return []
 
         output = self.model_runner.execute_model(seq_group_metadata_list,
-                                                 self.gpu_cache, kv_metrics)
+                                                 self.gpu_cache, kvc_state)
 
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.

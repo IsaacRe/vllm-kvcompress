@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import List, Optional
 import torch
 
+from vllm.kvcompress.block import BlockMetadata
+
 
 @dataclass
 class SortedMetricOutputs:
@@ -123,16 +125,38 @@ class CompressionMetrics:
         aggregation."""
         self.temp_metrics.zero_()
 
+    def insert_metadata(
+        self,
+        metadata: BlockMetadata,
+    ) -> None:
+        (
+            physical_blocks,
+            logical_blocks,
+            seq_indices,
+            layer_indices,
+            head_indices,
+        ) = metadata
+        self.seq_index_by_block[physical_blocks] = seq_indices
+        self.logical_block_num_by_block[physical_blocks] = (
+            logical_blocks)
+        self.layer_index_by_block[physical_blocks] = layer_indices
+        self.head_index_by_block[physical_blocks] = head_indices
+
     def aggregate_prefill(
         self,
         prefill_metrics: torch.Tensor,  # [num_prefill_tokens, num_q_heads]
         slot_mapping: torch.Tensor,     # [num_prefill_tokens, num_kv_heads]
     ) -> None:
-        """Metrics returned from prefill are already L2 sums of key-attention
-        and have shape [key_seq_len, query_heads]"""
+        """Insert metrics and metadata for prefilled KVs at the current
+        layer. Metrics returned from prefill are already L2 sums of key-attention
+        and have shape [key_seq_len, query_heads]. Metrics should have already
+        been initialized to the corresponding head bias.
+        """
         # TODO replace double gather with more efficient kernel
         seq_len, _ = prefill_metrics.shape
         # TODO validate dim order on reshape
+
+        # Insert metrics
         per_head_metrics = (prefill_metrics
                             .view(seq_len, self.num_kv_heads, -1)
                             .sum(dim=-1))
@@ -149,7 +173,10 @@ class CompressionMetrics:
         )
 
     def aggregate_decode(self):
-        """Simple heuristic from the paper: Total squared attention"""
+        """Aggregate KV metrics recorded during last iteration using
+        simple heuristic from the paper: Total squared attention.
+        Then update the running KV metrics with this aggregation.
+        """
         self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
 
     def sort_seq_metrics(self, seq_indices: List[int]) -> SortedMetricOutputs:
@@ -160,6 +187,7 @@ class CompressionMetrics:
         mask = self.seq_index_by_block == seq_indices[0]
         for seq_index in seq_indices[1:]:
             mask |= self.seq_index_by_block == seq_index
+            assert (self.seq_index_by_block == seq_index).sum() > 0
         
         # Mask
         masked_metrics = self.metrics[mask[...,None].expand_as(self.metrics)]
