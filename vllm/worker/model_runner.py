@@ -70,8 +70,6 @@ class PreparePromptMetadata(NamedTuple):
             lora_requests=set(),
             multi_modal_input=None,
             slot_mapping=[],
-            logical_blocks=[],
-            seq_indices=[],
             block_metadata=[],
         )
 
@@ -96,8 +94,6 @@ class PrepareDecodeMetadata(NamedTuple):
             lora_prompt_mapping=[],
             lora_requests=set(),
             slot_mapping=[],
-            logical_blocks=[],
-            seq_indices=[],
             block_metadata=[],
         )
 
@@ -365,8 +361,9 @@ class ModelRunner:
                 # TODO need to modify slot_mapping to be inserted for each token
                 seq_block_state_view = block_state.get_block_state_seq_view(
                     seq_group_metadata.block_state_index)
-                assert (seq_block_state_view.context_lens.max()
-                        == seq_block_state_view.context_lens.min()
+                ctx_lens = seq_block_state_view.get_context_lens()
+                assert (ctx_lens.max()
+                        == ctx_lens.min()
                         == prefill_end)
                 assert len(seq_block_state_view.seq_indices) == 1
                 # Append seq indices for KV metric initialization
@@ -753,6 +750,7 @@ class ModelRunner:
                 else:
                     decode_reqs.append(seq_group_meta)
 
+            block_state = kvc_state.block_state if kvc_state else None
             # Prepare input tensors.
             (
                 input_tokens,
@@ -766,7 +764,7 @@ class ModelRunner:
                 multi_modal_input,
                 slot_mapping,
                 block_metadata,
-            ) = self._prepare_prompt(prefill_reqs, kvc_state)
+            ) = self._prepare_prompt(prefill_reqs, block_state)
             (
                 decode_input_tokens,
                 decode_input_positions,
@@ -776,7 +774,7 @@ class ModelRunner:
                 decode_lora_requests,
                 decode_slot_mapping,
                 decode_block_metadata,
-            ) = self._prepare_decode(decode_reqs, kvc_state)
+            ) = self._prepare_decode(decode_reqs, block_state)
             sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                      prompt_lens,
                                                      subquery_lens)
@@ -912,7 +910,7 @@ class ModelRunner:
             prefill_metadata=prefill_attn_metadata,
             decode_metadata=decode_attn_metadata,
             kv_cache_dtype=self.kv_cache_dtype,
-            kv_metrics=kvc_state.kv_metrics,
+            kv_metrics=kvc_state.kv_metrics if kvc_state else None,
             kv_metric_buffer_len=(self.kvcompress_config.metric_collection_buffer_size
                                   if self.kvcompress_config else 0),
         )

@@ -138,7 +138,7 @@ class BlockState:
             context_lens=self.context_lens,
             is_batch_view=True,
         )
-            
+
     def get_block_state_seq_view(self, seq_index: int) -> "BlockStateView":
         # [ num_layers, num_kv_heads, max_num_blocks_per_seq]   if single-tier
         # [ num_layers, max_num_blocks_per_seq]                 if two-tier
@@ -240,11 +240,12 @@ class BlockStateView:
             "varying context lengths for prefill sequence")
         ctx_length = ctx_lens.view(-1)[0]
         # [num_layers, num_tokens, num_kv_heads]
-        positions = torch.arange(ctx_length)[None,:,None].expand(
-            ctx_lens.size(0),
-            ctx_length,
-            ctx_lens.size(2),
-        )
+        positions = (torch.arange(ctx_length,
+                                  dtype=torch.int,
+                                  device=ctx_lens.device)[None,:,None]
+                          .expand(ctx_lens.size(0),
+                                  ctx_length,
+                                  ctx_lens.size(2)))
         logical_blocks = positions // self.block_size
         offsets = positions % self.block_size
         assert logical_blocks.max() < self.block_tables.shape[-1]
@@ -252,7 +253,7 @@ class BlockStateView:
             self.block_tables[:,self.seq_indices]
                 .squeeze(1)
                 .transpose(1, 2)
-                .gather(dim=1, index=logical_blocks)
+                .gather(dim=1, index=logical_blocks.type(torch.int64))
                 .type(torch.int64)
         )
         return block_numbers * self.block_size + offsets
@@ -361,21 +362,24 @@ class BlockStateView:
     def get_allocated_block_metadata(self) -> BlockMetadata:
         """Returns block metadata for all allocated blocks"""
         assert not self.is_batch_view
-        mask = self.allocated_block_mask()
-        logical_blocks = self.block_table_indices[:,self.seq_indices][mask]
+        mask = self.allocated_block_mask(squeeze=False)
+        logical_blocks = (
+            self.block_table_indices
+                .expand_as(self.block_tables)[:,self.seq_indices][mask]
+        )
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
         seq_indices = torch.tensor(
             self.seq_indices,
             dtype=torch.int,
             device=logical_blocks.device)
         seq_indices = seq_indices.expand_as(logical_blocks)
-        layer_indices, _, head_indices = torch.where(mask)
+        layer_indices, _, head_indices, _ = torch.where(mask)
         return BlockMetadata(
             physical_blocks,
             logical_blocks,
             seq_indices,
-            layer_indices,
-            head_indices,
+            layer_indices.type(torch.int),
+            head_indices.type(torch.int),
         )
     
     def get_new_block_metadata(self) -> BlockMetadata:
@@ -383,22 +387,28 @@ class BlockStateView:
         during the last scheduling iteration.
         """
         assert not self.is_batch_view
+        indices = self.block_table_indices.expand_as(self.block_tables)[:,self.seq_indices]
+        last_block = ((self.context_lens[:,self.seq_indices] + self.block_size - 1)
+                / self.block_size)[...,None].expand_as(indices)
+        print(indices.shape, last_block.shape)
         # divide w/o round so that equality is satisfied for one KV per block
-        mask = (self.block_table_indices
-                == ((self.context_lens[:,self.seq_indices] + self.block_size - 1)
-                    / self.block_size))
-        logical_blocks = self.block_table_indices[:,self.seq_indices][mask]
+        mask = (
+            indices
+            == last_block
+        )
+        logical_blocks = (self.block_table_indices
+                              .expand_as(self.block_tables)[:,self.seq_indices][mask])
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
         seq_indices = torch.tensor(
             self.seq_indices,
             dtype=torch.int,
             device=logical_blocks.device)
         seq_indices = seq_indices.expand_as(logical_blocks)
-        layer_indices, _, head_indices = torch.where(mask)
+        layer_indices, _, head_indices, _ = torch.where(mask)
         return BlockMetadata(
             physical_blocks,
             logical_blocks,
             seq_indices,
-            layer_indices,
-            head_indices,
+            layer_indices.type(torch.int),
+            head_indices.type(torch.int),
         )

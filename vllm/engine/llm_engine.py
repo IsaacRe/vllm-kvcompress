@@ -193,7 +193,7 @@ class LLMEngine:
 
         self._initialize_kv_caches()
         if self.kvcompress_config:
-            self.kvcompress_state.init_kv_metadata(self.cache_config.num_gpu_blocks)
+            self.kvcompress_state.kv_metrics.init_kv_metadata(self.cache_config.num_gpu_blocks)
 
         # If usage stat is enabled, collect relevant info.
         if is_usage_stats_enabled():

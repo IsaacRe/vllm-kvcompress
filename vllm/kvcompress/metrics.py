@@ -138,7 +138,7 @@ class CompressionMetrics:
         ) = metadata
         self.seq_index_by_block[physical_blocks] = seq_indices
         self.logical_block_num_by_block[physical_blocks] = (
-            logical_blocks)
+            logical_blocks.type(torch.int))
         self.layer_index_by_block[physical_blocks] = layer_indices
         self.head_index_by_block[physical_blocks] = head_indices
 
