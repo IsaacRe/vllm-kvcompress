@@ -530,8 +530,9 @@ class ModelRunner:
                     slot_mapping.append(
                         seq_block_state_view.get_decode_slot_mapping())
                     block_tables.append(seq_block_state_view.get_block_tables())
-                    block_metadata.append(
-                        seq_block_state_view.get_new_block_metadata())
+                    new_block_meta = seq_block_state_view.get_new_block_metadata()
+                    if new_block_meta:
+                        block_metadata.append(new_block_meta)
                 else:
                     block_table = seq_group_metadata.block_tables[seq_id]
                     context_len = seq_len if self.sliding_window is None else min(

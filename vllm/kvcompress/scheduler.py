@@ -129,11 +129,17 @@ class CompressionScheduler:
             max_evicted_tokens = max(max_evicted_tokens, evicted_kv_count)
 
             seqs_to_compress.append(seq)
-            evicted_blocks_per_seq.append(evicted_kv_count)
+            evicted_blocks_per_seq.append(evicted_block_count)
             self._iters_since_compression[seq] = 0
 
         if not seqs_to_compress:
             return
+
+        # Sort sequences by batch_slot_index index
+        seqs_to_compress = list(sorted(
+            seqs_to_compress,
+            key=lambda x: self.block_manager.get_slot_index(x),
+        ))
 
         batch_size = len(seqs_to_compress)
         b_l_h = batch_size, self.config.num_layers, self.config.num_kv_heads
@@ -170,6 +176,7 @@ class CompressionScheduler:
             dtype=torch.int64,
             device=self.device,
         )
+
         schedule_cache_evictions(
             evicted_kv_indices,
             evicted_kv_count,
@@ -179,7 +186,7 @@ class CompressionScheduler:
             sort_output.head_by_block,
             sort_output.logical_block_num_by_block,
             evicted_blocks_per_seq,
-            context_lens,
+            context_lens.transpose(0, 1).contiguous(),
             hanging_token_count,
             batch_block_state.block_size,
         )

@@ -367,6 +367,7 @@ class BlockStateView:
             self.block_table_indices
                 .expand_as(self.block_tables)[:,self.seq_indices][mask]
         )
+        assert mask.sum() > 0
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
         seq_indices = torch.tensor(
             self.seq_indices,
@@ -375,16 +376,17 @@ class BlockStateView:
         seq_indices = seq_indices.expand_as(logical_blocks)
         layer_indices, _, head_indices, _ = torch.where(mask)
         return BlockMetadata(
-            physical_blocks,
-            logical_blocks,
-            seq_indices,
-            layer_indices.type(torch.int),
-            head_indices.type(torch.int),
+            physical_blocks=physical_blocks,
+            logical_blocks=logical_blocks,
+            seq_indices=seq_indices,
+            layer_indices=layer_indices.type(torch.int),
+            head_indices=head_indices.type(torch.int),
         )
     
-    def get_new_block_metadata(self) -> BlockMetadata:
+    def get_new_block_metadata(self) -> Optional[BlockMetadata]:
         """Return block metadata for all blocks that were added
         during the last scheduling iteration.
+        If there are no new blocks returns None.
         """
         assert not self.is_batch_view
         indices = self.block_table_indices.expand_as(self.block_tables)[:,self.seq_indices]
@@ -395,6 +397,10 @@ class BlockStateView:
             indices
             == last_block
         )
+
+        if mask.sum() == 0:
+            return None
+
         logical_blocks = (self.block_table_indices
                               .expand_as(self.block_tables)[:,self.seq_indices][mask])
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
@@ -405,9 +411,9 @@ class BlockStateView:
         seq_indices = seq_indices.expand_as(logical_blocks)
         layer_indices, _, head_indices, _ = torch.where(mask)
         return BlockMetadata(
-            physical_blocks,
-            logical_blocks,
-            seq_indices,
-            layer_indices.type(torch.int),
-            head_indices.type(torch.int),
+            physical_blocks=physical_blocks,
+            logical_blocks=logical_blocks,
+            seq_indices=seq_indices,
+            layer_indices=layer_indices.type(torch.int),
+            head_indices=head_indices.type(torch.int),
         )

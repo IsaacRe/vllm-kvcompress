@@ -97,7 +97,7 @@ class CompressionMetrics:
         )
         print(f"Allocating block metadata - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         # Sequence index for every block in cache
-        self.seq_index_by_block = torch.empty(
+        self.seq_index_by_block = -torch.ones(
             (num_blocks,),
             dtype=torch.int,
             device=self.device,
@@ -129,18 +129,11 @@ class CompressionMetrics:
         self,
         metadata: BlockMetadata,
     ) -> None:
-        (
-            physical_blocks,
-            logical_blocks,
-            seq_indices,
-            layer_indices,
-            head_indices,
-        ) = metadata
-        self.seq_index_by_block[physical_blocks] = seq_indices
-        self.logical_block_num_by_block[physical_blocks] = (
-            logical_blocks.type(torch.int))
-        self.layer_index_by_block[physical_blocks] = layer_indices
-        self.head_index_by_block[physical_blocks] = head_indices
+        self.seq_index_by_block[metadata.physical_blocks] = metadata.seq_indices
+        self.logical_block_num_by_block[metadata.physical_blocks] = (
+            metadata.logical_blocks.type(torch.int))
+        self.layer_index_by_block[metadata.physical_blocks] = metadata.layer_indices
+        self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
 
     def aggregate_prefill(
         self,
@@ -181,14 +174,18 @@ class CompressionMetrics:
 
     def sort_seq_metrics(self, seq_indices: List[int]) -> SortedMetricOutputs:
         """Sort and return a view of the indices limited to a subset
-        of all sequences
+        of all sequences.
         """
+        # TODO handle this better
+        assert list(sorted(seq_indices)) == seq_indices, (
+            "sort_seq_metrics input not ordered by ascending index")
+
         # Build metrics mask
         mask = self.seq_index_by_block == seq_indices[0]
         for seq_index in seq_indices[1:]:
             mask |= self.seq_index_by_block == seq_index
             assert (self.seq_index_by_block == seq_index).sum() > 0
-        
+
         # Mask
         masked_metrics = self.metrics[mask[...,None].expand_as(self.metrics)]
         masked_seq_indices = self.seq_index_by_block[mask]
@@ -206,6 +203,7 @@ class CompressionMetrics:
                               .sort()
         )
 
+        # Sort by sequence index
         sorted_indices = sorted_indices.gather(
             dim=0,
             index=sorted_seq_indices.indices.type(torch.int64)
