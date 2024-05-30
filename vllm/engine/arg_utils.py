@@ -83,6 +83,7 @@ class EngineArgs:
     max_kv_per_compression: int = 5_000_000
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 32
+    kv_head_bias_path: str = ""
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -505,6 +506,13 @@ class EngineArgs:
                             'N positions apart. This setting defines the '
                             'value of N. Should be <= '
                             'protected_window_size.')
+        
+        parser.add_argument('--kv-head-bias-path',
+                            type=str,
+                            default='',
+                            help='Path to the tensor containing bias '
+                            'for each KV head of the model. Can be a '
+                            'URL, local path or huggingface repo/path.')
 
         return parser
 
@@ -616,6 +624,7 @@ class EngineArgs:
                 max_kv_per_compression=self.max_kv_per_compression,
                 protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
+                kv_head_bias_path=self.kv_head_bias_path,
             )
         else:
             kvcompress_config = None

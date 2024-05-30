@@ -587,6 +587,9 @@ class KVCompressConfig:
         metric_collection_buffer_size: The minimum distance between a
             query and key for the attention between them to be aggregated
             into KV metrics. Must be <= protected_window_size.
+        kv_head_bias_path: Path to the tensor holding metric bias for each
+            KV head of the model. Can be a URL, local path or huggingface
+            repo/path.
     """
     def __init__(
         self,
@@ -600,6 +603,7 @@ class KVCompressConfig:
         max_kv_per_compression: int,
         protected_window_size: int,
         metric_collection_buffer_size: int,
+        kv_head_bias_path: str,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.compression_interval = compression_interval
@@ -611,6 +615,7 @@ class KVCompressConfig:
         self.max_kv_per_compression = max_kv_per_compression
         self.protected_window_size = protected_window_size
         self.metric_collection_buffer_size = metric_collection_buffer_size
+        self.kv_head_bias_path = kv_head_bias_path
         self._verify_args()
 
     def _verify_args(self) -> None:

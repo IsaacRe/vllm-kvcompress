@@ -5,6 +5,25 @@ import torch
 from vllm.kvcompress.block import BlockMetadata
 
 
+def _load_kv_head_bias(path: str) -> torch.Tensor:
+    # currently just read from local filesystem
+    ext = path.split('.')[-1]
+    if ext == "safetensors":
+        from safetensors import safe_open
+        f = safe_open(path)
+        bias = f.get_tensor(f.keys()[0])
+    elif ext in ["pt", "bin"]:
+        bias = torch.load(path)
+    elif ext == "npy":
+        import numpy as np
+        bias = torch.tensor(np.load(path))
+    elif ext == "npz":
+        import numpy as np
+        f = np.load(path)
+        bias = torch.tensor(f[f.files[0]])
+    return bias
+
+
 @dataclass
 class SortedMetricOutputs:
     sorted_indices: torch.Tensor
@@ -34,7 +53,7 @@ class CompressionMetrics:
         num_kv_heads: int,
         num_queries_per_kv: int,
         max_kv_per_sort: int,
-        kv_metric_head_bias: Optional[torch.Tensor],
+        kv_head_bias_file: Optional[str],
         device: str = "cuda:0"
     ) -> None:
         self.block_size = block_size
@@ -46,14 +65,23 @@ class CompressionMetrics:
         # Bias when aggregating metrics for each KV head.
         # Recorded metric for each KV will be the actual metric
         # plus bias for its corresponding KV head.
-        self.kv_metric_head_bias = kv_metric_head_bias
-        if self.kv_metric_head_bias is None:
-            print(f"Allocating head bias - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
+        print(f"Allocating head bias - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
+        if kv_head_bias_file is None:
             self.kv_metric_head_bias = torch.zeros(
                 (num_layers, num_kv_heads),
                 dtype=torch.float32,
                 device=device,
             )
+        else:
+            expected_shape = torch.Size((num_layers, num_kv_heads))
+            self.kv_metric_head_bias = (
+                _load_kv_head_bias(kv_head_bias_file)
+                .type(torch.float).to(device)
+            )
+            if self.kv_metric_head_bias.shape != expected_shape:
+                raise ValueError(f"expected shape {expected_shape} for "
+                                 f"KV head bias tensor but got "
+                                 f"{self.kv_metric_head_bias.shape}")
 
         # Crucial for limiting runtime and memory
         # overhead of sort during each iteration.
