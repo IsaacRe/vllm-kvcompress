@@ -378,10 +378,8 @@ def schedule_cache_evictions(
     block_size: int,
 ) -> None:
     print(f'BLOCK_SIZE: {block_size}')
-    MAX_INT = 2147483000
-    out_evicted_kv_indices.fill_(MAX_INT)
     out_evicted_kv_count.fill_(0)
-    inps = (
+    kvc_ops.schedule_cache_evictions(
         out_evicted_kv_indices.type(torch.int).contiguous(),
         out_evicted_kv_count.type(torch.int).contiguous(),
         sorted_indices.type(torch.int).contiguous(),
@@ -394,39 +392,6 @@ def schedule_cache_evictions(
         hanging_token_count.contiguous(),
         block_size,
     )
-    failing = []
-    for idx, i in enumerate(inps):
-        if isinstance(i, torch.Tensor) and i.dtype != torch.int:
-            failing += [idx]
-    assert not failing, failing
-    assert (out_evicted_kv_count == 0).all()
-    kvc_ops.schedule_cache_evictions(
-        *inps
-    )
-    try:
-        validate_evictions(out_evicted_kv_indices, out_evicted_kv_count, MAX_INT)
-    except:
-        gt_indices = out_evicted_kv_indices.clone()
-        gt_count = out_evicted_kv_count.clone()
-        out_evicted_kv_indices.fill_(MAX_INT)
-        out_evicted_kv_count.fill_(0)
-        ref_schedule_cache_evictions(*inps,
-            gt_indices,
-            gt_count,
-            MAX_INT)
-        valid_mask = out_evicted_kv_indices < MAX_INT
-        error_mask = valid_mask & ~torch.isclose(out_evicted_kv_indices, gt_indices)
-        print(torch.where(error_mask))
-        count_mask = out_evicted_kv_count != gt_count
-        print(torch.where(count_mask))
-        print(gt_count[count_mask])
-        print("VS")
-        print(out_evicted_kv_count[count_mask])
-        validate_evictions(
-            out_evicted_kv_indices,
-            out_evicted_kv_count,
-            MAX_INT)
-        raise Exception("Passed validation")
     torch.ones(1).to(0)
 
 
