@@ -206,14 +206,26 @@ class _AsyncLLMEngine(LLMEngine):
         and updates the scheduler with the model outputs. Finally, it decodes
         the sequences and returns the newly generated results.
         """
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
+        seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
 
         if not scheduler_outputs.is_empty():
+            if self.kvcompress_config:
+                # Temp metrics must be cleared before each forward pass to ensure correct
+                # metric aggregation afterward
+                self.kvcompress_state.kv_metrics.clear_temp_metrics()
+            if cache_moves:
+                self.model_executor.execute_cache_moves(cache_moves,
+                                                        self.kvcompress_state.kv_metrics)
+
             # Execute the model.
             output = await self.model_executor.execute_model_async(
                 seq_group_metadata_list, scheduler_outputs.blocks_to_swap_in,
                 scheduler_outputs.blocks_to_swap_out,
-                scheduler_outputs.blocks_to_copy)
+                scheduler_outputs.blocks_to_copy,
+                kvc_state=self.kvcompress_state)
+
+            if self.kvcompress_config:
+                self.kvcompress_state.kv_metrics.aggregate_decode()
         else:
             output = []
 
