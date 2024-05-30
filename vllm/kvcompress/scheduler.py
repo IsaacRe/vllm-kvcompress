@@ -170,12 +170,12 @@ class CompressionScheduler:
         # Schedule evictions
         evicted_kv_indices = torch.empty(
             (*b_l_h, max_evicted_tokens),
-            dtype=torch.int64,
+            dtype=torch.int,
             device=self.device,
         )
         evicted_kv_count = torch.empty(
             b_l_h,
-            dtype=torch.int64,
+            dtype=torch.int,
             device=self.device,
         )
 

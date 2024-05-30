@@ -313,9 +313,9 @@ def ref_schedule_cache_evictions(
     total_blocks, = layer_by_block.shape
     out_evicted_kv_indices.fill_(max_int)
     out_evicted_kv_count.fill_(0)
-    print(f'hanging_toks:\n{hanging_token_count}')
-    print(f'sequence_block_offsets:\n{seq_block_offsets}')
-    print(f'evicted_blocks_per_seq:\n{evicted_blocks_per_seq}')
+    # print(f'hanging_toks:\n{hanging_token_count}')
+    # print(f'sequence_block_offsets:\n{seq_block_offsets}')
+    # print(f'evicted_blocks_per_seq:\n{evicted_blocks_per_seq}')
     for i in range(num_seqs):
         remaining_kv = torch.ones((num_layers, num_kv_heads), device=out_evicted_kv_count.device) * hanging_token_count[i]
         evicted_blocks = 0
@@ -332,19 +332,19 @@ def ref_schedule_cache_evictions(
             virtual_block_num = virtual_block_num_by_block[block_num]
 
             kv_idx = virtual_block_num * block_size + block_offset
-            print(f'kv_idx: {sorted_indices[j]}, v_kv_idx: {kv_idx}, j: {j}, i: {i}, l: {layer_idx}, h: {head_idx}, evicted: {out_evicted_kv_count[i, layer_idx, head_idx] + 1}, remaining: {remaining_kv[layer_idx, head_idx]}, blk#: {block_num}, blk%: {block_offset}')
+            # print(f'kv_idx: {sorted_indices[j]}, v_kv_idx: {kv_idx}, j: {j}, i: {i}, l: {layer_idx}, h: {head_idx}, evicted: {out_evicted_kv_count[i, layer_idx, head_idx] + 1}, remaining: {remaining_kv[layer_idx, head_idx]}, blk#: {block_num}, blk%: {block_offset}')
             assert kv_idx.item() not in {x.item() for x in out_evicted_kv_indices[i, layer_idx, head_idx]}
             if kv_idx >= context_lens[i, layer_idx, head_idx].item():
                 j += 1
                 continue
 
-            # out_evicted_kv_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]] = kv_idx
+            out_evicted_kv_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]] = kv_idx
+            out_evicted_kv_count[i, layer_idx, head_idx] += 1
             # assert kv_idx == gt_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]], (
             #     f"{i=}, {layer_idx=}, {head_idx=}, {out_evicted_kv_count[i, layer_idx, head_idx]=}\n"
             #     f"{gt_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]]=}\n"
             #     f"{out_evicted_kv_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]]=}"
             # )
-            # out_evicted_kv_count[i, layer_idx, head_idx] += 1
             # assert out_evicted_kv_count[i, layer_idx, head_idx] == gt_count[i, layer_idx, head_idx], (
             #     f"{i=}, {layer_idx=}, {head_idx=}\n{gt_count[i, layer_idx, head_idx]=}\n{out_evicted_kv_count[i, layer_idx, head_idx]=}"
             # )
@@ -357,6 +357,8 @@ def ref_schedule_cache_evictions(
                 print(f'evicted {evicted_blocks}/{evicted_blocks_per_seq[i]} blocks')
 
             tot_iter[layer_idx, head_idx] += 1
+
+        assert out_evicted_kv_count[i].sum() >= evicted_blocks_per_seq[i] * block_size
 
         print(f'tot_iter: {tot_iter}')
         print(f'remaining_kv:\n{remaining_kv}')
@@ -378,10 +380,9 @@ def schedule_cache_evictions(
     block_size: int,
 ) -> None:
     print(f'BLOCK_SIZE: {block_size}')
-    out_evicted_kv_count.fill_(0)
     kvc_ops.schedule_cache_evictions(
-        out_evicted_kv_indices.type(torch.int).contiguous(),
-        out_evicted_kv_count.type(torch.int).contiguous(),
+        out_evicted_kv_indices,
+        out_evicted_kv_count,
         sorted_indices.type(torch.int).contiguous(),
         seq_block_offsets.type(torch.int).contiguous(),
         layer_by_block.contiguous(),
@@ -464,8 +465,8 @@ def schedule_cache_moves(
           f"{evicted_kv_indices.shape=}\n{evicted_kv_count.shape=}\n"
           f"{block_tables.shape=}\n{context_lens.shape=}")
     ref_schedule_t1_cache_moves(  # kvc_ops.schedule_t1_cache_moves(
-        out_cache_moves_indices.contiguous(),
-        out_cache_moves_count.contiguous(),
+        out_cache_moves_indices,
+        out_cache_moves_count,
         evicted_kv_indices.contiguous(),
         evicted_kv_count.contiguous(),
         block_tables.contiguous(),

@@ -66,13 +66,7 @@ class CompressionMetrics:
         # Recorded metric for each KV will be the actual metric
         # plus bias for its corresponding KV head.
         print(f"Allocating head bias - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
-        if kv_head_bias_file is None:
-            self.kv_metric_head_bias = torch.zeros(
-                (num_layers, num_kv_heads),
-                dtype=torch.float32,
-                device=device,
-            )
-        else:
+        if kv_head_bias_file:
             expected_shape = torch.Size((num_layers, num_kv_heads))
             self.kv_metric_head_bias = (
                 _load_kv_head_bias(kv_head_bias_file)
@@ -82,6 +76,12 @@ class CompressionMetrics:
                 raise ValueError(f"expected shape {expected_shape} for "
                                  f"KV head bias tensor but got "
                                  f"{self.kv_metric_head_bias.shape}")
+        else:
+            self.kv_metric_head_bias = torch.zeros(
+                (num_layers, num_kv_heads),
+                dtype=torch.float32,
+                device=device,
+            )
 
         # Crucial for limiting runtime and memory
         # overhead of sort during each iteration.

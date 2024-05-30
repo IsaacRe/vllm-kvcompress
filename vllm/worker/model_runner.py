@@ -271,7 +271,6 @@ class ModelRunner:
             return PreparePromptMetadata.empty()
 
         for seq_group_metadata in seq_group_metadata_list:
-            print("PREPARING PROMPT")
             assert seq_group_metadata.is_prompt
             seq_ids = list(seq_group_metadata.seq_data.keys())
             assert len(seq_ids) == 1
@@ -497,8 +496,6 @@ class ModelRunner:
         lora_index_mapping: List[int] = []
         lora_prompt_mapping: List[int] = []
         lora_requests: Set[LoRARequest] = set()
-
-        print("PREPARING DECODE")
 
         if len(seq_group_metadata_list) == 0:
             return PrepareDecodeMetadata.empty()

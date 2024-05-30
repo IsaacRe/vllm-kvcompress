@@ -40,7 +40,7 @@ After benchmarking, move to main branch and remove t1/t2 block table references 
 Fix seq vs batch block state views (just have everything be a view)
 Clean up block_state/block_manager/block_allocator responsabilities (probably only need two classes)
 Passing of block_tables/context_lens/slot_mapping between block state and model runner is a mess
-Remove increment_on_full
+Remove increment_on_full, this will remove the need for move_empty_trailing_blocks
 Remove context_lens transpose before schedule_evictions and remove contiguous calls
 remove int conversions
 Improve memory profiling
