@@ -36,6 +36,11 @@ _IMAGE_PROMPTS = [
     "<image>\nUSER: What's the content of the image?\nASSISTANT:",
     "<image>\nUSER: What is the season?\nASSISTANT:"
 ]
+_RANDOM_DIGIT_PROMPT_TEMPLATE = "USER: Repeat the following string of digits:\n{}\nASSISTANT: {}"
+_RANDOM_DIGIT_STRINGS = [
+    "3445283696391145714477754187117652483539127879511650235737670797020723087965063690307283106268121379"
+]
+_RANDOM_DIGIT_REPEAT_LENGTH = 10
 assert len(_PIXEL_VALUES_FILES) == len(_IMAGE_FEATURES_FILES) == len(
     _IMAGE_FILES) == len(_IMAGE_PROMPTS)
 
@@ -104,6 +109,22 @@ def vllm_image_prompts(request) -> List[str]:
     return [
         "<image>" * (vision_language_config.image_feature_size - 1) + p
         for p in _IMAGE_PROMPTS
+    ]
+
+
+@pytest.fixture()
+def random_digit_prompts() -> List[str]:
+    return [
+        _RANDOM_DIGIT_PROMPT_TEMPLATE.format(random_digits, random_digits[:_RANDOM_DIGIT_REPEAT_LENGTH])
+        for random_digits in _RANDOM_DIGIT_STRINGS
+    ]
+
+
+@pytest.fixture()
+def random_digit_responses() -> List[str]:
+    return [
+        random_digits[_RANDOM_DIGIT_REPEAT_LENGTH:]
+        for random_digits in _RANDOM_DIGIT_STRINGS
     ]
 
 
