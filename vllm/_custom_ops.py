@@ -272,6 +272,98 @@ def convert_fp8(output: torch.Tensor, input: torch.Tensor) -> None:
 
 # KV-Compress
 
+def ref_schedule_cache_evictions(
+    out_evicted_kv_indices: torch.Tensor,  # store virtual kv indices
+    out_evicted_kv_count: torch.Tensor,
+    sorted_indices: torch.Tensor,
+    seq_block_offsets: torch.Tensor,
+    layer_by_block: torch.Tensor,
+    head_by_block: torch.Tensor,
+    virtual_block_num_by_block: torch.Tensor,
+    evicted_blocks_per_seq: torch.Tensor,
+    context_lens: torch.Tensor,
+    hanging_token_count: torch.Tensor,
+    block_size: int,
+    gt_indices: torch.Tensor,
+    gt_count: torch.Tensor,
+    max_int: int,
+):
+    # assert (
+    #     head_by_block[16] != head_by_block[18]
+    #     or layer_by_block[16] != layer_by_block[18]
+    #     or virtual_block_num_by_block[16] != virtual_block_num_by_block[18]
+    #     or sorted_indices[16] % block_size != sorted_indices[18] % block_size
+    # )
+    # print(head_by_block[16] != head_by_block[21])
+    # print(layer_by_block[16] != layer_by_block[21])
+    # print(virtual_block_num_by_block[16] != virtual_block_num_by_block[21])
+    # print(sorted_indices[16] % block_size != sorted_indices[21] % block_size)
+    # for j in [16, 21]:
+    #     block_num = sorted_indices[j] // block_size
+    #     block_offset = sorted_indices[j] % block_size
+
+    #     layer_idx = layer_by_block[block_num]
+    #     head_idx = head_by_block[block_num]
+    #     virtual_block_num = virtual_block_num_by_block[block_num]
+
+    #     kv_idx = virtual_block_num * block_size + block_offset
+    #     print(f'DEBUG: {kv_idx}')
+
+    num_seqs, num_layers, num_kv_heads, _ = out_evicted_kv_indices.shape
+    total_blocks, = layer_by_block.shape
+    out_evicted_kv_indices.fill_(max_int)
+    out_evicted_kv_count.fill_(0)
+    print(f'hanging_toks:\n{hanging_token_count}')
+    print(f'sequence_block_offsets:\n{seq_block_offsets}')
+    print(f'evicted_blocks_per_seq:\n{evicted_blocks_per_seq}')
+    for i in range(num_seqs):
+        remaining_kv = torch.ones((num_layers, num_kv_heads), device=out_evicted_kv_count.device) * hanging_token_count[i]
+        evicted_blocks = 0
+        tot_iter = torch.zeros_like(remaining_kv)
+        j = seq_block_offsets[i] * block_size
+        end_j = (seq_block_offsets[i+1] if i+1 < len(seq_block_offsets) else total_blocks) * block_size
+        print(f'start, end: {j}, {end_j}')
+        while evicted_blocks < evicted_blocks_per_seq[i] and j < end_j:
+            block_num = sorted_indices[j] // block_size
+            block_offset = sorted_indices[j] % block_size
+
+            layer_idx = layer_by_block[block_num]
+            head_idx = head_by_block[block_num]
+            virtual_block_num = virtual_block_num_by_block[block_num]
+
+            kv_idx = virtual_block_num * block_size + block_offset
+            print(f'kv_idx: {sorted_indices[j]}, v_kv_idx: {kv_idx}, j: {j}, i: {i}, l: {layer_idx}, h: {head_idx}, evicted: {out_evicted_kv_count[i, layer_idx, head_idx] + 1}, remaining: {remaining_kv[layer_idx, head_idx]}, blk#: {block_num}, blk%: {block_offset}')
+            assert kv_idx.item() not in {x.item() for x in out_evicted_kv_indices[i, layer_idx, head_idx]}
+            if kv_idx >= context_lens[i, layer_idx, head_idx].item():
+                j += 1
+                continue
+
+            # out_evicted_kv_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]] = kv_idx
+            # assert kv_idx == gt_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]], (
+            #     f"{i=}, {layer_idx=}, {head_idx=}, {out_evicted_kv_count[i, layer_idx, head_idx]=}\n"
+            #     f"{gt_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]]=}\n"
+            #     f"{out_evicted_kv_indices[i, layer_idx, head_idx, out_evicted_kv_count[i, layer_idx, head_idx]]=}"
+            # )
+            # out_evicted_kv_count[i, layer_idx, head_idx] += 1
+            # assert out_evicted_kv_count[i, layer_idx, head_idx] == gt_count[i, layer_idx, head_idx], (
+            #     f"{i=}, {layer_idx=}, {head_idx=}\n{gt_count[i, layer_idx, head_idx]=}\n{out_evicted_kv_count[i, layer_idx, head_idx]=}"
+            # )
+
+            j += 1
+            remaining_kv[layer_idx, head_idx] -= 1
+            if remaining_kv[layer_idx, head_idx] == 0:
+                remaining_kv[layer_idx, head_idx] = block_size
+                evicted_blocks += 1
+                print(f'evicted {evicted_blocks}/{evicted_blocks_per_seq[i]} blocks')
+
+            tot_iter[layer_idx, head_idx] += 1
+
+        print(f'tot_iter: {tot_iter}')
+        print(f'remaining_kv:\n{remaining_kv}')
+        assert evicted_blocks == evicted_blocks_per_seq[i], "schedule_cache_evictions loop failed"
+
+
+
 def schedule_cache_evictions(
     out_evicted_kv_indices: torch.Tensor,
     out_evicted_kv_count: torch.Tensor,
@@ -286,19 +378,112 @@ def schedule_cache_evictions(
     block_size: int,
 ) -> None:
     print(f'BLOCK_SIZE: {block_size}')
-    kvc_ops.schedule_cache_evictions(
-        out_evicted_kv_indices,
-        out_evicted_kv_count,
-        sorted_indices,
-        seq_block_offsets,
-        layer_by_block,
-        head_by_block,
-        logical_block_num_by_block,
-        evicted_blocks_per_seq,
-        context_lens,
-        hanging_token_count,
+    MAX_INT = 2147483000
+    out_evicted_kv_indices.fill_(MAX_INT)
+    out_evicted_kv_count.fill_(0)
+    inps = (
+        out_evicted_kv_indices.type(torch.int).contiguous(),
+        out_evicted_kv_count.type(torch.int).contiguous(),
+        sorted_indices.type(torch.int).contiguous(),
+        seq_block_offsets.type(torch.int).contiguous(),
+        layer_by_block.contiguous(),
+        head_by_block.contiguous(),
+        logical_block_num_by_block.contiguous(),
+        evicted_blocks_per_seq.contiguous(),
+        context_lens.transpose(0, 1).contiguous(),
+        hanging_token_count.contiguous(),
         block_size,
     )
+    failing = []
+    for idx, i in enumerate(inps):
+        if isinstance(i, torch.Tensor) and i.dtype != torch.int:
+            failing += [idx]
+    assert not failing, failing
+    assert (out_evicted_kv_count == 0).all()
+    kvc_ops.schedule_cache_evictions(
+        *inps
+    )
+    try:
+        validate_evictions(out_evicted_kv_indices, out_evicted_kv_count, MAX_INT)
+    except:
+        gt_indices = out_evicted_kv_indices.clone()
+        gt_count = out_evicted_kv_count.clone()
+        out_evicted_kv_indices.fill_(MAX_INT)
+        out_evicted_kv_count.fill_(0)
+        ref_schedule_cache_evictions(*inps,
+            gt_indices,
+            gt_count,
+            MAX_INT)
+        valid_mask = out_evicted_kv_indices < MAX_INT
+        error_mask = valid_mask & ~torch.isclose(out_evicted_kv_indices, gt_indices)
+        print(torch.where(error_mask))
+        count_mask = out_evicted_kv_count != gt_count
+        print(torch.where(count_mask))
+        print(gt_count[count_mask])
+        print("VS")
+        print(out_evicted_kv_count[count_mask])
+        validate_evictions(
+            out_evicted_kv_indices,
+            out_evicted_kv_count,
+            MAX_INT)
+        raise Exception("Passed validation")
+    torch.ones(1).to(0)
+
+
+def validate_evictions(evicted_kv_indices, evicted_kv_count, max_int):
+    valid_mask = evicted_kv_indices < max_int
+    selected_mask = (
+        torch.arange(evicted_kv_indices.shape[-1],
+                     device=evicted_kv_indices.device,
+                     dtype=evicted_kv_indices.dtype)[None,None,None]
+        < evicted_kv_count[...,None]
+    )
+    assert not (selected_mask & ~valid_mask).any()
+
+
+def ref_schedule_t1_cache_moves(
+    out_cache_moves_idx: torch.Tensor,
+    out_cache_moves_count: torch.Tensor,
+    evicted_kv_indices: torch.Tensor,
+    evicted_kv_count: torch.Tensor,
+    block_tables: torch.Tensor,
+    context_lens: torch.Tensor,
+    block_size: int,
+):
+    num_seqs, num_layers, num_kv_heads, _ = evicted_kv_indices.shape
+    for i in range(num_seqs):
+        for layer_idx in range(num_layers):
+            for j in range(num_kv_heads):
+                move_count = 0
+                evict_count = 0
+                # print(f'counts: {evicted_kv_count[i, layer_idx, j]}')
+                # print(f'idxs: {evicted_kv_indices[i, layer_idx, j]}')
+                # print(f'ctx_len: {context_lens[layer_idx,i,j]}')
+                for k in range(evicted_kv_count[i, layer_idx, j].item()):
+                    src_idx = context_lens[layer_idx,i,j] - k - 1
+                    end_src_idx = evicted_kv_indices[i, layer_idx, j, evicted_kv_count[i, layer_idx, j] - 1 - evict_count]
+                    dst_idx = evicted_kv_indices[i, layer_idx, j, move_count]
+
+                    if src_idx <= dst_idx:
+                        break
+                    
+                    # print(f'seq: {i}, k: {k}, layer: {layer_idx}, kv_head: {j}, dst: {dst_idx}, src: {src_idx}, end_src: {end_src_idx}')
+                    if src_idx <= end_src_idx:
+                        evict_count += 1
+                        continue
+                    
+                    src_block_num = block_tables[layer_idx, i, j, src_idx // block_size]
+                    dst_block_num = block_tables[layer_idx, i, j, dst_idx // block_size]
+                    
+                    physical_src_idx = src_block_num * block_size + src_idx % block_size
+                    physical_dst_idx = dst_block_num * block_size + dst_idx % block_size
+                    # print(f'moving: {physical_src_idx}({src_idx}) -> {physical_dst_idx}({dst_idx})')
+
+                    out_cache_moves_idx[i, layer_idx, j, move_count, 0] = physical_dst_idx
+                    out_cache_moves_idx[i, layer_idx, j, move_count, 1] = physical_src_idx
+                    move_count += 1
+                
+                out_cache_moves_count[i,layer_idx,j] = move_count
 
 
 def schedule_cache_moves(
@@ -310,15 +495,19 @@ def schedule_cache_moves(
     context_lens: torch.Tensor,
     block_size: int,
 ) -> None:
-    kvc_ops.schedule_t1_cache_moves(
-        out_cache_moves_indices,
-        out_cache_moves_count,
-        evicted_kv_indices,
-        evicted_kv_count,
-        block_tables,
-        context_lens,
+    print(f"{out_cache_moves_indices.shape=}\n{out_cache_moves_count.shape=}\n"
+          f"{evicted_kv_indices.shape=}\n{evicted_kv_count.shape=}\n"
+          f"{block_tables.shape=}\n{context_lens.shape=}")
+    ref_schedule_t1_cache_moves(  # kvc_ops.schedule_t1_cache_moves(
+        out_cache_moves_indices.contiguous(),
+        out_cache_moves_count.contiguous(),
+        evicted_kv_indices.contiguous(),
+        evicted_kv_count.contiguous(),
+        block_tables.contiguous(),
+        context_lens.contiguous(),
         block_size,
     )
+    torch.ones(1).to(0)
 
 
 def execute_cache_moves(
@@ -340,3 +529,4 @@ def execute_cache_moves(
         blocks_per_head,
         threads_per_head,
     )
+    torch.ones(1).to(0)

@@ -136,10 +136,12 @@ class CompressionScheduler:
             return
 
         # Sort sequences by batch_slot_index index
-        seqs_to_compress = list(sorted(
-            seqs_to_compress,
-            key=lambda x: self.block_manager.get_slot_index(x),
+        seqs_to_compress, evicted_blocks_per_seq = zip(*sorted(
+            zip(seqs_to_compress, evicted_blocks_per_seq),
+            key=lambda x: self.block_manager.get_slot_index(x[0]),
         ))
+        seqs_to_compress = list(seqs_to_compress)
+        evicted_blocks_per_seq = list(evicted_blocks_per_seq)
 
         batch_size = len(seqs_to_compress)
         b_l_h = batch_size, self.config.num_layers, self.config.num_kv_heads
@@ -186,7 +188,7 @@ class CompressionScheduler:
             sort_output.head_by_block,
             sort_output.logical_block_num_by_block,
             evicted_blocks_per_seq,
-            context_lens.transpose(0, 1).contiguous(),
+            context_lens,
             hanging_token_count,
             batch_block_state.block_size,
         )
