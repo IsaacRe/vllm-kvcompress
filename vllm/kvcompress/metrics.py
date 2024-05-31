@@ -159,7 +159,7 @@ class CompressionMetrics:
 
     def profile_sort(self):
         # Should not have begun handling requests
-        assert (self.seq_index_by_block == self.unassigned_seq_idx).all()
+        assert self.num_blocks is None, "cannot profile after initialization"
         sort_blocks = (self.max_kv_per_sort + self.block_size - 1) // self.block_size
         self.init_kv_metadata(sort_blocks)
         self.seq_index_by_block[:] = 0
@@ -170,6 +170,7 @@ class CompressionMetrics:
             torch.device(self.device))
         self.clear_kv_metadata()
         torch.cuda.empty_cache()
+        print(f"PROFILED SORT: {final_mem - init_mem}")
         return final_mem - init_mem
 
     def clear_temp_metrics(self) -> None:
@@ -242,6 +243,7 @@ class CompressionMetrics:
 
         # Mask
         masked_metrics = self.metrics[mask[...,None].expand_as(self.metrics)]
+        print(f"{masked_metrics.shape=}")
         masked_seq_indices = self.seq_index_by_block[mask]
         masked_layer_indices = self.layer_index_by_block[mask]
         masked_head_indices = self.head_index_by_block[mask]
