@@ -129,7 +129,10 @@ class Worker(WorkerBase):
         self.model_runner.load_model()
 
     @torch.inference_mode()
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
+    def determine_num_available_blocks(
+        self,
+        kv_metrics: Optional[CompressionMetrics] = None,
+    ) -> Tuple[int, int]:
         """Profiles the peak memory usage of the model to determine how many
         KV blocks may be allocated without OOMs.
 
@@ -159,6 +162,9 @@ class Worker(WorkerBase):
         assert peak_memory > 0, (
             "Error in memory profiling. This happens when the GPU memory was "
             "not properly cleaned up before initializing the vLLM instance.")
+        
+        peak_metric_sort_mem = kv_metrics.profile_sort()
+        print(f"PROFILING: model mem:{peak_memory}, sort mem: {peak_metric_sort_mem}")
 
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(

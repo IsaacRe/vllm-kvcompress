@@ -54,7 +54,10 @@ class ExecutorBase(ABC):
         pass
 
     @abstractmethod
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
+    def determine_num_available_blocks(
+        self,
+        kv_metrics: Optional[CompressionMetrics] = None,
+    ) -> Tuple[int, int]:
         """Determine the number of available blocks for the GPU KV cache and
         swappable CPU KV cache.
 

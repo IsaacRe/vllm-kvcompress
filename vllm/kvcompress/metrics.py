@@ -93,7 +93,18 @@ class CompressionMetrics:
         # Configured after profiling
         self.num_blocks = None
 
+        self.unassigned_seq_idx = -1  # unassigned blocks cannot match valid indices
+
         # Allocated after profiling
+        self.metrics = None
+        self.temp_metrics = None
+        self.seq_index_by_block = None
+        self.layer_index_by_block = None
+        self.head_index_by_block = None
+        self.logical_block_num_by_block = None
+
+    def clear_kv_metadata(self) -> None:
+        self.num_blocks = None
         self.metrics = None
         self.temp_metrics = None
         self.seq_index_by_block = None
@@ -125,26 +136,41 @@ class CompressionMetrics:
         )
         print(f"Allocating block metadata - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         # Sequence index for every block in cache
-        self.seq_index_by_block = -torch.ones(
-            (num_blocks,),
+        self.seq_index_by_block = torch.ones(
+            (self.num_blocks,),
             dtype=torch.int,
             device=self.device,
-        )
+        ) * self.unassigned_seq_idx
         self.layer_index_by_block = torch.empty(
-            (num_blocks,),
+            (self.num_blocks,),
             dtype=torch.int,
             device=self.device,
         )
         self.head_index_by_block = torch.empty(
-            (num_blocks,),
+            (self.num_blocks,),
             dtype=torch.int,
             device=self.device,
         )
         self.logical_block_num_by_block = torch.empty(
-            (num_blocks,),
+            (self.num_blocks,),
             dtype=torch.int,
             device=self.device,
         )
+
+    def profile_sort(self):
+        # Should not have begun handling requests
+        assert (self.seq_index_by_block == self.unassigned_seq_idx).all()
+        sort_blocks = (self.max_kv_per_sort + self.block_size - 1) // self.block_size
+        self.init_kv_metadata(sort_blocks)
+        self.seq_index_by_block[:] = 0
+        init_mem = torch.cuda.max_memory_allocated(
+            torch.device(self.device))
+        self.sort_seq_metrics([0])
+        final_mem = torch.cuda.max_memory_allocated(
+            torch.device(self.device))
+        self.clear_kv_metadata()
+        torch.cuda.empty_cache()
+        return final_mem - init_mem
 
     def clear_temp_metrics(self) -> None:
         """Temp metric output space must be set to zero before each

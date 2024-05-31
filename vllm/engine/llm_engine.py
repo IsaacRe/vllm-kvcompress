@@ -273,8 +273,9 @@ class LLMEngine:
         The workers will determine the number of blocks in both the GPU cache
         and the swap CPU cache.
         """
+        kv_metrics = self.kvcompress_state.kv_metrics if self.kvcompress_state else None
         num_gpu_blocks, num_cpu_blocks = (
-            self.model_executor.determine_num_available_blocks())
+            self.model_executor.determine_num_available_blocks(kv_metrics))
 
         if self.cache_config.num_gpu_blocks_override is not None:
             num_gpu_blocks_override = self.cache_config.num_gpu_blocks_override

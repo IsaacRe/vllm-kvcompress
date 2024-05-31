@@ -109,11 +109,14 @@ class GPUExecutor(ExecutorBase):
         # Load model handled in spec decode worker.
         self.driver_worker.init_device()
 
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
+    def determine_num_available_blocks(
+        self,
+        kv_metrics: Optional[CompressionMetrics] = None,
+    ) -> Tuple[int, int]:
         """Determine the number of available KV blocks by invoking the
         underlying worker.
         """
-        return self.driver_worker.determine_num_available_blocks()
+        return self.driver_worker.determine_num_available_blocks(kv_metrics)
 
     def initialize_cache(self, num_gpu_blocks: int, num_cpu_blocks) -> None:
         """Initialize the KV cache by invoking the underlying worker.
