@@ -43,7 +43,7 @@ Passing of block_tables/context_lens/slot_mapping between block state and model 
 Remove increment_on_full, this will remove the need for move_empty_trailing_blocks
 Remove context_lens transpose before schedule_evictions and remove contiguous calls
 remove int conversions
-Improve memory profiling
+Improve memory profiling - profile full kvc schedule loop (2nd sort is causing OOM)
 
 
 ### Open Questions

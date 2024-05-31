@@ -164,7 +164,8 @@ class Worker(WorkerBase):
             "not properly cleaned up before initializing the vLLM instance.")
         
         peak_metric_sort_mem = kv_metrics.profile_sort()
-        print(f"PROFILING: model mem:{peak_memory}, sort mem: {peak_metric_sort_mem}")
+
+        peak_memory += 1e9
 
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(
