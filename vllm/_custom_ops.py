@@ -379,7 +379,6 @@ def schedule_cache_evictions(
     hanging_token_count: torch.Tensor,
     block_size: int,
 ) -> None:
-    print(f'BLOCK_SIZE: {block_size}')
     kvc_ops.schedule_cache_evictions(
         out_evicted_kv_indices,
         out_evicted_kv_count,
@@ -461,9 +460,6 @@ def schedule_cache_moves(
     context_lens: torch.Tensor,
     block_size: int,
 ) -> None:
-    print(f"{out_cache_moves_indices.shape=}\n{out_cache_moves_count.shape=}\n"
-          f"{evicted_kv_indices.shape=}\n{evicted_kv_count.shape=}\n"
-          f"{block_tables.shape=}\n{context_lens.shape=}")
     ref_schedule_t1_cache_moves(  # kvc_ops.schedule_t1_cache_moves(
         out_cache_moves_indices,
         out_cache_moves_count,
@@ -485,7 +481,6 @@ def execute_cache_moves(
     blocks_per_head: int,
     threads_per_head: int,
 ) -> None:
-    print(k_cache.shape, v_cache.shape, cache_moves_indices.shape)
     kvc_ops.execute_cache_moves(
         k_cache,
         v_cache,

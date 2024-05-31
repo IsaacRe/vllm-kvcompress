@@ -190,7 +190,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # that will be generated during the next decoding step. 
         seq_block_count = (seq_len + self.block_size) // self.block_size
         total_blocks = self.num_layers * self.num_kv_heads * seq_block_count
-        self._validate_allocator()
+        # self._validate_allocator()
         block_numbers = self.gpu_allocator.allocate(total_blocks)
         seq_blocks = block_numbers.reshape(
             self.num_layers, self.num_kv_heads, seq_block_count
@@ -200,8 +200,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
         # TODO debug
         self.block_state.block_tables[:,batch_slot_idx,:,:seq_block_count] = seq_blocks
-        self.block_state._validate()
-        self._validate_allocator()
+        # self.block_state._validate()
+        # self._validate_allocator()
 
     def _remove_sequence(self, seq_id: int) -> None:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
@@ -215,7 +215,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         self.block_state.context_lens[:,batch_slot_idx] = 0
         assert seq_id not in self.batch_slot_mapping
-        self.block_state._validate()
+        # self.block_state._validate()
 
     def _get_new_block_count(self, seq_id: int, token_count: int):
         batch_slot_idx = self.batch_slot_mapping[seq_id]
@@ -343,7 +343,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
         self._validate_allocator()
-        self.block_state._validate()
+        # self.block_state._validate()
         seq_indices, removed_blocks = zip(*[
             (self.batch_slot_mapping[seq_id], freed_block_count[seq_id])
             for seq_id in freed_block_count.keys()
@@ -362,7 +362,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.gpu_allocator.free(
             freed_blocks
         )
-        self.block_state._validate()
+        # self.block_state._validate()
         # In case of empty last block, move the empty block to the new final
         # logical block position after evicting non-empty blocks.
         empty_blocks = batch_view.move_empty_trailing_blocks(freed_block_counts_tensor)
@@ -375,7 +375,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             removed_block_count=removed_blocks,
             debug_freed_idx=evicted_mask,
         )
-        self.block_state._validate()
+        # self.block_state._validate()
         # print(f'{evicted_indices=}')
         # print(f'freed: {freed_blocks[:5]} ({freed_blocks.shape[0]} total)')
         # if freed_blocks.numel() > 0:
