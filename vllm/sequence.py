@@ -111,12 +111,14 @@ class SequenceData:
         self,
         prompt_token_ids: List[int],
         output_token_ids: Optional[List[int]] = None,
+        reference_token_ids: Optional[List[int]] = None,
     ) -> None:
         if output_token_ids is None:
             output_token_ids = []
 
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids = output_token_ids
+        self.reference_token_ids = reference_token_ids or []
         self.cumulative_logprob = 0.0
         # The number of tokens that are computed (that run against the model).
         self._num_computed_tokens = 0
@@ -169,6 +171,11 @@ class SequenceData:
     def get_last_token_id(self) -> int:
         if not self.output_token_ids:
             return self.prompt_token_ids[-1]
+        # If reference token ids were passed we retrieve input tokens from
+        # the list until it is exhausted, then fallback on auto-regressive
+        # input.
+        if len(self.reference_token_ids) > 0:
+            return self.reference_token_ids.pop(0)
         return self.output_token_ids[-1]
 
     def get_prompt_token_ids(self) -> List[int]:
@@ -208,6 +215,7 @@ class Sequence:
         block_size: int,
         eos_token_id: Optional[int] = None,
         lora_request: Optional[LoRARequest] = None,
+        reference_token_ids: Optional[List[int]] = None,
     ) -> None:
         self.seq_id = seq_id
         self.prompt = prompt
@@ -215,7 +223,8 @@ class Sequence:
         self.eos_token_id = eos_token_id
         self.lora_request = lora_request
 
-        self.data = SequenceData(prompt_token_ids)
+        self.data = SequenceData(prompt_token_ids,
+                                 reference_token_ids=reference_token_ids)
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
 

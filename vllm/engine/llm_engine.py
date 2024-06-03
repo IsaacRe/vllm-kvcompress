@@ -1,5 +1,5 @@
 import time
-from typing import Iterable, List, Optional, Type, Union
+from typing import Iterable, List, Optional, Type, Union, Tuple
 
 from transformers import GenerationConfig, PreTrainedTokenizer
 
@@ -362,14 +362,21 @@ class LLMEngine:
         request_id: str,  # pylint: disable=unused-argument
         prompt: Optional[str],
         prompt_token_ids: Optional[List[int]] = None,
+        reference: Optional[str] = None,
+        reference_token_ids: Optional[str] = None,
         lora_request: Optional[LoRARequest] = None,
-    ):
+    ) -> Tuple[List[int], Optional[List[int]]]:
         if prompt_token_ids is None:
             assert prompt is not None
             prompt_token_ids = self.tokenizer.encode(request_id=request_id,
                                                      prompt=prompt,
                                                      lora_request=lora_request)
-        return prompt_token_ids
+        if reference_token_ids is None and reference:
+            reference_token_ids = self.tokenizer.encode(request_id=request_id,
+                                                        prompt=reference,
+                                                        lora_request=lora_request,
+                                                        skip_special_tokens=True)
+        return prompt_token_ids, reference_token_ids
 
     def add_request(
         self,
@@ -377,6 +384,8 @@ class LLMEngine:
         prompt: Optional[str],
         sampling_params: SamplingParams,
         prompt_token_ids: Optional[List[int]] = None,
+        reference_completion: Optional[str] = None,
+        reference_token_ids: Optional[List[int]] = None,
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
         multi_modal_data: Optional[MultiModalData] = None,
@@ -394,6 +403,14 @@ class LLMEngine:
             sampling_params: The sampling parameters for text generation.
             prompt_token_ids: The token IDs of the prompt. If None, we
                 use the tokenizer to convert the prompts to token IDs.
+            reference_completion: Optional reference completion. If passed
+                new token ids will be drawn from the list of tokens from
+                the tokenized completion until tokens are exhausted, at which
+                point we revert back to tokens from the previous iteration as
+                input.
+            reference_token_ids: Token Ids of the reference completion. If
+                None, we use the tokenizer to convert the reference completion
+                to token IDs.
             arrival_time: The arrival time of the request. If None, we use
                 the current monotonic time.
             multi_modal_data: Multi modal data per request.
@@ -434,10 +451,12 @@ class LLMEngine:
                              f"{max_logprobs} logprobs.")
         if arrival_time is None:
             arrival_time = time.time()
-        prompt_token_ids = self.encode_request(
+        prompt_token_ids, reference_token_ids = self.encode_request(
             request_id=request_id,
             prompt=prompt,
             prompt_token_ids=prompt_token_ids,
+            reference=reference_completion,
+            reference_token_ids=reference_token_ids,
             lora_request=lora_request)
 
         # Create the sequences.
@@ -451,7 +470,7 @@ class LLMEngine:
             logger.warning("Use None for EOS token id because tokenizer is "
                            "not initialized")
         seq = Sequence(seq_id, prompt, prompt_token_ids, block_size,
-                       eos_token_id, lora_request)
+                       eos_token_id, lora_request, reference_token_ids)
 
         # Defensive copy of SamplingParams, which are used by the sampler,
         # this doesn't deep-copy LogitsProcessor objects

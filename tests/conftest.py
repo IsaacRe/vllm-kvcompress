@@ -365,11 +365,13 @@ class VllmRunner:
         self,
         prompts: List[str],
         sampling_params: SamplingParams,
+        reference_completions: Optional[List[str]] = None,
     ) -> List[Tuple[List[int], str]]:
         assert sampling_params.logprobs is not None
 
         req_outputs = self.model.generate(prompts,
-                                          sampling_params=sampling_params)
+                                          sampling_params=sampling_params,
+                                          reference_completions=reference_completions)
         outputs = []
         for req_output in req_outputs:
             for sample in req_output.outputs:
@@ -395,11 +397,13 @@ class VllmRunner:
         prompts: List[str],
         max_tokens: int,
         num_logprobs: int,
+        reference_completions: Optional[List[str]] = None,
     ) -> List[Tuple[List[int], str]]:
         greedy_logprobs_params = SamplingParams(temperature=0.0,
                                                 max_tokens=max_tokens,
                                                 logprobs=num_logprobs)
-        outputs = self.generate_w_logprobs(prompts, greedy_logprobs_params)
+        outputs = self.generate_w_logprobs(prompts, greedy_logprobs_params,
+                                           reference_completions)
 
         return [(output_ids, output_str, output_logprobs)
                 for output_ids, output_str, output_logprobs in outputs]

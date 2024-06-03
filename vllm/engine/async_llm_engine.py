@@ -244,6 +244,8 @@ class _AsyncLLMEngine(LLMEngine):
         request_id: str,  # pylint: disable=unused-argument
         prompt: Optional[str],
         prompt_token_ids: Optional[List[int]] = None,
+        reference_completion: Optional[str] = None,
+        reference_token_ids: Optional[List[int]] = None,
         lora_request: Optional[LoRARequest] = None,
     ):
         if prompt_token_ids is None:
@@ -252,7 +254,13 @@ class _AsyncLLMEngine(LLMEngine):
                 request_id=request_id,
                 prompt=prompt,
                 lora_request=lora_request)
-        return prompt_token_ids
+        if reference_token_ids is None and reference_completion:
+            reference_token_ids = await self.tokenizer.encode_async(
+                request_id=request_id,
+                prompt=reference_completion,
+                lora_request=lora_request,
+                skip_special_tokens=True)
+        return prompt_token_ids, reference_token_ids
 
     async def add_request_async(
         self,
@@ -260,6 +268,8 @@ class _AsyncLLMEngine(LLMEngine):
         prompt: Optional[str],
         sampling_params: SamplingParams,
         prompt_token_ids: Optional[List[int]] = None,
+        reference_completion: Optional[str] = None,
+        reference_token_ids: Optional[List[int]] = None,
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
         multi_modal_data: Optional[MultiModalData] = None,
@@ -273,12 +283,16 @@ class _AsyncLLMEngine(LLMEngine):
             request_id=request_id,
             prompt=prompt,
             prompt_token_ids=prompt_token_ids,
+            reference_completion=reference_completion,
+            reference_token_ids=reference_token_ids,
             lora_request=lora_request)
 
         return self.add_request(request_id,
                                 prompt=prompt,
                                 prompt_token_ids=prompt_token_ids,
                                 sampling_params=sampling_params,
+                                reference_completion=reference_completion,
+                                reference_token_ids=reference_token_ids,
                                 arrival_time=arrival_time,
                                 lora_request=lora_request,
                                 multi_modal_data=multi_modal_data)
@@ -520,23 +534,32 @@ class AsyncLLMEngine:
         prompt: Optional[str],
         sampling_params: SamplingParams,
         prompt_token_ids: Optional[List[int]] = None,
+        reference_completion: Optional[str] = None,
+        reference_token_ids: Optional[List[int]] = None,
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
         multi_modal_data: Optional[MultiModalData] = None,
     ) -> AsyncStream:
         if self.log_requests:
             shortened_prompt = prompt
+            shortened_ref = reference_completion
             shortened_token_ids = prompt_token_ids
+            shortened_ref_token_ids = reference_token_ids
             if self.max_log_len is not None:
                 if shortened_prompt is not None:
                     shortened_prompt = shortened_prompt[:self.max_log_len]
+                    shortened_ref = shortened_ref[:self.max_log_len]
                 if shortened_token_ids is not None:
                     shortened_token_ids = shortened_token_ids[:self.
                                                               max_log_len]
+                    shortened_ref_token_ids = shortened_ref_token_ids[
+                        :self.max_log_len]
             logger.info(f"Received request {request_id}: "
                         f"prompt: {shortened_prompt!r}, "
                         f"sampling_params: {sampling_params}, "
                         f"prompt_token_ids: {shortened_token_ids}, "
+                        f"reference_completion: {shortened_ref}, "
+                        f"reference_token_ids: {shortened_ref_token_ids}, "
                         f"lora_request: {lora_request}.")
 
         if not self.is_running:
@@ -560,17 +583,22 @@ class AsyncLLMEngine:
                     prompt_token_ids=prompt_token_ids,
                     lora_request=lora_request))
         else:
-            prompt_token_ids = await self.engine.encode_request_async(
-                request_id=request_id,
-                prompt=prompt,
-                prompt_token_ids=prompt_token_ids,
-                lora_request=lora_request)
+            prompt_token_ids, reference_token_ids = (
+                await self.engine.encode_request_async(
+                    request_id=request_id,
+                    prompt=prompt,
+                    prompt_token_ids=prompt_token_ids,
+                    reference_completion=reference_completion,
+                    reference_token_ids=reference_token_ids,
+                    lora_request=lora_request)
+            )
 
         stream = self._request_tracker.add_request(
             request_id,
             prompt=prompt,
             sampling_params=sampling_params,
             prompt_token_ids=prompt_token_ids,
+            reference_token_ids=reference_token_ids,
             arrival_time=arrival_time,
             lora_request=lora_request,
             multi_modal_data=multi_modal_data,

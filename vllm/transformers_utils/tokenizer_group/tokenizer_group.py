@@ -37,17 +37,19 @@ class TokenizerGroup(BaseTokenizerGroup):
     def encode(self,
                prompt: str,
                request_id: Optional[str] = None,
-               lora_request: Optional[LoRARequest] = None) -> List[int]:
+               lora_request: Optional[LoRARequest] = None,
+               **encode_kwargs) -> List[int]:
         tokenizer = self.get_lora_tokenizer(lora_request)
-        return tokenizer.encode(prompt)
+        return tokenizer.encode(prompt, **encode_kwargs)
 
     async def encode_async(
             self,
             prompt: str,
             request_id: Optional[str] = None,
-            lora_request: Optional[LoRARequest] = None) -> List[int]:
+            lora_request: Optional[LoRARequest] = None,
+            **encode_kwargs) -> List[int]:
         tokenizer = await self.get_lora_tokenizer_async(lora_request)
-        return tokenizer.encode(prompt)
+        return tokenizer.encode(prompt, **encode_kwargs)
 
     def get_lora_tokenizer(
             self,

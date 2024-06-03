@@ -26,7 +26,11 @@ def test_random_digit_repeat_no_compression(
         metric_collection_buffer_size=16,
     )
     max_tokens = max(len(response) for response in random_digit_responses)
-    vllm_outputs = vllm_model.generate_greedy(random_digit_prompts, max_tokens)
+    topk_ll = 10
+    vllm_outputs = vllm_model.generate_greedy_logprobs(random_digit_prompts,
+                                                       max_tokens,
+                                                       topk_ll,
+                                                       random_digit_responses)
     del vllm_model
 
     for i, (reference_completion, prompt, (_, output)) in enumerate(

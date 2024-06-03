@@ -135,6 +135,8 @@ class LLM:
         sampling_params: Optional[Union[SamplingParams,
                                         List[SamplingParams]]] = None,
         prompt_token_ids: Optional[List[List[int]]] = None,
+        reference_completions: Optional[Union[str, List[Optional[str]]]] = None,
+        reference_token_ids: Optional[List[Optional[List[int]]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[LoRARequest] = None,
         multi_modal_data: Optional[MultiModalData] = None,
@@ -172,6 +174,8 @@ class LLM:
         if isinstance(prompts, str):
             # Convert a single prompt to a list.
             prompts = [prompts]
+        if isinstance(reference_completions, str):
+            reference_completions = [reference_completions]
         if (prompts is not None and prompt_token_ids is not None
                 and len(prompts) != len(prompt_token_ids)):
             raise ValueError("The lengths of prompts and prompt_token_ids "
@@ -197,13 +201,19 @@ class LLM:
         # Add requests to the engine.
         for i in range(num_requests):
             prompt = prompts[i] if prompts is not None else None
+            reference_completion = (reference_completions[i]
+                                    if reference_completions else None)
             token_ids = None if prompt_token_ids is None else prompt_token_ids[
                 i]
+            ref_token_ids = (None if reference_token_ids is None
+                             else reference_token_ids[i])
             self._add_request(
                 prompt,
                 sampling_params[i]
                 if isinstance(sampling_params, list) else sampling_params,
                 token_ids,
+                reference_completion=reference_completion,
+                reference_token_ids=ref_token_ids,
                 lora_request=lora_request,
                 # Get ith image while maintaining the batch dim.
                 multi_modal_data=MultiModalData(
@@ -218,6 +228,8 @@ class LLM:
         prompt: Optional[str],
         sampling_params: SamplingParams,
         prompt_token_ids: Optional[List[int]],
+        reference_completion: Optional[str] = None,
+        reference_token_ids: Optional[List[int]] = None,
         lora_request: Optional[LoRARequest] = None,
         multi_modal_data: Optional[MultiModalData] = None,
     ) -> None:
@@ -226,6 +238,8 @@ class LLM:
                                     prompt,
                                     sampling_params,
                                     prompt_token_ids,
+                                    reference_completion=reference_completion,
+                                    reference_token_ids=reference_token_ids,
                                     lora_request=lora_request,
                                     multi_modal_data=multi_modal_data)
 
