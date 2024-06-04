@@ -375,7 +375,7 @@ class LLMEngine:
             reference_token_ids = self.tokenizer.encode(request_id=request_id,
                                                         prompt=reference,
                                                         lora_request=lora_request,
-                                                        skip_special_tokens=True)
+                                                        add_special_tokens=False)
         return prompt_token_ids, reference_token_ids
 
     def add_request(

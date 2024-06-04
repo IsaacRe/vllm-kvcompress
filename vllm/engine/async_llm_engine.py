@@ -259,7 +259,7 @@ class _AsyncLLMEngine(LLMEngine):
                 request_id=request_id,
                 prompt=reference_completion,
                 lora_request=lora_request,
-                skip_special_tokens=True)
+                add_special_tokens=False)
         return prompt_token_ids, reference_token_ids
 
     async def add_request_async(

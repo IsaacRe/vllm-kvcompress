@@ -127,6 +127,11 @@ class SequenceData:
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
+        # pop from the reference tokens list so that next time we query its
+        # first item it will be the next token in the list. Skip if it is the
+        # first decoding iteration.
+        if len(self.output_token_ids) > 1:
+            self.reference_token_ids.pop(0)
 
     def get_len(self) -> int:
         return len(self.output_token_ids) + len(self.prompt_token_ids)
@@ -175,7 +180,7 @@ class SequenceData:
         # the list until it is exhausted, then fallback on auto-regressive
         # input.
         if len(self.reference_token_ids) > 0:
-            return self.reference_token_ids.pop(0)
+            return self.reference_token_ids[0]
         return self.output_token_ids[-1]
 
     def get_prompt_token_ids(self) -> List[int]:

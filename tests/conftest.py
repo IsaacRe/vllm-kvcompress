@@ -338,12 +338,16 @@ class VllmRunner:
         prompts: List[str],
         sampling_params: SamplingParams,
         images: Optional["torch.Tensor"] = None,
+        reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         if images is not None:
             assert len(prompts) == images.shape[0]
         req_outputs = self.model.generate(
             prompts,
             sampling_params=sampling_params,
+            reference_completions=reference_completions,
+            reference_token_ids=reference_token_ids,
             multi_modal_data=MultiModalData(type=MultiModalData.Type.IMAGE,
                                             data=images)
             if images is not None else None)
@@ -366,12 +370,14 @@ class VllmRunner:
         prompts: List[str],
         sampling_params: SamplingParams,
         reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         assert sampling_params.logprobs is not None
 
         req_outputs = self.model.generate(prompts,
                                           sampling_params=sampling_params,
-                                          reference_completions=reference_completions)
+                                          reference_completions=reference_completions,
+                                          reference_token_ids=reference_token_ids)
         outputs = []
         for req_output in req_outputs:
             for sample in req_output.outputs:
@@ -386,9 +392,13 @@ class VllmRunner:
         prompts: List[str],
         max_tokens: int,
         images: Optional[torch.Tensor] = None,
+        reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         greedy_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
-        outputs = self.generate(prompts, greedy_params, images=images)
+        outputs = self.generate(prompts, greedy_params, images=images,
+                                reference_completions=reference_completions,
+                                reference_token_ids=reference_token_ids,)
         return [(output_ids[0], output_str[0])
                 for output_ids, output_str in outputs]
 
@@ -398,12 +408,14 @@ class VllmRunner:
         max_tokens: int,
         num_logprobs: int,
         reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         greedy_logprobs_params = SamplingParams(temperature=0.0,
                                                 max_tokens=max_tokens,
                                                 logprobs=num_logprobs)
         outputs = self.generate_w_logprobs(prompts, greedy_logprobs_params,
-                                           reference_completions)
+                                           reference_completions=reference_completions,
+                                           reference_token_ids=reference_token_ids)
 
         return [(output_ids, output_str, output_logprobs)
                 for output_ids, output_str, output_logprobs in outputs]
