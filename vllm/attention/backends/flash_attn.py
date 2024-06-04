@@ -215,6 +215,10 @@ class FlashAttentionImpl(AttentionImpl):
                                                   kv_metric_head_bias,
                                                   attn_metadata.kv_cache_dtype,
                                                   kv_scale)
+                if kv_metrics.random:
+                    # if running random-eviction baseline, randomize the metrics that
+                    # were just inserted
+                    kv_metrics.randomize_metric_slots(slot_mapping)
             else:
                 key_cache, value_cache = PagedAttention.split_kv_cache(
                     kv_cache, self.num_kv_heads, self.head_size)

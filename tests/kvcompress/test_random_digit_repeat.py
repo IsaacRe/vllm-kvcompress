@@ -70,6 +70,7 @@ def test_compression_without_bias(
         target_compression_rate=0.9,
         protected_window_size=32,
         metric_collection_buffer_size=16,
+        random_evict=True,
     )
     max_tokens = max(len(response) for response in random_digit_responses)
     tokenizer = AutoTokenizer.from_pretrained(model)

@@ -590,6 +590,7 @@ class KVCompressConfig:
         kv_head_bias_path: Path to the tensor holding metric bias for each
             KV head of the model. Can be a URL, local path or huggingface
             repo/path.
+        random_evict: Whether to run random eviction baseline.
     """
     def __init__(
         self,
@@ -604,6 +605,7 @@ class KVCompressConfig:
         protected_window_size: int,
         metric_collection_buffer_size: int,
         kv_head_bias_path: str,
+        random_evict: bool,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.compression_interval = compression_interval
@@ -616,6 +618,7 @@ class KVCompressConfig:
         self.protected_window_size = protected_window_size
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.kv_head_bias_path = kv_head_bias_path
+        self.random_evict = random_evict
         self._verify_args()
 
     def _verify_args(self) -> None:

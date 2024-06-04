@@ -84,6 +84,7 @@ class EngineArgs:
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 32
     kv_head_bias_path: str = ""
+    random_evict: bool = False
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -513,6 +514,10 @@ class EngineArgs:
                             help='Path to the tensor containing bias '
                             'for each KV head of the model. Can be a '
                             'URL, local path or huggingface repo/path.')
+        
+        parser.add_argument('--random-evict',
+                            action='store_true',
+                            help='Whether to run random-eviction baseline.')
 
         return parser
 
@@ -625,6 +630,7 @@ class EngineArgs:
                 protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 kv_head_bias_path=self.kv_head_bias_path,
+                random_evict=self.random_evict,
             )
         else:
             kvcompress_config = None

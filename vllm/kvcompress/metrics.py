@@ -54,13 +54,17 @@ class CompressionMetrics:
         num_queries_per_kv: int,
         max_kv_per_sort: int,
         kv_head_bias_file: Optional[str],
-        device: str = "cuda:0"
+        device: str = "cuda:0",
+        random: bool = False,
     ) -> None:
         self.block_size = block_size
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads
         self.num_queries_per_kv = num_queries_per_kv
         self.device = device
+
+        # Random eviction baseline for testing purposes
+        self.random = random
 
         # Bias when aggregating metrics for each KV head.
         # Recorded metric for each KV will be the actual metric
@@ -123,6 +127,11 @@ class CompressionMetrics:
             dtype=torch.float32,
             device=self.device,
         )
+
+        if self.random:
+            # Sample metrics randomly for random eviction
+            self.metrics.uniform_()
+
         # Reduction space where new metrics for each iteration
         # are recorded.
         # We record metrics of each key separately for each query
@@ -190,6 +199,10 @@ class CompressionMetrics:
         self.layer_index_by_block[metadata.physical_blocks] = metadata.layer_indices
         self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
 
+    def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
+        flat_indices = slot_mapping.flatten().type(torch.long)
+        self.metrics[flat_indices] = self.metrics[flat_indices].uniform_()
+
     def aggregate_prefill(
         self,
         prefill_metrics: torch.Tensor,  # [num_prefill_tokens, num_q_heads]
@@ -200,6 +213,9 @@ class CompressionMetrics:
         and have shape [key_seq_len, query_heads]. Metrics should have already
         been initialized to the corresponding head bias.
         """
+        if self.random:
+            return  # keep random metrics when doing random eviction
+
         # TODO replace double gather with more efficient kernel
         seq_len, _ = prefill_metrics.shape
         # TODO validate dim order on reshape
@@ -225,6 +241,9 @@ class CompressionMetrics:
         simple heuristic from the paper: Total squared attention.
         Then update the running KV metrics with this aggregation.
         """
+        if self.random:
+            return  # keep random metrics when doing random eviction
+
         self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
 
     def sort_seq_metrics(self, seq_indices: List[int]) -> SortedMetricOutputs:
