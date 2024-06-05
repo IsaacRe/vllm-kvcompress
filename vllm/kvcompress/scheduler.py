@@ -159,7 +159,7 @@ class CompressionScheduler:
         )
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        print(f"RAN SORT: {final_mem - init_mem}")
+        # print(f"RAN SORT: {final_mem - init_mem}")
 
         # Get context lengths, block tables and hanging token counts
         batch_block_state = self.block_manager.get_block_state_batch_view(
@@ -204,7 +204,8 @@ class CompressionScheduler:
         evicted_kv_count = torch.where(
             no_eviction,
             torch.zeros_like(evicted_kv_count),
-            evicted_kv_count - (evicted_kv_count - hanging_token_count),
+            evicted_kv_count - (evicted_kv_count - hanging_token_count)
+            % self.block_manager.block_size,
         )
         evicted_block_count = evicted_kv_count // batch_block_state.block_size
         non_evicted_mask = (
@@ -215,7 +216,6 @@ class CompressionScheduler:
 
         # Set non-evicted slots to inf so that they are last after sort
         evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
-        print(f"{evicted_kv_indices.shape=}")
 
         # Sort evicted indices
         evicted_kv_indices = evicted_kv_indices.sort(dim=-1).values

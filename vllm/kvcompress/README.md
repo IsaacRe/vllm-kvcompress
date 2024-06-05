@@ -46,6 +46,11 @@ remove int conversions
 Improve memory profiling - profile full kvc schedule loop (2nd sort is causing OOM)
 
 
+### Potential Problem Code
+remove_trailing_blocks and other code used to free evicted KV blocks and reorganize memory
+- Test correctness after evicting sequence
+
+
 ### Open Questions
 Re-adjust watermark level
 Add on-demand compression (to avoid preemption/swapping)

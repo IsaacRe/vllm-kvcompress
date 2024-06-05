@@ -170,7 +170,7 @@ class BlockState:
         """
         # self._validate()
         removed_kv_count = torch.stack(removed_block_count, dim=1) * self.block_size
-        init_ctx = self.context_lens.clone()
+        # init_ctx = self.context_lens.clone()
         batch_view = self.get_block_state_batch_view(seq_indices)
         hanging_token_count = batch_view.get_hanging_token_counts()
         remaining_slots = self.block_size - hanging_token_count
@@ -311,7 +311,7 @@ class BlockStateView:
         whose last block is full, this includes an additional empty block for
         KVs generated during the next iteration.
         """
-        block_counts = self.get_block_counts(increment_on_full=True, squeeze=False)
+        block_counts = self.get_block_counts(increment_on_full=False, squeeze=False)
         out = self.block_table_indices < block_counts[...,None]
         return self._squeeze_out(out) if squeeze else out
     

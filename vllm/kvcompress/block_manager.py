@@ -342,7 +342,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             self._remove_sequence(seq.seq_id)
 
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
-        self._validate_allocator()
+        # self._validate_allocator()
         # self.block_state._validate()
         seq_indices, removed_blocks = zip(*[
             (self.batch_slot_mapping[seq_id], freed_block_count[seq_id])
@@ -352,29 +352,48 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # Free blocks before updating context lengths
         freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
         freed_blocks, evicted_mask = batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
-        freed_block_debug = None
-        # if freed_blocks.numel() > 0 and freed_blocks[0] == 1024:
+        
+        assert not self.gpu_allocator.free_mask[freed_blocks].any(), "returned blocks should not be free yet"
+        
+        # freed_block_debug = None
+        # if freed_blocks.numel() > 0 and freed_blocks[0] == 130:
         #     print('entered')
         #     freed_block_debug = torch.where(self.block_state.block_tables == freed_blocks[0])[:3]
+        #     print(freed_block_debug)
         #     print(freed_block_counts_tensor[freed_block_debug])
         #     assert freed_block_counts_tensor[freed_block_debug] > 0
-        evicted_indices = torch.where(evicted_mask)
+        # evicted_indices = torch.where(evicted_mask)
         self.gpu_allocator.free(
             freed_blocks
         )
+
+        # print(f"start_where: {torch.where(self.block_state.block_tables == freed_blocks[0])}")
+
         # self.block_state._validate()
         # In case of empty last block, move the empty block to the new final
         # logical block position after evicting non-empty blocks.
-        empty_blocks = batch_view.move_empty_trailing_blocks(freed_block_counts_tensor)
+        # if freed_block_debug is None:
+        #     empty_blocks = batch_view.move_empty_trailing_blocks(freed_block_counts_tensor)
         # Update context lengths
-        init_context_lens = self.block_state.context_lens.clone()
+        # init_context_lens = self.block_state.context_lens.clone()
         # self.block_state._validate()
 
+        # start_mask = self.block_state.get_block_state_full_view().allocated_block_mask()
+        # print(f"start_idxs: {torch.where(start_mask[freed_block_debug])}")
         self.block_state.remove_trailing_blocks(
             seq_indices=seq_indices,
             removed_block_count=removed_blocks,
             debug_freed_idx=evicted_mask,
         )
+        end_mask = self.block_state.get_block_state_full_view().allocated_block_mask()
+        # print(f"end_idxs: {torch.where(end_mask[freed_block_debug])}")
+        # print(f"end_where: {torch.where(self.block_state.block_tables == freed_blocks[0])}")
+
+        # print(f"{freed_block_debug=}")
+        # print(f"{removed_blocks[0][0,14]}")
+        # print(evicted_mask.shape)
+        # assert not (self.block_state.get_allocated_blocks() == freed_blocks[0]).any()
+
         # self.block_state._validate()
         # print(f'{evicted_indices=}')
         # print(f'freed: {freed_blocks[:5]} ({freed_blocks.shape[0]} total)')
@@ -383,7 +402,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         #     print(self.block_state.context_lens[freed_block_debug])
         #     print(init_context_lens[freed_block_debug])
         # print(f'{seq_indices=}')
-        self._validate_allocator()
+        # self._validate_allocator()
 
     def reset(self) -> None:
         self.batch_slot_mapping = {}

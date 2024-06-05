@@ -262,7 +262,6 @@ class CompressionMetrics:
 
         # Mask
         masked_metrics = self.metrics[mask[...,None].expand_as(self.metrics)]
-        print(f"{masked_metrics.shape=}")
         masked_seq_indices = self.seq_index_by_block[mask]
         masked_layer_indices = self.layer_index_by_block[mask]
         masked_head_indices = self.head_index_by_block[mask]
