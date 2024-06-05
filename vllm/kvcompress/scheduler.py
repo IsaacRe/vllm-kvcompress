@@ -54,6 +54,7 @@ class CompressionScheduler:
         self.iteration_count = 0
         # Mapping: seq_id -> num iters
         self._iters_since_compression: Dict[int, int] = {}
+        self.total_evicted_kvs = 0
 
     def _update_sequences(self, seqs: List[Sequence]) -> None:
         all_seq_ids = set([seq.seq_id for seq in seqs])
@@ -213,6 +214,9 @@ class CompressionScheduler:
                  .to(evicted_kv_count.device)
             >= evicted_kv_count[...,None]
         )
+
+        self.total_evicted_kvs += evicted_kv_count.sum()
+        print(f"TOTAL EVICTED KVS: {self.total_evicted_kvs}")
 
         # Set non-evicted slots to inf so that they are last after sort
         evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT

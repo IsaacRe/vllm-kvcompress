@@ -67,10 +67,9 @@ def test_compression_without_bias(
         dtype=dtype,
         enforce_eager=True,
         enable_kvcompress=True,
-        target_compression_rate=0.9,
-        protected_window_size=32,
-        metric_collection_buffer_size=16,
-        random_evict=True,
+        target_compression_rate=0.8,
+        protected_window_size=100,
+        metric_collection_buffer_size=10,
     )
     max_tokens = max(len(response) for response in random_digit_responses)
     tokenizer = AutoTokenizer.from_pretrained(model)
@@ -78,12 +77,17 @@ def test_compression_without_bias(
         tokenizer.encode(completion, add_special_tokens=False)[1:]  # adds '' token
         for completion in random_digit_responses
     ]
+    total_tokens = [
+        len(tokenizer.encode(prompt)) + len(completion_token_ids)
+        for prompt, completion_token_ids in zip(random_digit_prompts, reference_token_ids)
+    ]
     topk_ll = 5
     vllm_outputs = vllm_model.generate_greedy_logprobs(random_digit_prompts,
                                                 max_tokens,
                                                 topk_ll,
                                                 reference_token_ids=deepcopy(reference_token_ids))
     del vllm_model
+    print(f"TOTAL_KVS: {total_tokens} * 1024 = {[t*1024 for t in total_tokens]}")
 
     for i, (reference_completion, ref_token_ids, (_, output, logprobs)) in enumerate(
         zip(random_digit_responses, reference_token_ids, vllm_outputs)
