@@ -48,13 +48,15 @@ class CompressionScheduler:
         compression_metrics: CompressionMetrics,
     ) -> None:
         self.device = block_manager.device
+        self.block_size = block_manager.block_size
         self.config = config
         self.block_manager = block_manager
         self.compression_metrics = compression_metrics
         self.iteration_count = 0
         # Mapping: seq_id -> num iters
         self._iters_since_compression: Dict[int, int] = {}
-        self.total_evicted_kvs = 0
+        self.total_evicted_kvs = {}
+        self.total_evicted_blocks = {}
 
     def _update_sequences(self, seqs: List[Sequence]) -> None:
         all_seq_ids = set([seq.seq_id for seq in seqs])
@@ -101,7 +103,7 @@ class CompressionScheduler:
         # desired compression rate
         target_kv_count = math.ceil(uncompressed_kv_count * compression_rate)
         evict_kv_count = max(0, compressed_kv_count - target_kv_count)
-        evict_block_count = evict_kv_count // self.block_manager.block_size
+        evict_block_count = evict_kv_count // self.block_size
         return evict_kv_count, evict_block_count
     
     def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
@@ -197,7 +199,7 @@ class CompressionScheduler:
             evicted_blocks_per_seq,
             context_lens,
             hanging_token_count,
-            batch_block_state.block_size,
+            self.block_size,
         )
 
         # Truncate eviction counts to last full evicted block
@@ -206,17 +208,34 @@ class CompressionScheduler:
             no_eviction,
             torch.zeros_like(evicted_kv_count),
             evicted_kv_count - (evicted_kv_count - hanging_token_count)
-            % self.block_manager.block_size,
+            % self.block_size,
         )
-        evicted_block_count = evicted_kv_count // batch_block_state.block_size
+        evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
         non_evicted_mask = (
             torch.arange(evicted_kv_indices.shape[-1])[None,None,None]
                  .to(evicted_kv_count.device)
             >= evicted_kv_count[...,None]
         )
 
-        self.total_evicted_kvs += evicted_kv_count.sum()
-        print(f"TOTAL EVICTED KVS: {self.total_evicted_kvs}")
+        # print("TOTAL EVICTED KVS:")
+        # for i, seq in enumerate(seqs_to_compress):
+        #     if seq.seq_id not in self.total_evicted_kvs:
+        #         self.total_evicted_kvs[seq.seq_id] = 0
+        #         self.total_evicted_blocks[seq.seq_id] = 0
+        #     tot_evicted_pre = self.total_evicted_kvs[seq.seq_id]
+        #     new_evictions = evicted_kv_count[i].sum().item()
+        #     self.total_evicted_kvs[seq.seq_id] += new_evictions
+        #     self.block_manager.total_seq_lens[seq.seq_id] = seq.data.get_len()
+        #     tot_evicted = tot_evicted_pre + new_evictions
+        #     tot_kv = self.block_manager.total_seq_lens[seq.seq_id] * 32 * 32
+        #     tot_remaining = batch_block_state.context_lens[:,i].sum().item()
+        #     self.total_evicted_blocks[seq.seq_id] += evicted_block_count[i].sum().item()
+        #     tot_evicted_block = self.total_evicted_blocks[seq.seq_id]
+        #     print(f"{tot_evicted=}")
+        #     print(f"{tot_remaining}/{tot_kv}={tot_remaining/tot_kv * 100}% remaining")
+        #     print(f"{tot_evicted_pre}/{tot_kv}={tot_evicted/tot_kv * 100}% previously evicted")
+        #     print(f"{tot_evicted}/{tot_kv}={tot_evicted/tot_kv * 100}% now evicted")
+        #     print(f"{tot_evicted_block * self.block_size}/{tot_kv}={tot_evicted_block * self.block_size / tot_kv * 100}% now evicted (block)")
 
         # Set non-evicted slots to inf so that they are last after sort
         evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
@@ -242,7 +261,7 @@ class CompressionScheduler:
             evicted_kv_count,
             block_tables,
             context_lens,
-            self.block_manager.block_size,
+            self.block_size,
         )
         cache_moves = CacheMoves(cache_moves_indices, cache_moves_count)
         
