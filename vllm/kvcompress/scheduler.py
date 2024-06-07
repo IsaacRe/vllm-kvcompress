@@ -139,8 +139,8 @@ class CompressionScheduler:
             return
 
         # Sort sequences by batch_slot_index index
-        seqs_to_compress, evicted_blocks_per_seq = zip(*sorted(
-            zip(seqs_to_compress, evicted_blocks_per_seq),
+        seqs_to_compress, evicted_blocks_per_seq, seq_lens = zip(*sorted(
+            zip(seqs_to_compress, evicted_blocks_per_seq, ),
             key=lambda x: self.block_manager.get_slot_index(x[0]),
         ))
         seqs_to_compress = list(seqs_to_compress)
@@ -153,13 +153,17 @@ class CompressionScheduler:
             evicted_blocks_per_seq, dtype=torch.int, device=self.device
         )
 
+        slot_indices = [self.block_manager.get_slot_index(seq) for seq in seqs_to_compress]
+        seq_lens = [seq.data.get_len() for seq in seqs_to_compress]
+
+        # Update bias for KVs being compressed based on their seq_len bin
+        self.compression_metrics.update_bias_for_positions(slot_indices, seq_lens)
+
         # Sort compression metrics
         # Should not have begun handling requests
         init_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        sort_output = self.compression_metrics.sort_seq_metrics(
-            [self.block_manager.get_slot_index(seq) for seq in seqs_to_compress]
-        )
+        sort_output = self.compression_metrics.sort_seq_metrics(slot_indices)
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
         # print(f"RAN SORT: {final_mem - init_mem}")

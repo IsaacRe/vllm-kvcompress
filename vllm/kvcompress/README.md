@@ -44,6 +44,8 @@ Remove increment_on_full, this will remove the need for move_empty_trailing_bloc
 Remove context_lens transpose before schedule_evictions and remove contiguous calls
 remove int conversions
 Improve memory profiling - profile full kvc schedule loop (2nd sort is causing OOM)
+Non-determinism in compression at previous commit (e3c9b5253b8022ed2d24b90a7cc26d5803629653) when running random digit compression test with 100 protected tokens -- yet deterministic when running with 50 protected tokens
+Test generation after evicting due to completion/OOM
 
 
 ### Potential Problem Code

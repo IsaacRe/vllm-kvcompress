@@ -207,7 +207,13 @@ class FlashAttentionImpl(AttentionImpl):
                 assert kv_metrics
                 assert layer_index is not None
                 # Extract layer-dependent metadata
-                kv_metric_head_bias = kv_metrics.kv_metric_head_bias[layer_index]
+                # TODO remove line below - we now initialize new KV's to zero
+                # and apply bias during the compression
+                kv_metric_head_bias = torch.zeros(
+                    self.num_kv_heads,
+                    dtype=torch.float,
+                    device=key.device,
+                )  #attn_metadata.kv_metric_head_bias[layer_index]
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
                 KVCAttention.write_to_paged_cache(key, value, key_cache,
                                                   value_cache, kv_metrics.metrics,

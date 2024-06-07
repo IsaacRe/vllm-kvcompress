@@ -1,27 +1,73 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Dict
 import torch
 
 from vllm.kvcompress.block import BlockMetadata
 
+_BIAS_KEY = "bias"
+_POSITION_RANGE_KEY = "pos_bins"
 
-def _load_kv_head_bias(path: str) -> torch.Tensor:
+def _load_kv_head_bias(path: str) -> "KVHeadBias":
     # currently just read from local filesystem
     ext = path.split('.')[-1]
     if ext == "safetensors":
         from safetensors import safe_open
         f = safe_open(path)
-        bias = f.get_tensor(f.keys()[0])
+        return KVHeadBias(
+            f.get_tensor(_BIAS_KEY).type(torch.float),
+            f.get_tensor(_POSITION_RANGE_KEY).type(torch.int),
+        )
     elif ext in ["pt", "bin"]:
-        bias = torch.load(path)
-    elif ext == "npy":
-        import numpy as np
-        bias = torch.tensor(np.load(path))
+        f = torch.load(path)
+        return KVHeadBias(
+            f.get_tensor(_BIAS_KEY).type(torch.float),
+            f.get_tensor(_POSITION_RANGE_KEY).type(torch.int),
+        )
     elif ext == "npz":
         import numpy as np
         f = np.load(path)
-        bias = torch.tensor(f[f.files[0]])
-    return bias
+        return KVHeadBias(
+            torch.tensor(f[_BIAS_KEY]).type(torch.float),
+            torch.tensor(f[_POSITION_RANGE_KEY]).type(torch.int),
+        )
+    else:
+        raise ValueError(f"Unsupported file format {ext}")
+
+
+@dataclass
+class KVHeadBias:
+    bias: torch.Tensor  # [ num_layers, num_kv_heads, num_bins ]
+    position_bins: torch.Tensor  # [ num_bins ]
+
+    def to(self, device) -> "KVHeadBias":
+        self.bias = self.bias.to(device)
+        self.position_bins = self.position_bins.to(device)
+        return self
+    
+    def get_bias_for_position(
+        self,
+        positions: torch.Tensor,
+        layer_indices: torch.Tensor,
+        head_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return head bias for input tensor of input token positions. All tensors
+        should have the same shape. Zero bias is returned for elements of `positions`
+        with a value less than zero.
+
+        Args:
+            positions: Tensor containing positions.
+            layer_indices: Tensor containing layer indices.
+            head_indices: Tensor containing KV head indices.
+        """
+        # [ num_blocks, num_bins ]
+        bin_indices = positions[...,None] >= self.position_bins[None]
+        # [ num_blocks ]
+        bin_indices = bin_indices.cumsum(dim=-1).max(dim=-1).values - 1
+        # [ num_blocks ]
+        bias = self.bias[(layer_indices, head_indices, bin_indices)]
+        # Set bias for -1 positions to 0
+        bias[positions < 0] = 0
+        return bias
 
 
 @dataclass
@@ -38,12 +84,23 @@ class CompressionMetrics:
     used to determine priority of KV eviction during cache compression.
 
     Lifetime of the metrics tensor:
-    1. When a new KV is added to cache, the corresponding metrics slot
-    is populated with the bias for its kv head.
-    2. 
-
-
-
+    1a. When a new KV corresponding to a prefill token is added to cache
+        the attention values of all queries against that KV during prefill
+        are aggregated and used to initialize that KV's metrics slot.
+    1b. When a new KV corresponding to a decode token is added to cache
+        the corresponding metrics slot is set to zero.
+    2. Whenever attention is computed against an existing KV during
+        decoding that attention is aggregated and output into the
+        temp_metrics tensor. After each model forward pass the temp_metrics
+        values are aggregated into the metrics tensor.
+    3. During compression scheduling, immediately before KV sorting, bias
+        is recomputed and reapplied using the current sequence length.
+        Concretely, we subtract the previous bias (computed from the distance
+        between the KV's token position and the sequence length during its
+        last compression) and add the new bias (computed from distance
+        between its token position and the current sequence length).
+    4. No change occurs upon KV-eviction (due to either compression or
+        sequence preemption).
     """
 
     def __init__(
@@ -71,20 +128,22 @@ class CompressionMetrics:
         # plus bias for its corresponding KV head.
         print(f"Allocating head bias - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         if kv_head_bias_file:
-            expected_shape = torch.Size((num_layers, num_kv_heads))
+            expected_shape = num_layers, num_kv_heads
             self.kv_metric_head_bias = (
-                _load_kv_head_bias(kv_head_bias_file)
-                .type(torch.float).to(device)
+                _load_kv_head_bias(kv_head_bias_file).to(device)
             )
-            if self.kv_metric_head_bias.shape != expected_shape:
-                raise ValueError(f"expected shape {expected_shape} for "
+            if self.kv_metric_head_bias.bias.shape[:-1] != expected_shape:
+                raise ValueError(f"expected shape {(*expected_shape, -1)} for "
                                  f"KV head bias tensor but got "
-                                 f"{self.kv_metric_head_bias.shape}")
+                                 f"{self.kv_metric_head_bias.bias.shape}")
         else:
-            self.kv_metric_head_bias = torch.zeros(
-                (num_layers, num_kv_heads),
-                dtype=torch.float32,
-                device=device,
+            self.kv_metric_head_bias = KVHeadBias(
+                torch.zeros(
+                    (num_layers, num_kv_heads, 1),
+                    dtype=torch.float,
+                    device=device,
+                ),
+                torch.zeros((1,), dtype=torch.int, device=device),
             )
 
         # Crucial for limiting runtime and memory
@@ -106,6 +165,9 @@ class CompressionMetrics:
         self.layer_index_by_block = None
         self.head_index_by_block = None
         self.logical_block_num_by_block = None
+
+        # Used to diff when updating head bias
+        self.prev_seq_lens: Dict[int, int] = {}
 
     def clear_kv_metadata(self) -> None:
         self.num_blocks = None
@@ -188,6 +250,51 @@ class CompressionMetrics:
         processed during the iteration remain unchanged after
         aggregation."""
         self.temp_metrics.zero_()
+    
+    def update_bias_for_positions(
+        self, seq_indices: List[int], seq_lens: List[int]
+    ) -> None:
+        """Updates KV metrics for each of passed sequences to apply the KV head bias
+        corresponding to the current sequence length bin it is in.
+        """
+        # Get previous sequence lengths (used to determine the bias currently
+        # applied to self.metrics).
+        # If a sequence is being compressed for the first time set prev_seq_len
+        # to -1 to signify that no bias has been applied yet and cause
+        # get_bias_for_position to return 0 prev_bias for these KVs.
+        prev_seq_lens = [self.prev_seq_lens.get(seq_idx, -1) for seq_idx in seq_indices]
+
+        # Get position, layer index and KV head index
+        # All final tensors have shape [ num_seq_blocks ]
+        seq_mask = self.seq_index_by_block == seq_indices[0]
+        positions = torch.empty_like(seq_mask, dtype=torch.int)
+        prev_positions = torch.empty_like(seq_mask, dtype=torch.int)
+        positions[seq_mask] = seq_lens[0]
+        prev_positions[seq_mask] = prev_seq_lens[0]
+        for seq_idx, seq_len, prev_seq_len in zip(
+            seq_indices[1:], seq_lens[1:], prev_seq_lens[1:]
+        ):
+            next_seq_mask = self.seq_index_by_block == seq_idx
+            positions[next_seq_mask] = seq_len
+            prev_positions[next_seq_mask] = prev_seq_len
+            seq_mask |= next_seq_mask
+        positions = positions[seq_mask]
+        prev_positions = prev_positions[seq_mask]
+        layer_indices = self.layer_index_by_block[seq_mask]
+        head_indices = self.head_index_by_block[seq_mask]
+        bias = self.kv_metric_head_bias.get_bias_for_position(
+            positions, layer_indices, head_indices
+        )
+        prev_bias = self.kv_metric_head_bias.get_bias_for_position(
+            prev_positions, layer_indices, head_indices
+        )
+
+        # Update metric bias
+        self.metrics[seq_mask] += (bias - prev_bias)[...,None]
+
+        # Update prev_seq_lens
+        for seq_idx, seq_len in zip(seq_indices, seq_lens):
+            self.prev_seq_lens[seq_idx] = seq_len
 
     def insert_metadata(
         self,
