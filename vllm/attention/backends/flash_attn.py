@@ -317,17 +317,21 @@ class FlashAttentionImpl(AttentionImpl):
                 # Extract layer-dependent metadata
                 block_tables = decode_meta.block_tables[layer_index]
                 context_lens = decode_meta.context_lens[layer_index]
+                decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
                 output[num_prefill_tokens:] = KVCAttention.forward_decode(
                     decode_query,
                     key_cache,
                     value_cache,
                     block_tables,
                     context_lens,
+                    kv_metrics.token_positions,
+                    decode_positions,
                     decode_meta.max_context_len,
                     attn_metadata.kv_cache_dtype,
                     self.num_kv_heads,
                     self.scale,
                     self.alibi_slopes,
+                    kv_metric_buffer_len,
                     kv_scale,
                     kv_metrics.temp_metrics,
                 )

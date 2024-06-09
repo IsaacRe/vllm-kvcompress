@@ -277,11 +277,14 @@ class KVCAttention(PagedAttention):
         value_cache: torch.Tensor,
         block_tables: torch.Tensor,
         context_lens: torch.Tensor,
+        kv_position: torch.Tensor,
+        last_position: torch.Tensor,
         max_context_len: int,
         kv_cache_dtype: str,
         num_kv_heads: int,
         scale: float,
         alibi_slopes: Optional[torch.Tensor],
+        kv_metric_buffer_len: int,
         kv_scale: float,
         kv_metric_out: torch.Tensor,
     ) -> torch.Tensor:
@@ -312,10 +315,13 @@ class KVCAttention(PagedAttention):
                 scale,
                 block_tables,
                 context_lens,
+                kv_position,
+                last_position,
                 block_size,
                 max_context_len,
                 alibi_slopes,
                 kv_cache_dtype,
+                kv_metric_buffer_len,
                 kv_scale,
             )
         else:
@@ -345,10 +351,13 @@ class KVCAttention(PagedAttention):
                 scale,
                 block_tables,
                 context_lens,
+                kv_position,
+                last_position,
                 block_size,
                 max_context_len,
                 alibi_slopes,
                 kv_cache_dtype,
+                kv_metric_buffer_len,
                 kv_scale,
             )
         return output

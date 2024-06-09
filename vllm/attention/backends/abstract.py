@@ -93,6 +93,8 @@ class AttentionMetadata(Generic[T]):
     # Minimum distance between a key and query for the query's attention to
     # the key to be aggregated into the key's metric.
     kv_metric_buffer_len: int = 0
+    # Used to determine whether to aggregate metrics for each KV during decoding
+    token_positions: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         # If layer-specific metadata is required during attention, layer_index

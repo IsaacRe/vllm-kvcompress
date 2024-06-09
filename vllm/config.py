@@ -663,6 +663,7 @@ class KVCompressConfig:
         per_kv_overhead = 1 * int_size  # sequence index
         per_kv_overhead += 1 * float_size  # metrics tensor
         per_kv_overhead += self.num_queries_per_kv * float_size  # temp_metrics tensor
+        per_kv_overhead += 1 * int_size  # token position (for scheduling and paged attn)
 
         block_size = (
             key_cache_block + value_cache_block +

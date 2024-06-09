@@ -89,18 +89,22 @@ def paged_attention_kvc_v1(
     scale: float,
     block_tables: torch.Tensor,
     context_lens: torch.Tensor,
+    kv_position: torch.Tensor,
+    last_position: torch.Tensor,
     block_size: int,
     max_context_len: int,
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
+    kv_metric_buffer_len: int,
     kv_scale: float,
 ) -> None:
     vllm_ops.kvcompress_paged_attention_v1(out, kv_metric_out, query, key_cache,
                                            value_cache, num_kv_heads, scale,
                                            block_tables, context_lens,
+                                           kv_position, last_position,
                                            block_size, max_context_len,
                                            alibi_slopes, kv_cache_dtype,
-                                           kv_scale)
+                                           kv_metric_buffer_len, kv_scale)
 
 
 def paged_attention_kvc_v2(
@@ -115,18 +119,23 @@ def paged_attention_kvc_v2(
     scale: float,
     block_tables: torch.Tensor,
     context_lens: torch.Tensor,
+    kv_position: torch.Tensor,
+    last_position: torch.Tensor,
     block_size: int,
     max_context_len: int,
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
+    kv_metric_buffer_len: int,
     kv_scale: float,
 ) -> None:
     vllm_ops.kvcompress_paged_attention_v2(out, exp_sum, max_logits, tmp_out,
                                            query, key_cache, value_cache,
                                            num_kv_heads, scale, block_tables,
-                                           context_lens, block_size,
+                                           context_lens, kv_position,
+                                           last_position, block_size,
                                            max_context_len, alibi_slopes,
-                                           kv_cache_dtype, kv_scale)
+                                           kv_cache_dtype,
+                                           kv_metric_buffer_len, kv_scale)
 
 
 # pos encoding ops
@@ -377,7 +386,10 @@ def schedule_cache_evictions(
     evicted_blocks_per_seq: torch.Tensor,
     context_lens: torch.Tensor,
     hanging_token_count: torch.Tensor,
+    kv_position: torch.Tensor,
+    last_position: torch.Tensor,
     block_size: int,
+    protected_window_size: int,
 ) -> None:
     kvc_ops.schedule_cache_evictions(
         out_evicted_kv_indices,
@@ -390,7 +402,10 @@ def schedule_cache_evictions(
         evicted_blocks_per_seq.contiguous(),
         context_lens.transpose(0, 1).contiguous(),
         hanging_token_count.contiguous(),
+        kv_position,
+        last_position,
         block_size,
+        protected_window_size,
     )
     torch.ones(1).to(0)
 
@@ -476,6 +491,7 @@ def execute_cache_moves(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
     kv_metrics: torch.Tensor,
+    kv_position: torch.Tensor,
     cache_moves_indices: torch.Tensor,
     cache_moves_count: torch.Tensor,
     blocks_per_head: int,
@@ -485,6 +501,7 @@ def execute_cache_moves(
         k_cache,
         v_cache,
         kv_metrics,
+        kv_position,
         cache_moves_indices,
         cache_moves_count,
         blocks_per_head,

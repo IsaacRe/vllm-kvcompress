@@ -120,6 +120,7 @@ class CacheEngine:
             k_cache=k_cache,
             v_cache=v_cache,
             kv_metrics=kv_metrics.metrics,
+            kv_position=kv_metrics.token_positions,
             cache_moves_indices=cache_moves.index,
             cache_moves_count=cache_moves.count,
             blocks_per_head=1,

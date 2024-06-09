@@ -34,12 +34,16 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   const int* __restrict__ evicted_blocks_per_seq,   // [num_seqs]
   const int* __restrict__ context_lens,             // [num_seqs, num_layers, num_kv_heads]
   const int* __restrict__ hanging_token_count,      // [num_seqs, num_layers, num_kv_heads]  number of new generated tokens for each sequence modulo block_size
+  const int* __restrict__ kv_position,              // [total_blocks, BLOCK_SIZE] token position for each KV by physical token index
+  const int* __restrict__ last_position,            // [num_seqs]  position of last token for each sequence
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
-  const int max_evicted_tokens) {
+  const int max_evicted_tokens,
+  const int protected_window_size) {
   const int num_seqs = gridDim.x * blockDim.x;
   const int seq_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
+  const int max_evictable_position = last_position[seq_idx] - protected_window_size;
 
   const int output_head_stride = max_evicted_tokens;
   const int output_seq_stride = num_layers * num_kv_heads;
@@ -105,8 +109,9 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
     //   i, context_lens[output_kv_idx], seq_idx, token_idx, virtual_token_idx, output_kv_idx,
     //   evicted_kv_count[output_kv_idx], remaining_kv_count[thread_offset + layer_head_idx]);
 
-    // Skip empty token slots in fragmented cache blocks
-    if (virtual_token_idx >= context_lens[output_kv_idx]) {
+    // Skip empty token slots in fragmented cache blocks and token slots that are within the protected window
+    if (virtual_token_idx >= context_lens[output_kv_idx]
+        || kv_position[token_idx] > max_evictable_position) {
       continue;
     }
 
@@ -271,6 +276,7 @@ __global__ void execute_cache_moves_kernel(
   cache_t* __restrict__ k_cache,                  // [num_blocks, head_size/x, block_size, x]
   cache_t* __restrict__ v_cache,                  // [num_blocks, head_size, block_size]
   float* __restrict__ kv_metrics,                 // [num_blocks, block_size]
+  int* __restrict__ kv_position,                  // [num_blocks, block_size]
   const int* __restrict__ cache_move_idx,         // [num_seqs, num_layers, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
   const int* __restrict__ cache_move_count,       // [num_seqs, num_layers, num_kv_heads]
   const int max_num_moves) {
@@ -305,6 +311,7 @@ __global__ void execute_cache_moves_kernel(
     //   seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
 
     kv_metrics[dst_idx] = kv_metrics[src_idx];
+    kv_position[dst_idx] = kv_position[src_idx];
 
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += K_STRIDE) {
@@ -340,10 +347,13 @@ __global__ void execute_cache_moves_kernel(
     evicted_blocks_per_seq_ptr, \
     context_lens_ptr, \
     hanging_token_count_ptr, \
+    kv_position_ptr, \
+    last_position_ptr, \
     num_layers, \
     num_kv_heads, \
     total_blocks, \
-    max_evicted_tokens);
+    max_evicted_tokens, \
+    protected_window_size);
 
 #define SCHEDULE_EVICTIONS_KERNEL(BLOCK_SIZE) \
   switch (BLOCK_SIZE) { \
@@ -374,7 +384,10 @@ void schedule_cache_evictions(
   torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
   torch::Tensor& context_lens,              // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
-  const int block_size) {
+  torch::Tensor& kv_position,               // [total_blocks, BLOCK_SIZE]
+  torch::Tensor& last_position,             // [num_seqs]
+  const int block_size,
+  const int protected_window_size) {
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
@@ -391,6 +404,8 @@ void schedule_cache_evictions(
   int* evicted_blocks_per_seq_ptr = reinterpret_cast<int*>(evicted_blocks_per_seq.data_ptr());
   int* context_lens_ptr = reinterpret_cast<int*>(context_lens.data_ptr());
   int* hanging_token_count_ptr = reinterpret_cast<int*>(hanging_token_count.data_ptr());
+  int* kv_position_ptr = reinterpret_cast<int*>(kv_position.data_ptr());
+  int* last_position_ptr = reinterpret_cast<int*>(last_position.data_ptr());
   
   dim3 grid(1);
   dim3 block(num_seqs);
@@ -532,6 +547,7 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
   k_cache_ptr,\
   v_cache_ptr,\
   kv_metrics_ptr,\
+  kv_position_ptr,\
   cache_moves_idx_ptr,\
   cache_moves_count_ptr,\
   max_num_moves);
@@ -591,6 +607,7 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
   torch::Tensor& kv_metrics,            // [num_blocks, block_size]
+  torch::Tensor& kv_position,           // [num_blocks, block_size]
   torch::Tensor& cache_moves_idx,       // [num_seqs, num_layers, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
   torch::Tensor& cache_moves_count,     // [num_seqs, num_layers, num_kv_heads]
   const int blocks_per_head,
@@ -606,6 +623,7 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   CACHE_T* k_cache_ptr = reinterpret_cast<CACHE_T*>(k_cache.data_ptr());
   CACHE_T* v_cache_ptr = reinterpret_cast<CACHE_T*>(v_cache.data_ptr());
   float* kv_metrics_ptr = reinterpret_cast<float*>(kv_metrics.data_ptr());
+  int* kv_position_ptr = reinterpret_cast<int*>(kv_position.data_ptr());
   int* cache_moves_idx_ptr = reinterpret_cast<int*>(cache_moves_idx.data_ptr());
   int* cache_moves_count_ptr = reinterpret_cast<int*>(cache_moves_count.data_ptr());
 
@@ -622,6 +640,7 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
     k_cache,                              \
     v_cache,                              \
     kv_metrics,                           \
+    kv_position,                          \
     cache_moves_idx,                      \
     cache_moves_count,                    \
     blocks_per_head,                      \
@@ -631,6 +650,7 @@ void execute_cache_moves(
   torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
   torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
   torch::Tensor& kv_metrics,            // [num_blocks, block_size]
+  torch::Tensor& kv_position,           // [num_blocks, block_size]
   torch::Tensor& cache_moves_idx,       // [num_seqs, num_layers, num_kv_heads, max_num_moves, 2] indexes into [num_blocks, block_size]
   torch::Tensor& cache_moves_count,     // [num_seqs, num_layers, num_kv_heads]
   int blocks_per_head,

@@ -165,6 +165,7 @@ class CompressionMetrics:
         self.layer_index_by_block = None
         self.head_index_by_block = None
         self.logical_block_num_by_block = None
+        self.token_positions = None
 
         # Used to diff when updating head bias
         self.prev_seq_lens: Dict[int, int] = {}
@@ -177,6 +178,7 @@ class CompressionMetrics:
         self.layer_index_by_block = None
         self.head_index_by_block = None
         self.logical_block_num_by_block = None
+        self.token_positions = None
 
     def init_kv_metadata(self, num_blocks: int) -> None:
         assert self.num_blocks is None, "already initialized"
@@ -224,6 +226,11 @@ class CompressionMetrics:
         )
         self.logical_block_num_by_block = torch.empty(
             (self.num_blocks,),
+            dtype=torch.int,
+            device=self.device,
+        )
+        self.token_positions = torch.empty(
+            (self.num_blocks, self.block_size),
             dtype=torch.int,
             device=self.device,
         )
@@ -300,11 +307,13 @@ class CompressionMetrics:
         self,
         metadata: BlockMetadata,
     ) -> None:
+        """Insert metadata for newly allocated blocks."""
         self.seq_index_by_block[metadata.physical_blocks] = metadata.seq_indices
         self.logical_block_num_by_block[metadata.physical_blocks] = (
             metadata.logical_blocks.type(torch.int))
         self.layer_index_by_block[metadata.physical_blocks] = metadata.layer_indices
         self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
+        self.token_positions[metadata.physical_blocks] = metadata.token_positions
 
     def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
         flat_indices = slot_mapping.flatten().type(torch.long)

@@ -12,6 +12,7 @@ class BlockMetadata(NamedTuple):
     seq_indices: torch.Tensor
     layer_indices: torch.Tensor
     head_indices: torch.Tensor
+    token_positions: torch.Tensor
 
 
 class PhysicalTokenBlock:
@@ -360,12 +361,21 @@ class BlockStateView:
         return self.block_tables[:,self.seq_indices][mask], mask
 
     def get_allocated_block_metadata(self) -> BlockMetadata:
-        """Returns block metadata for all allocated blocks"""
+        """Returns block metadata for all allocated blocks.
+        WARNING: currently assumes that token position is aligned with logical
+        index and will cause issues if sequences in this view have been compressed
+        already.
+        """
         assert not self.is_batch_view
         mask = self.allocated_block_mask(squeeze=False)
         logical_blocks = (
             self.block_table_indices
                 .expand_as(self.block_tables)[:,self.seq_indices][mask]
+        )
+        # Assume alignment between logical index and token position
+        token_positions = (
+            logical_blocks[:,None] * self.block_size
+            + torch.arange(self.block_size, device=logical_blocks.device)[None]
         )
         assert mask.sum() > 0
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
@@ -381,18 +391,23 @@ class BlockStateView:
             seq_indices=seq_indices,
             layer_indices=layer_indices.type(torch.int),
             head_indices=head_indices.type(torch.int),
+            token_positions=token_positions.type(torch.int),
         )
     
-    def get_new_block_metadata(self) -> Optional[BlockMetadata]:
+    def get_new_block_metadata(self, last_token_position: int) -> Optional[BlockMetadata]:
         """Return block metadata for all blocks that were added
         during the last scheduling iteration.
         If there are no new blocks returns None.
+        Uses last token position to infer contiguous token position for each KV in the block.
+        WARNING: we assume that the first KV in the last block will always have a token
+        position that aligns with its logical index, since we evict down to the last full
+        block, so any hanging tokens must have been added after the last compression.
         """
         assert not self.is_batch_view
         indices = self.block_table_indices.expand_as(self.block_tables)[:,self.seq_indices]
+        # divide w/o round so that equality is satisfied for one KV per block
         last_block = ((self.context_lens[:,self.seq_indices] + self.block_size - 1)
                 / self.block_size)[...,None].expand_as(indices)
-        # divide w/o round so that equality is satisfied for one KV per block
         mask = (
             indices
             == last_block
@@ -403,6 +418,11 @@ class BlockStateView:
 
         logical_blocks = (self.block_table_indices
                               .expand_as(self.block_tables)[:,self.seq_indices][mask])
+        token_positions = (
+            torch.tensor([last_token_position], dtype=torch.int, device=logical_blocks.device)
+                 .expand_as(logical_blocks)[:,None]
+            + torch.arange(self.block_size, dtype=torch.int, device=logical_blocks.device)[None]
+        )
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
         seq_indices = torch.tensor(
             self.seq_indices,
@@ -416,4 +436,5 @@ class BlockStateView:
             seq_indices=seq_indices,
             layer_indices=layer_indices.type(torch.int),
             head_indices=head_indices.type(torch.int),
+            token_positions=token_positions,
         )

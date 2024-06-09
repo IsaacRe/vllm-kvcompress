@@ -139,8 +139,8 @@ class CompressionScheduler:
             return
 
         # Sort sequences by batch_slot_index index
-        seqs_to_compress, evicted_blocks_per_seq, seq_lens = zip(*sorted(
-            zip(seqs_to_compress, evicted_blocks_per_seq, ),
+        seqs_to_compress, evicted_blocks_per_seq = zip(*sorted(
+            zip(seqs_to_compress, evicted_blocks_per_seq),
             key=lambda x: self.block_manager.get_slot_index(x[0]),
         ))
         seqs_to_compress = list(seqs_to_compress)
@@ -191,7 +191,8 @@ class CompressionScheduler:
             dtype=torch.int,
             device=self.device,
         )
-
+        last_token_positions = torch.tensor(
+            seq_lens, dtype=torch.int, device=self.device) - 1
         schedule_cache_evictions(
             evicted_kv_indices,
             evicted_kv_count,
@@ -203,7 +204,10 @@ class CompressionScheduler:
             evicted_blocks_per_seq,
             context_lens,
             hanging_token_count,
+            self.compression_metrics.token_positions,
+            last_token_positions,
             self.block_size,
+            self.config.protected_window_size,
         )
 
         # Truncate eviction counts to last full evicted block

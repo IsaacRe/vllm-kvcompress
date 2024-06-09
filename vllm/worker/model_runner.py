@@ -530,7 +530,7 @@ class ModelRunner:
                     slot_mapping.append(
                         seq_block_state_view.get_decode_slot_mapping())
                     block_tables.append(seq_block_state_view.get_block_tables())
-                    new_block_meta = seq_block_state_view.get_new_block_metadata()
+                    new_block_meta = seq_block_state_view.get_new_block_metadata(position)
                     if new_block_meta:
                         block_metadata.append(new_block_meta)
                 else:
@@ -914,6 +914,7 @@ class ModelRunner:
             kv_metrics=kvc_state.kv_metrics if kvc_state else None,
             kv_metric_buffer_len=(self.kvcompress_config.metric_collection_buffer_size
                                   if self.kvcompress_config else 0),
+            token_positions=input_positions.type(torch.int),
         )
 
         return (input_tokens, input_positions, attn_metadata,
@@ -933,6 +934,7 @@ class ModelRunner:
 
         if self.kvcompress_config:
             for block_metadata in block_metadata_list:
+                # Pass input positions to update KV positions for metrics tracking
                 kvc_state.kv_metrics.insert_metadata(block_metadata)
 
         if self.lora_config:
@@ -1141,6 +1143,9 @@ class ModelRunner:
                     prefill_metadata=None,
                     decode_metadata=decode_metadata,
                     kv_cache_dtype=self.kv_cache_dtype,
+                    token_positions=torch.zeros(batch_size,
+                                                dtype=torch.int,
+                                                device=slot_mapping.device)
                 )
 
                 if self.lora_config:
