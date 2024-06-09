@@ -47,6 +47,8 @@ Improve memory profiling - profile full kvc schedule loop (2nd sort is causing O
 Non-determinism in compression at previous commit (e3c9b5253b8022ed2d24b90a7cc26d5803629653) when running random digit compression test with 100 protected tokens -- yet deterministic when running with 50 protected tokens
 Test generation after evicting due to completion/OOM
 Agreggate temp_metrics after each layer's attention rather than at end
+Is kv metadata getting moved during execute_cache_moves/does it need to be? - Just need to reorder metrics tensor--logical block numbers remain valid since both physical and logical blocks are changed when a KV is moved.
+Need to skip KVs within protected window in schedule_evictions kernel and skip recording of attention between Qs and Ks within buffer length in paged attention kernel.
 
 
 ### Potential Problem Code

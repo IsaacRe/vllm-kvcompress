@@ -661,8 +661,8 @@ class KVCompressConfig:
         
         # Overhead per KV
         per_kv_overhead = 1 * int_size  # sequence index
-        metrics_per_kv = 1
-        per_kv_overhead += metrics_per_kv * float_size  # metrics tensor
+        per_kv_overhead += 1 * float_size  # metrics tensor
+        per_kv_overhead += self.num_queries_per_kv * float_size  # temp_metrics tensor
 
         block_size = (
             key_cache_block + value_cache_block +
