@@ -122,7 +122,7 @@ __device__ void single_tier_paged_attention_kernel(
   const int query_head_offset = head_idx % num_queries_per_kv;
 
   const int seq_idx = blockIdx.y;
-  const int max_output_metric_position = last_position[seq_idx];
+  const int max_output_metric_position = last_position[seq_idx] - kv_metric_buffer_len;
   const int seq_head_idx = seq_idx * num_kv_heads + kv_head_idx;
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
@@ -493,7 +493,7 @@ __global__ void single_tier_paged_attention_v1_kernel(
   const float kv_scale) {
   single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_KV_CACHE>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
-    out, kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens, kv_position, last_position
+    out, kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens, kv_position, last_position,
     max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_metric_buffer_len, kv_scale);
 }
 
@@ -518,15 +518,18 @@ __global__ void single_tier_paged_attention_v2_kernel(
   const float scale,
   const int* __restrict__ block_tables,   // [num_seqs, num_kv_heads, max_num_blocks_per_seq]
   const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
+  const int* __restrict__ kv_position,    // [num_blocks, block_size]
+  const int* __restrict__ last_position,  // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
+  const int kv_metric_buffer_len,
   const float kv_scale) {
   single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_KV_CACHE, PARTITION_SIZE>(
     exp_sums, max_logits, tmp_out, tmp_kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale,
-    block_tables, context_lens, max_num_blocks_per_seq, alibi_slopes,
-    q_stride, kv_block_stride, kv_scale);
+    block_tables, context_lens, kv_position, last_position, max_num_blocks_per_seq, alibi_slopes,
+    q_stride, kv_block_stride, kv_metric_buffer_len, kv_scale);
 }
 
 // Grid: (num_heads, num_seqs).

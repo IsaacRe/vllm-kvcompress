@@ -374,7 +374,6 @@ def ref_schedule_cache_evictions(
         assert evicted_blocks == evicted_blocks_per_seq[i], "schedule_cache_evictions loop failed"
 
 
-
 def schedule_cache_evictions(
     out_evicted_kv_indices: torch.Tensor,
     out_evicted_kv_count: torch.Tensor,
@@ -391,6 +390,14 @@ def schedule_cache_evictions(
     block_size: int,
     protected_window_size: int,
 ) -> None:
+    # never filter evictions by protected window
+    print(f'{kv_position.shape=},{last_position=},{kv_position.max()=},{protected_window_size=}')
+    # print(f'{kv_position=}')
+    # last_position[:] = kv_position.max() + protected_window_size
+    # raise
+    # TODO PPL increasing as protected window increased below
+    # protected_window_size = 0
+    out_evicted_kv_indices.zero_()
     kvc_ops.schedule_cache_evictions(
         out_evicted_kv_indices,
         out_evicted_kv_count,
@@ -402,11 +409,13 @@ def schedule_cache_evictions(
         evicted_blocks_per_seq.contiguous(),
         context_lens.transpose(0, 1).contiguous(),
         hanging_token_count.contiguous(),
-        kv_position,
-        last_position,
+        kv_position.type(torch.int),
+        last_position.type(torch.int),
         block_size,
         protected_window_size,
     )
+    # TODO fails half the time when protected_window is set to 50 above
+    # assert not (out_evicted_kv_indices > last_position.max() - protected_window_size).any()
     torch.ones(1).to(0)
 
 
