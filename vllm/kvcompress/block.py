@@ -375,7 +375,7 @@ class BlockStateView:
         # Assume alignment between logical index and token position
         token_positions = (
             logical_blocks[:,None] * self.block_size
-            + torch.arange(self.block_size, device=logical_blocks.device)[None]
+            + torch.arange(self.block_size, dtype=torch.int, device=logical_blocks.device)[None]
         )
         assert mask.sum() > 0
         physical_blocks = self.block_tables[:,self.seq_indices][mask]

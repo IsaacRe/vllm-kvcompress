@@ -909,7 +909,6 @@ class Scheduler:
         seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
         if seqs and (kvc_output := 
                      self.kvcompress_scheduler.schedule_compression(seqs)):
-            print("SCHEDULING COMPRESSION")
             # Free blocks that were removed by compression
             with BENCHMARKER.time("free_compressed_blocks"):
                 self.block_manager.free_compressed_blocks(

@@ -156,9 +156,6 @@ class CompressionScheduler:
         slot_indices = [self.block_manager.get_slot_index(seq) for seq in seqs_to_compress]
         seq_lens = [seq.data.get_len() for seq in seqs_to_compress]
 
-        # Update bias for KVs being compressed based on their seq_len bin
-        self.compression_metrics.update_bias_for_positions(slot_indices, seq_lens)
-
         # Sort compression metrics
         # Should not have begun handling requests
         init_mem = torch.cuda.max_memory_allocated(
