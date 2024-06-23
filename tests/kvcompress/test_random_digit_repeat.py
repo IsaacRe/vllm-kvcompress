@@ -51,14 +51,17 @@ def test_no_compression(
             f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
 
 
+@pytest.mark.parametrize("random_seed", [1])
+@pytest.mark.parametrize("num_digits", [100])
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("dtype", ["half"])
 # NOTE: Increasing this in this suite will fail CI because we currently cannot
 # reset distributed env properly. Use a value > 1 just when you test.
 def test_compression_without_bias(
     vllm_runner,
-    random_digit_prompts,
-    random_digit_responses,
+    random_digit_generator,
+    random_seed: int,
+    num_digits: int,
     model: str,
     dtype: str,
 ) -> None:
@@ -71,6 +74,7 @@ def test_compression_without_bias(
         protected_window_size=100,
         metric_collection_buffer_size=10,
     )
+    random_digit_prompts, random_digit_responses = random_digit_generator(num_digits, random_seed)
     max_tokens = max(len(response) for response in random_digit_responses)
     tokenizer = AutoTokenizer.from_pretrained(model)
     reference_token_ids = [
