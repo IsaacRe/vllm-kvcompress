@@ -355,9 +355,10 @@ class CompressionMetrics:
         torch.ones(1).to(0)
 
         # Get bias for KVs being compressed based on their position bin
-        bias = self.kv_metric_head_bias.get_bias_for_position(
-            masked_token_position, masked_layer_indices, masked_head_indices
-        )
+        # bias = self.kv_metric_head_bias.get_bias_for_position(
+        #     masked_token_position, masked_layer_indices, masked_head_indices
+        # )
+        bias = torch.zeros_like(masked_metrics)
         masked_metrics = masked_metrics + bias.view(-1)
 
         # Sort by metric value then by sequence index
