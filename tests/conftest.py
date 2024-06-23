@@ -8,6 +8,7 @@ import torch
 from PIL import Image
 from transformers import (AutoModelForCausalLM, AutoProcessor,
                           LlavaForConditionalGeneration)
+import numpy as np
 
 from vllm import LLM, SamplingParams
 from vllm.config import TokenizerPoolConfig, VisionLanguageConfig
@@ -441,6 +442,21 @@ class VllmRunner:
 @pytest.fixture(scope="session")
 def vllm_runner():
     return VllmRunner
+
+
+@pytest.fixture()
+def random_digit_generator():
+    def random_digit_gen(num_digits, random_seed):
+        np.random.seed(random_seed)
+        digits = np.random.randint(10, size=(num_digits,))
+        digits_string = ""
+        for d in digits:
+            digits_string += str(d)
+        return (
+            [_RANDOM_DIGIT_PROMPT_TEMPLATE.format(digits_string, digits_string[:_RANDOM_DIGIT_REPEAT_LENGTH])],
+            [digits_string[_RANDOM_DIGIT_REPEAT_LENGTH:]],
+        )
+    return random_digit_gen
 
 
 def get_tokenizer_pool_config(tokenizer_group_type):
