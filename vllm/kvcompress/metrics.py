@@ -59,6 +59,7 @@ class KVHeadBias:
             layer_indices: [ num_blocks ] Tensor containing layer indices.
             head_indices: [ num_blocks ] Tensor containing KV head indices.
         """
+        print(positions.shape)
         _, block_size = positions.shape
         # [ num_blocks, block_size, num_bins ]
         bin_indices = positions[...,None] >= self.position_bins[None,None]
@@ -335,20 +336,29 @@ class CompressionMetrics:
             mask |= self.seq_index_by_block == seq_index
             assert (self.seq_index_by_block == seq_index).sum() > 0
 
+        torch.ones(1).to(0)
+
         # Mask
         expanded_mask = mask[...,None].expand_as(self.metrics)
+        torch.ones(1).to(0)
         masked_metrics = self.metrics[expanded_mask]
+        torch.ones(1).to(0)
         masked_seq_indices = self.seq_index_by_block[mask]
+        torch.ones(1).to(0)
         masked_layer_indices = self.layer_index_by_block[mask]
+        torch.ones(1).to(0)
         masked_head_indices = self.head_index_by_block[mask]
+        torch.ones(1).to(0)
         masked_logical_block_nums = self.logical_block_num_by_block[mask]
-        masked_token_position = self.token_positions[expanded_mask]
+        torch.ones(1).to(0)
+        masked_token_position = self.token_positions[mask]
+        torch.ones(1).to(0)
 
         # Get bias for KVs being compressed based on their position bin
         bias = self.kv_metric_head_bias.get_bias_for_position(
             masked_token_position, masked_layer_indices, masked_head_indices
         )
-        masked_metrics = masked_metrics + bias
+        masked_metrics = masked_metrics + bias.view(-1)
 
         # Sort by metric value then by sequence index
         # torch.sort uses ~8x memory of the input tensor (in addition
