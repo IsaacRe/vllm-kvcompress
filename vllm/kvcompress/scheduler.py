@@ -139,8 +139,8 @@ class CompressionScheduler:
             return
 
         # Sort sequences by batch_slot_index index
-        seqs_to_compress, evicted_blocks_per_seq, seq_lens = zip(*sorted(
-            zip(seqs_to_compress, evicted_blocks_per_seq, ),
+        seqs_to_compress, evicted_blocks_per_seq = zip(*sorted(
+            zip(seqs_to_compress, evicted_blocks_per_seq),
             key=lambda x: self.block_manager.get_slot_index(x[0]),
         ))
         seqs_to_compress = list(seqs_to_compress)
