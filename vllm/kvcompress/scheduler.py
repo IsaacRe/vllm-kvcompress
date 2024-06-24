@@ -77,34 +77,54 @@ class CompressionScheduler:
         self,
         seq: Sequence,
         compression_rate: Optional[float] = None,
+        max_cache_tokens: Optional[int] = None,
     ) -> Tuple[int, int]:
         """Return the number of this sequence's blocks to be freed during
         the next compression iteration.
         """
         if compression_rate is None:
             compression_rate = self.config.target_compression_rate
-        # Total KV count should not go below protected_window_size * num_kv_heads
-        compressible_token_count = (
-            seq.data.get_len() - self.config.protected_window_size
-        )
-        if compressible_token_count <= 0:
-            return 0, 0
-        # Total count of KVs in compressible range if this sequence had never
-        # been compressed
-        uncompressed_kv_count = (
-            compressible_token_count
-            * self.config.num_layers * self.config.num_kv_heads
-        )
-        # Actual count of KVs in compressible range
-        compressed_kv_count = (
-            self.block_manager.get_sequence_kv_count(seq)
-            - self.config.protected_window_size * self.config.num_layers
-            * self.config.num_kv_heads
-        )
-        # Target count of KVs in compressible range that will yield the
-        # desired compression rate
-        target_kv_count = math.ceil(uncompressed_kv_count * compression_rate)
-        evict_kv_count = max(0, compressed_kv_count - target_kv_count)
+        if max_cache_tokens is None:
+            max_cache_tokens = self.config.max_cache_tokens
+
+        if compression_rate < 1.0 and max_cache_tokens > 0:
+            raise RuntimeError("both compression_rate and max_cache_tokens "
+                               "specified during compression")
+
+        if max_cache_tokens > 0:
+            # Evict by max number of KV per sequence.
+            max_cache_kv = (
+                max_cache_tokens * self.config.num_layers * self.config.num_kv_heads
+            )
+            evict_kv_count = max(
+                0,
+                self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
+            )
+        else:
+            # Evict by target compression rate.
+            # Total KV count should not go below protected_window_size * num_kv_heads
+            compressible_token_count = (
+                seq.data.get_len() - self.config.protected_window_size
+            )
+            if compressible_token_count <= 0:
+                return 0, 0
+            # Total count of KVs in compressible range if this sequence had never
+            # been compressed
+            uncompressed_kv_count = (
+                compressible_token_count
+                * self.config.num_layers * self.config.num_kv_heads
+            )
+            # Actual count of KVs in compressible range
+            compressed_kv_count = (
+                self.block_manager.get_sequence_kv_count(seq)
+                - self.config.protected_window_size * self.config.num_layers
+                * self.config.num_kv_heads
+            )
+            # Target count of KVs in compressible range that will yield the
+            # desired compression rate
+            target_kv_count = math.ceil(uncompressed_kv_count * compression_rate)
+            evict_kv_count = max(0, compressed_kv_count - target_kv_count)
+
         evict_block_count = evict_kv_count // self.block_size
         return evict_kv_count, evict_block_count
     
@@ -289,7 +309,8 @@ class CompressionScheduler:
 
     def schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         """Returns number of KV evictions per sequence"""
-        if self.config.target_compression_rate == 1.0:
+        if (self.config.target_compression_rate == 1.0 and
+            self.config.max_cache_tokens <= 0):
             # No compression
             return
         self.iteration_count += 1

@@ -596,6 +596,7 @@ class KVCompressConfig:
     def __init__(
         self,
         target_compression_rate: float,
+        max_cache_tokens: int,
         compression_interval: int,
         num_layers: int,
         num_kv_heads: int,
@@ -610,6 +611,7 @@ class KVCompressConfig:
         save_checkpoint_dir: str,
     ) -> None:
         self.target_compression_rate = target_compression_rate
+        self.max_cache_tokens = max_cache_tokens
         self.compression_interval = compression_interval
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads
@@ -630,6 +632,10 @@ class KVCompressConfig:
         self._verify_args()
 
     def _verify_args(self) -> None:
+        if (self.max_cache_tokens > 0 and self.target_compression_rate < 1.0):
+            raise ValueError("only one of target_compression_rate and "
+                             "max_cache_tokens may be specified")
+
         if (self.target_compression_rate <= 0.0
             or self.target_compression_rate > 1.0):
             raise ValueError("target_compression_rate must be in (0, 1]")
@@ -645,6 +651,11 @@ class KVCompressConfig:
             raise ValueError(
                 "metric_collection_buffer_size cannot be greater than "
                 "protected_window_size")
+        
+        if (self.max_cache_tokens > 0
+            and self.protected_window_size > self.max_cache_tokens):
+            raise ValueError("max_cache_tokens must be greater than "
+                             "protected_window_size if it is specified")
 
     def get_cache_block_size(
         self,

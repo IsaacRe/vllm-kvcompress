@@ -78,7 +78,8 @@ class EngineArgs:
 
     # KV-Compress configuration.
     enable_kvcompress: bool = False
-    target_compression_rate: float = 0.1
+    target_compression_rate: float = 1.0
+    max_cache_tokens: int = -1
     compression_interval: int = 1
     max_kv_per_compression: int = 5_000_000
     protected_window_size: int = 64
@@ -468,14 +469,24 @@ class EngineArgs:
                             action='store_true',
                             help='If set, run online KV cache compression '
                             'with KV-Compress for better throughput.')
+
         parser.add_argument('--target-compression-rate',
                             type=float,
-                            default=0.1,
+                            default=1.0,
                             help='KV cache compression rate for '
                             'KV-Compress. Sequences scheduled for '
                             'compression will be compressed down to '
                             'this proportion of total sequence length '
                             'during each compression iteration.')
+        
+        parser.add_argument('--max-cache-tokens',
+                            type=int,
+                            default=-1,
+                            help='Max number of tokens-worth of KVs to '
+                            'in KV cache. Compression will be scheduled '
+                            'for any sequences that go over this limit '
+                            'to compress down to the configured number '
+                            'of KVs.')
         
         parser.add_argument('--compression-interval',
                             type=int,
@@ -627,6 +638,7 @@ class EngineArgs:
             num_kv_heads = model_config.get_total_num_kv_heads()
             kvcompress_config = KVCompressConfig(
                 target_compression_rate=self.target_compression_rate,
+                max_cache_tokens=self.max_cache_tokens,
                 compression_interval=self.compression_interval,
                 num_layers=num_layers,
                 num_kv_heads=num_kv_heads,
