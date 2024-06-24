@@ -239,6 +239,7 @@ class CompressionMetrics:
             dtype=torch.int,
             device=self.device,
         )
+        self.validate_metadata()
 
     def profile_sort(self):
         # Should not have begun handling requests
@@ -246,6 +247,9 @@ class CompressionMetrics:
         sort_blocks = (self.max_kv_per_sort + self.block_size - 1) // self.block_size
         self.init_kv_metadata(sort_blocks)
         self.seq_index_by_block[:] = 0
+        self.head_index_by_block[:] = 0
+        self.layer_index_by_block[:] = 0
+        self.logical_block_num_by_block[:] = 0
         init_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
         self.sort_seq_metrics([0])
@@ -274,11 +278,19 @@ class CompressionMetrics:
         self.layer_index_by_block[metadata.physical_blocks] = metadata.layer_indices
         self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
         self.token_positions[metadata.physical_blocks] = metadata.token_positions
+        self.validate_metadata()
 
     def remove_metadata(self, physical_blocks: torch.Tensor) -> None:
         # Used to set seq index for evicted blocks back to -1 so they aren't
         # selected during sort
         self.seq_index_by_block[physical_blocks] = -1
+        self.validate_metadata()
+
+    def validate_metadata(self) -> None:
+        # All allocated blocks (with seq idx >= 0) should have valid setting
+        # for head index
+        allocated_mask = self.seq_index_by_block >= 0
+        assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()
 
     def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
         flat_indices = slot_mapping.flatten().type(torch.long)
@@ -341,6 +353,12 @@ class CompressionMetrics:
             mask |= self.seq_index_by_block == seq_index
             assert (self.seq_index_by_block == seq_index).sum() > 0
 
+        allocated_mask = self.seq_index_by_block >= 0
+
+        # debug
+        assert not (mask & ~allocated_mask).any()
+        self.validate_metadata()
+
         torch.ones(1).to(0)
 
         # Mask
@@ -363,6 +381,7 @@ class CompressionMetrics:
         # bias = self.kv_metric_head_bias.get_bias_for_position(
         #     masked_token_position, masked_layer_indices, masked_head_indices
         # )
+        assert masked_head_indices.max() < self.num_kv_heads, 'not working'
         bias = torch.zeros_like(masked_metrics)
         masked_metrics = masked_metrics + bias.view(-1)
 
