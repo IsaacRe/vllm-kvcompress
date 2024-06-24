@@ -609,6 +609,7 @@ class KVCompressConfig:
         kv_head_bias_path: str,
         random_evict: bool,
         save_checkpoint_dir: str,
+        load_checkpoint_dir: str,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
@@ -624,10 +625,12 @@ class KVCompressConfig:
         self.kv_head_bias_path = kv_head_bias_path
         self.random_evict = random_evict
         self.save_checkpoint_dir = save_checkpoint_dir
+        self.load_checkpoint_dir = load_checkpoint_dir
 
         # Configure checkpointer
-        CHECKPOINTER.do_checkpoint = bool(save_checkpoint_dir)
-        CHECKPOINTER.base_dir = save_checkpoint_dir
+        CHECKPOINTER.do_save = bool(save_checkpoint_dir)
+        CHECKPOINTER.do_validate = bool(load_checkpoint_dir)
+        CHECKPOINTER.base_dir = save_checkpoint_dir or load_checkpoint_dir
         
         self._verify_args()
 
@@ -656,6 +659,10 @@ class KVCompressConfig:
             and self.protected_window_size > self.max_cache_tokens):
             raise ValueError("max_cache_tokens must be greater than "
                              "protected_window_size if it is specified")
+        
+        if self.save_checkpoint_dir and self.load_checkpoint_dir:
+            raise ValueError("cannot specify both save_checkpoint_dir and "
+                             "load_checkpoint_dir")
 
     def get_cache_block_size(
         self,

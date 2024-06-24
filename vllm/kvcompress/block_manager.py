@@ -136,7 +136,7 @@ class ParallelBlockAllocator(BlockAllocatorBase):
     
     def checkpoint(self) -> None:
         # Save free mask
-        CHECKPOINTER.torch_save('allocator__free_mask', self.free_mask)
+        CHECKPOINTER.checkpoint('allocator__free_mask', self.free_mask)
 
 
 class BlockSpaceManagerKVC(BlockSpaceManager):

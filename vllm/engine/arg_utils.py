@@ -89,6 +89,7 @@ class EngineArgs:
 
     # Checkpointing (for debugging purposes)
     save_checkpoint_dir: str = ""
+    load_checkpoint_dir: str = ""
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -537,6 +538,10 @@ class EngineArgs:
         parser.add_argument('--save-checkpoint-dir',
                             type=str,
                             default='')
+        
+        parser.add_argument('--load-checkpoint-dir',
+                            type=str,
+                            default='')
 
         return parser
 
@@ -652,6 +657,7 @@ class EngineArgs:
                 kv_head_bias_path=self.kv_head_bias_path,
                 random_evict=self.random_evict,
                 save_checkpoint_dir=self.save_checkpoint_dir,
+                load_checkpoint_dir=self.load_checkpoint_dir,
             )
         else:
             kvcompress_config = None

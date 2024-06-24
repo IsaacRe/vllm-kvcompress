@@ -253,7 +253,7 @@ class CompressionMetrics:
         self.logical_block_num_by_block[:] = 0
         init_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        self.sort_seq_metrics([0])
+        self.sort_seq_metrics([0], checkpoint=False)
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
         self.clear_kv_metadata()
@@ -340,7 +340,7 @@ class CompressionMetrics:
 
         self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
 
-    def sort_seq_metrics(self, seq_indices: List[int]) -> SortedMetricOutputs:
+    def sort_seq_metrics(self, seq_indices: List[int], checkpoint: bool = True) -> SortedMetricOutputs:
         """Sort and return a view of the indices limited to a subset
         of all sequences.
         """
@@ -353,6 +353,9 @@ class CompressionMetrics:
         for seq_index in seq_indices[1:]:
             mask |= self.seq_index_by_block == seq_index
             assert (self.seq_index_by_block == seq_index).sum() > 0
+
+        if checkpoint:
+            CHECKPOINTER.checkpoint('sort__metrics_mask', mask)
 
         allocated_mask = self.seq_index_by_block >= 0
 
@@ -386,6 +389,13 @@ class CompressionMetrics:
         bias = torch.zeros_like(masked_metrics)
         masked_metrics = masked_metrics + bias.view(-1)
 
+        if checkpoint:
+            CHECKPOINTER.checkpoint('sort__masked_metrics', masked_metrics)
+            CHECKPOINTER.checkpoint('sort__masked_seq_indices', masked_seq_indices)
+            CHECKPOINTER.checkpoint('sort__masked_layer_indices', masked_layer_indices)
+            CHECKPOINTER.checkpoint('sort__masked_head_indices', masked_head_indices)
+            CHECKPOINTER.checkpoint('sort__masked_logical_block_nums', masked_logical_block_nums)
+
         # Sort by metric value then by sequence index
         # torch.sort uses ~8x memory of the input tensor (in addition
         # to memory of the input, itself)
@@ -396,12 +406,18 @@ class CompressionMetrics:
                               .sort()
         )
 
+        if checkpoint:
+            CHECKPOINTER.checkpoint('sort__metric_sorted_indices', sorted_indices)
+
         # Sort by sequence index
         sorted_indices = sorted_indices.gather(
             dim=0,
             index=sorted_seq_indices.indices.type(torch.int64)
         )
         sorted_indices = sorted_indices.contiguous()
+
+        if checkpoint:
+            CHECKPOINTER.checkpoint('sort__seq_metric_sorted_indices', sorted_indices)
 
         # Get block offsets for each sequence
         seq_block_offsets = []
@@ -411,6 +427,9 @@ class CompressionMetrics:
             block_offset = kv_offset // self.block_size
             seq_block_offsets.append(block_offset.type(torch.int64))
         seq_block_offsets = torch.stack(seq_block_offsets)
+
+        if checkpoint:
+            CHECKPOINTER.checkpoint('sort__seq_block_offsets', seq_block_offsets)
 
         return SortedMetricOutputs(
             sorted_indices=sorted_indices,
@@ -422,9 +441,9 @@ class CompressionMetrics:
     
     def checkpoint(self) -> None:
         # Save metrics and metadata
-        CHECKPOINTER.torch_save('metrics__metrics', self.metrics)
-        CHECKPOINTER.torch_save('metrics__seq_index_by_block', self.seq_index_by_block)
-        CHECKPOINTER.torch_save('metrics__layer_index_by_block', self.layer_index_by_block)
-        CHECKPOINTER.torch_save('metrics__head_index_by_block', self.head_index_by_block)
-        CHECKPOINTER.torch_save('metrics__logical_block_num_by_block', self.logical_block_num_by_block)
-        CHECKPOINTER.torch_save('metrics__token_positions', self.token_positions)
+        CHECKPOINTER.checkpoint('metrics__metrics', self.metrics)
+        CHECKPOINTER.checkpoint('metrics__seq_index_by_block', self.seq_index_by_block)
+        CHECKPOINTER.checkpoint('metrics__layer_index_by_block', self.layer_index_by_block)
+        CHECKPOINTER.checkpoint('metrics__head_index_by_block', self.head_index_by_block)
+        CHECKPOINTER.checkpoint('metrics__logical_block_num_by_block', self.logical_block_num_by_block)
+        CHECKPOINTER.checkpoint('metrics__token_positions', self.token_positions)

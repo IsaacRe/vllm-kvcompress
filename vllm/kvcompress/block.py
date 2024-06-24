@@ -203,8 +203,8 @@ class BlockState:
 
     def checkpoint(self) -> None:
         # Save context lens and block tables
-        CHECKPOINTER.torch_save('block_state__context_lens', self.context_lens)
-        CHECKPOINTER.torch_save('block_state__block_tables', self.block_tables)
+        CHECKPOINTER.checkpoint('block_state__context_lens', self.context_lens)
+        CHECKPOINTER.checkpoint('block_state__block_tables', self.block_tables)
 
 
 class BlockStateView:

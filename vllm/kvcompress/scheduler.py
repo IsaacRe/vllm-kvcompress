@@ -178,6 +178,10 @@ class CompressionScheduler:
         slot_indices = [self.block_manager.get_slot_index(seq) for seq in seqs_to_compress]
         seq_lens = [seq.data.get_len() for seq in seqs_to_compress]
 
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_blocks_per_seq', evicted_blocks_per_seq)
+        CHECKPOINTER.checkpoint('schedule_compression__slot_indices', torch.tensor(slot_indices))
+        CHECKPOINTER.checkpoint('schedule_compression__seq_lens', torch.tensor(seq_lens))
+
         # Sort compression metrics
         # Should not have begun handling requests
         init_mem = torch.cuda.max_memory_allocated(
@@ -198,6 +202,10 @@ class CompressionScheduler:
                              .transpose(0, 1)
                              .contiguous()
         )
+
+        CHECKPOINTER.checkpoint('schedule_compression__context_lens', context_lens)
+        CHECKPOINTER.checkpoint('schedule_compression__block_tables', block_tables)
+        CHECKPOINTER.checkpoint('schedule_compression__hanging_token_count', hanging_token_count)
 
         # Schedule evictions
         evicted_kv_indices = torch.empty(
@@ -228,6 +236,9 @@ class CompressionScheduler:
             self.block_size,
             self.config.protected_window_size,
         )
+
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices', evicted_kv_indices)
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count', evicted_kv_count)
 
         # Truncate eviction counts to last full evicted block
         no_eviction = evicted_kv_count < hanging_token_count
@@ -270,6 +281,9 @@ class CompressionScheduler:
         # Sort evicted indices
         evicted_kv_indices = evicted_kv_indices.sort(dim=-1).values
 
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices_sorted', evicted_kv_indices)
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count_truncated', evicted_kv_count)
+
         # Schedule cache moves
         cache_moves_indices = torch.empty(
             (*b_l_h, max_evicted_tokens, 2),
@@ -297,6 +311,10 @@ class CompressionScheduler:
             for seq, freed_blocks in zip(seqs_to_compress, evicted_block_count)
         }
 
+        CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', cache_moves_indices)
+        CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)
+        CHECKPOINTER.checkpoint('schedule_compression__freed_block_count', evicted_block_count)
+
         self._increment_iters_since_compression()
 
         # Free blocks that were removed by compression
@@ -318,6 +336,6 @@ class CompressionScheduler:
             self.iteration_count = 0
             # Checkpoint
             if CHECKPOINTER.do_checkpoint:
-                self.compression_metrics.checkpoint()
                 self.block_manager.checkpoint()
+                self.compression_metrics.checkpoint()
             return self._schedule_compression(seqs)
