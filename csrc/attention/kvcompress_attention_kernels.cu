@@ -792,6 +792,9 @@ void kvc_paged_attention_v1_launcher(
 // 1, 2, 4, 64, 128, 256.
 #define CALL_KVC_V1_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_KV_CACHE) \
   switch (block_size) {                                               \
+    case 1:                                                                 \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 1, IS_FP8_KV_CACHE);                \
+      break;                                                                \
     case 8:                                                           \
       CALL_KVC_V1_LAUNCHER(T, CACHE_T, 8, IS_FP8_KV_CACHE);          \
       break;                                                          \
@@ -1011,6 +1014,9 @@ void kvc_paged_attention_v2_launcher(
 // 1, 2, 4, 64, 128, 256.
 #define CALL_KVC_V2_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_KV_CACHE)       \
   switch (block_size) {                                                     \
+    case 1:                                                                 \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 1, IS_FP8_KV_CACHE);                \
+      break;                                                                \
     case 8:                                                                 \
       CALL_KVC_V2_LAUNCHER(T, CACHE_T, 8, IS_FP8_KV_CACHE);                \
       break;                                                                \
