@@ -275,6 +275,11 @@ class CompressionMetrics:
         self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
         self.token_positions[metadata.physical_blocks] = metadata.token_positions
 
+    def remove_metadata(self, physical_blocks: torch.Tensor) -> None:
+        # Used to set seq index for evicted blocks back to -1 so they aren't
+        # selected during sort
+        self.seq_index_by_block[physical_blocks] = -1
+
     def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
         flat_indices = slot_mapping.flatten().type(torch.long)
         self.metrics[flat_indices] = self.metrics[flat_indices].uniform_()

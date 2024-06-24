@@ -203,19 +203,22 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # self.block_state._validate()
         # self._validate_allocator()
 
-    def _remove_sequence(self, seq_id: int) -> None:
+    def _remove_sequence(self, seq_id: int) -> torch.Tensor:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
         self.free_batch_slots.add(batch_slot_idx)
-        self.gpu_allocator.free(
+        freed_blocks = (
             self.block_state
                 .get_block_state_seq_view(batch_slot_idx)
                 .get_allocated_blocks()
                 .type(torch.int64)
                 .to(self.gpu_allocator.device)
         )
+        self.gpu_allocator.free(freed_blocks)
         self.block_state.context_lens[:,batch_slot_idx] = 0
         assert seq_id not in self.batch_slot_mapping
         # self.block_state._validate()
+
+        return freed_blocks
 
     def _get_new_block_count(self, seq_id: int, token_count: int):
         batch_slot_idx = self.batch_slot_mapping[seq_id]
@@ -334,14 +337,17 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def swap_out(self, seq_group: SequenceGroup) -> Dict[int, int]:
         raise NotImplementedError("KV-Compress with swap-preemption not supported")
 
-    def free(self, seq: Sequence) -> None:
+    def free(self, seq: Sequence) -> Optional[torch.Tensor]:
+        """Returns torch.Tensor of freed blocks so that corresponding metadata slots
+        can be de-allocated from KV metrics metadata (seq idx set to -1).
+        """
         if seq.seq_id not in self.batch_slot_mapping:
             # Already freed or haven't been scheduled yet.
             return
         with BENCHMARKER.time("free"):
-            self._remove_sequence(seq.seq_id)
+            return self._remove_sequence(seq.seq_id)
 
-    def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> None:
+    def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> torch.Tensor:
         # self._validate_allocator()
         # self.block_state._validate()
         seq_indices, removed_blocks = zip(*[
@@ -403,6 +409,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         #     print(init_context_lens[freed_block_debug])
         # print(f'{seq_indices=}')
         # self._validate_allocator()
+
+        return freed_blocks
 
     def reset(self) -> None:
         self.batch_slot_mapping = {}

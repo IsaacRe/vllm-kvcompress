@@ -356,7 +356,7 @@ class BlockStateView:
     def get_allocated_blocks(self) -> torch.Tensor:
         return self.block_tables[:,self.seq_indices][self.allocated_block_mask(squeeze=False)]
     
-    def get_last_n_allocated_blocks(self, n: torch.Tensor) -> torch.Tensor:
+    def get_last_n_allocated_blocks(self, n: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         mask = self.last_n_allocated_block_mask(n, squeeze=False)
         return self.block_tables[:,self.seq_indices][mask], mask
 

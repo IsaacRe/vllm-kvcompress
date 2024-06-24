@@ -8,6 +8,7 @@ from vllm.config import KVCompressConfig
 from vllm.sequence import Sequence
 from vllm.kvcompress.block_manager import BlockSpaceManagerKVC, FreedBlockCounts
 from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.benchmark import BENCHMARKER
 
 MAX_INT = 2147483000
 
@@ -276,6 +277,13 @@ class CompressionScheduler:
         }
 
         self._increment_iters_since_compression()
+
+        # Free blocks that were removed by compression
+        with BENCHMARKER.time("free_compressed_blocks"):
+            freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)
+
+        self.compression_metrics.remove_metadata(freed_blocks)
+
         return CompressionOutputs(cache_moves, freed_block_count)
 
     def schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
