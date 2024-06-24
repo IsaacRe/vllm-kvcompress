@@ -86,6 +86,9 @@ class EngineArgs:
     kv_head_bias_path: str = ""
     random_evict: bool = False
 
+    # Checkpointing (for debugging purposes)
+    save_checkpoint_dir: str = ""
+
     def __post_init__(self):
         if self.tokenizer is None:
             self.tokenizer = self.model
@@ -518,6 +521,11 @@ class EngineArgs:
         parser.add_argument('--random-evict',
                             action='store_true',
                             help='Whether to run random-eviction baseline.')
+        
+        # Checkpointing
+        parser.add_argument('--save-checkpoint-dir',
+                            type=str,
+                            default='')
 
         return parser
 
@@ -631,6 +639,7 @@ class EngineArgs:
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 kv_head_bias_path=self.kv_head_bias_path,
                 random_evict=self.random_evict,
+                save_checkpoint_dir=self.save_checkpoint_dir,
             )
         else:
             kvcompress_config = None

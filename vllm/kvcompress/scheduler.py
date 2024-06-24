@@ -3,6 +3,7 @@ from typing import List, Dict, Optional, Tuple
 import torch
 import math
 
+from vllm.debug import CHECKPOINTER
 from vllm._custom_ops import schedule_cache_evictions, schedule_cache_moves
 from vllm.config import KVCompressConfig
 from vllm.sequence import Sequence
@@ -294,4 +295,8 @@ class CompressionScheduler:
         self.iteration_count += 1
         if self.iteration_count >= self.config.compression_interval:
             self.iteration_count = 0
+            # Checkpoint
+            if CHECKPOINTER.do_checkpoint:
+                self.compression_metrics.checkpoint()
+                self.block_manager.checkpoint()
             return self._schedule_compression(seqs)

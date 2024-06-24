@@ -8,6 +8,7 @@ import torch
 from packaging.version import Version
 from transformers import PretrainedConfig
 
+from vllm.debug import CHECKPOINTER
 from vllm.logger import init_logger
 from vllm.utils import get_dtype_size
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
@@ -606,6 +607,7 @@ class KVCompressConfig:
         metric_collection_buffer_size: int,
         kv_head_bias_path: str,
         random_evict: bool,
+        save_checkpoint_dir: str,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.compression_interval = compression_interval
@@ -619,6 +621,12 @@ class KVCompressConfig:
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.kv_head_bias_path = kv_head_bias_path
         self.random_evict = random_evict
+        self.save_checkpoint_dir = save_checkpoint_dir
+
+        # Configure checkpointer
+        CHECKPOINTER.do_checkpoint = bool(save_checkpoint_dir)
+        CHECKPOINTER.base_dir = save_checkpoint_dir
+        
         self._verify_args()
 
     def _verify_args(self) -> None:

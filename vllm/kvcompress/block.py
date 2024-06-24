@@ -4,6 +4,7 @@ import torch
 import math
 
 from vllm.utils import Device
+from vllm.debug import CHECKPOINTER
 
 
 class BlockMetadata(NamedTuple):
@@ -199,6 +200,11 @@ class BlockState:
             # assert (init_ctx != batch_view.context_lens)[debug_freed_idx]
             # assert (init_ctx != self.context_lens)[debug_freed_idx]
         # self._validate()
+
+    def checkpoint(self) -> None:
+        # Save context lens and block tables
+        CHECKPOINTER.torch_save('block_state__context_lens', self.context_lens)
+        CHECKPOINTER.torch_save('block_state__block_tables', self.block_tables)
 
 
 class BlockStateView:

@@ -10,6 +10,7 @@ from tqdm.auto import tqdm
 
 from vllm.kvcompress.block import BlockState, PhysicalTokenBlock, BlockStateView
 from vllm.benchmark import BENCHMARKER
+from vllm.debug import CHECKPOINTER
 from vllm.config import KVCompressConfig
 from vllm.core.evictor import EvictionPolicy, Evictor, make_evictor
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
@@ -132,6 +133,10 @@ class ParallelBlockAllocator(BlockAllocatorBase):
     
     def update_hash(self, block_hash: int, block: PhysicalTokenBlock):
         raise NotImplementedError
+    
+    def checkpoint(self) -> None:
+        # Save free mask
+        CHECKPOINTER.torch_save('allocator__free_mask', self.free_mask)
 
 
 class BlockSpaceManagerKVC(BlockSpaceManager):
@@ -445,3 +450,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def mark_blocks_as_computed(self, seq_group: SequenceGroup):
         pass
+
+    def checkpoint(self) -> None:
+        self.block_state.checkpoint()
+        self.gpu_allocator.checkpoint()

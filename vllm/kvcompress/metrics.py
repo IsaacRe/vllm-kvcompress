@@ -3,6 +3,7 @@ from typing import List, Optional, Dict
 import torch
 
 from vllm.kvcompress.block import BlockMetadata
+from vllm.debug import CHECKPOINTER
 
 _BIAS_KEY = "bias"
 _POSITION_RANGE_KEY = "pos_bins"
@@ -418,3 +419,12 @@ class CompressionMetrics:
             head_by_block=masked_head_indices.contiguous(),
             logical_block_num_by_block=masked_logical_block_nums.contiguous(),
         )
+    
+    def checkpoint(self) -> None:
+        # Save metrics and metadata
+        CHECKPOINTER.torch_save('metrics__metrics', self.metrics)
+        CHECKPOINTER.torch_save('metrics__seq_index_by_block', self.seq_index_by_block)
+        CHECKPOINTER.torch_save('metrics__layer_index_by_block', self.layer_index_by_block)
+        CHECKPOINTER.torch_save('metrics__head_index_by_block', self.head_index_by_block)
+        CHECKPOINTER.torch_save('metrics__logical_block_num_by_block', self.logical_block_num_by_block)
+        CHECKPOINTER.torch_save('metrics__token_positions', self.token_positions)
