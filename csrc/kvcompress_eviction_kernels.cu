@@ -40,9 +40,11 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
   const int max_evicted_tokens,
-  const int protected_window_size) {
+  const int protected_window_size,
+  const bool evict_evenly_per_layer) {
   const int num_seqs = gridDim.x * blockDim.x;
   const int seq_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
+  const int thread_layer_idx = blockIdx.y * blockDim.y + threadIdx.y;  // parallelize kernel over layers when evict_evenly_per_layer_is_set
   const int max_evictable_position = last_position[seq_idx] - protected_window_size;
 
   const int output_head_stride = max_evicted_tokens;
@@ -55,7 +57,11 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   // printf("seq %d blk offset: %d\n", seq_idx, seq_start_offset);
 
   const int seq_end_offset = (seq_idx + 1 >= num_seqs) ? total_blocks : seq_block_offsets[seq_idx + 1];
-  const int blocks_to_evict = evicted_blocks_per_seq[seq_idx];
+  int blocks_to_evict = evicted_blocks_per_seq[seq_idx];
+
+  if (evict_evenly_per_layer) {
+    blocks_to_evict /= num_layers;
+  }
 
   // initialize all counts at zero
   for (int i = 0; i < output_seq_stride; ++i) {
@@ -98,6 +104,9 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
     const int token_idx = seq_sorted_indices[i];
     const int block_idx = token_idx / BLOCK_SIZE;
     const int layer_idx = layer_by_block[block_idx];
+    if (evict_evenly_per_layer && layer_idx != thread_layer_idx) {
+      continue;
+    }
     const int head_idx = head_by_block[block_idx];
     const int virtual_block_num = virtual_block_num_by_block[block_idx];
     const int block_offset = token_idx % BLOCK_SIZE;
@@ -353,7 +362,8 @@ __global__ void execute_cache_moves_kernel(
     num_kv_heads, \
     total_blocks, \
     max_evicted_tokens, \
-    protected_window_size);
+    protected_window_size, \
+    evict_evenly_per_layer);
 
 #define SCHEDULE_EVICTIONS_KERNEL(BLOCK_SIZE) \
   switch (BLOCK_SIZE) { \
@@ -387,7 +397,8 @@ void schedule_cache_evictions(
   torch::Tensor& kv_position,               // [total_blocks, BLOCK_SIZE]
   torch::Tensor& last_position,             // [num_seqs]
   const int block_size,
-  const int protected_window_size) {
+  const int protected_window_size,
+  const bool evict_evenly_per_layer) {
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
@@ -407,8 +418,11 @@ void schedule_cache_evictions(
   int* kv_position_ptr = reinterpret_cast<int*>(kv_position.data_ptr());
   int* last_position_ptr = reinterpret_cast<int*>(last_position.data_ptr());
   
+  // If evicting evenly across layers, launch a seperate thread per layer
+  const int num_layer_threads = evict_evenly_per_layer ? num_layers : 1;
+
   dim3 grid(1);
-  dim3 block(num_seqs);
+  dim3 block(num_seqs, num_layer_threads);
   const int shared_mem = sizeof(int) * num_seqs * num_layers * num_kv_heads;
   const at::cuda::OptionalCUDAGuard device_guard(device_of(evicted_kv_indices));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();

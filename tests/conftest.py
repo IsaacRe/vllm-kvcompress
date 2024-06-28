@@ -15,6 +15,7 @@ from vllm.config import TokenizerPoolConfig, VisionLanguageConfig
 from vllm.distributed import destroy_model_parallel
 from vllm.sequence import MultiModalData
 from vllm.transformers_utils.tokenizer import get_tokenizer
+from vllm.debug import CHECKPOINTER
 
 _TEST_DIR = os.path.dirname(__file__)
 _TEST_PROMPTS = [os.path.join(_TEST_DIR, "prompts", "example.txt")]
@@ -457,6 +458,11 @@ def random_digit_generator():
             [digits_string[_RANDOM_DIGIT_REPEAT_LENGTH:]],
         )
     return random_digit_gen
+
+
+@pytest.fixture()
+def checkpointer():
+    return CHECKPOINTER
 
 
 def get_tokenizer_pool_config(tokenizer_group_type):

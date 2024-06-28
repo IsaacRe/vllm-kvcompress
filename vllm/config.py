@@ -608,6 +608,7 @@ class KVCompressConfig:
         metric_collection_buffer_size: int,
         kv_head_bias_path: str,
         random_evict: bool,
+        even_layer_evict: bool,
         save_checkpoint_dir: str,
         load_checkpoint_dir: str,
     ) -> None:
@@ -624,6 +625,7 @@ class KVCompressConfig:
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.kv_head_bias_path = kv_head_bias_path
         self.random_evict = random_evict
+        self.even_layer_evict = even_layer_evict
         self.save_checkpoint_dir = save_checkpoint_dir
         self.load_checkpoint_dir = load_checkpoint_dir
 
@@ -663,6 +665,10 @@ class KVCompressConfig:
         if self.save_checkpoint_dir and self.load_checkpoint_dir:
             raise ValueError("cannot specify both save_checkpoint_dir and "
                              "load_checkpoint_dir")
+
+        if self.random_evict and self.even_layer_evict:
+            raise ValueError("cannot specify both random_evict and "
+                             "even_layer_evict")
 
     def get_cache_block_size(
         self,

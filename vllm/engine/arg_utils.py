@@ -86,6 +86,7 @@ class EngineArgs:
     metric_collection_buffer_size: int = 32
     kv_head_bias_path: str = ""
     random_evict: bool = False
+    even_layer_evict: bool = False
 
     # Checkpointing (for debugging purposes)
     save_checkpoint_dir: str = ""
@@ -464,7 +465,7 @@ class EngineArgs:
                             'corresponding to the chosen load_format. '
                             'This should be a JSON string that will be '
                             'parsed into a dictionary.')
-        
+
         # KV-Compress configuration
         parser.add_argument('--enable-kvcompress',
                             action='store_true',
@@ -479,7 +480,7 @@ class EngineArgs:
                             'compression will be compressed down to '
                             'this proportion of total sequence length '
                             'during each compression iteration.')
-        
+
         parser.add_argument('--max-cache-tokens',
                             type=int,
                             default=-1,
@@ -488,7 +489,7 @@ class EngineArgs:
                             'for any sequences that go over this limit '
                             'to compress down to the configured number '
                             'of KVs.')
-        
+
         parser.add_argument('--compression-interval',
                             type=int,
                             default=1,
@@ -497,7 +498,7 @@ class EngineArgs:
                             'overhead from running the compression. '
                             'By default the compression will run every '
                             'decoding iteration.')
-        
+
         parser.add_argument('--max-kv-per-compression',
                             type=int,
                             default=5_000_000,
@@ -506,14 +507,14 @@ class EngineArgs:
                             'Should be set < 100_000_000 to avoid '
                             'expensize memory and latency overhead from '
                             'sorting metrics of all participating KVs.')
-        
+
         parser.add_argument('--protected-window-size',
                             type=int,
                             default=64,
                             help='Avoid compressing KVs that correspond '
                             'to the last N tokens. This setting defines '
                             'the value of N.')
-    
+
         parser.add_argument('--metric-collection-buffer-size',
                             type=int,
                             default=32,
@@ -522,18 +523,23 @@ class EngineArgs:
                             'N positions apart. This setting defines the '
                             'value of N. Should be <= '
                             'protected_window_size.')
-        
+
         parser.add_argument('--kv-head-bias-path',
                             type=str,
                             default='',
                             help='Path to the tensor containing bias '
                             'for each KV head of the model. Can be a '
                             'URL, local path or huggingface repo/path.')
-        
+
         parser.add_argument('--random-evict',
                             action='store_true',
                             help='Whether to run random-eviction baseline.')
-        
+
+        parser.add_argument('--even-layer-evict',
+                            action='store_true',
+                            help='Whether to evict the same number of KVs '
+                            'per layer.')
+
         # Checkpointing
         parser.add_argument('--save-checkpoint-dir',
                             type=str,
@@ -656,6 +662,7 @@ class EngineArgs:
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 kv_head_bias_path=self.kv_head_bias_path,
                 random_evict=self.random_evict,
+                even_layer_evict=self.even_layer_evict,
                 save_checkpoint_dir=self.save_checkpoint_dir,
                 load_checkpoint_dir=self.load_checkpoint_dir,
             )

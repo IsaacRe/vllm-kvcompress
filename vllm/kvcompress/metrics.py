@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Dict
 import torch
+import numpy as np
 
 from vllm.kvcompress.block import BlockMetadata
 from vllm.debug import CHECKPOINTER
@@ -119,6 +120,7 @@ class CompressionMetrics:
         kv_head_bias_file: Optional[str],
         device: str = "cuda:0",
         random: bool = False,
+        even_layer_evict: bool = False,
     ) -> None:
         self.block_size = block_size
         self.num_layers = num_layers
@@ -128,6 +130,8 @@ class CompressionMetrics:
 
         # Random eviction baseline for testing purposes
         self.random = random
+        
+        self.even_layer_evict = even_layer_evict
 
         # Bias when aggregating metrics for each KV head.
         # Recorded metric for each KV will be the actual metric
@@ -292,6 +296,13 @@ class CompressionMetrics:
         # for head index
         allocated_mask = self.seq_index_by_block >= 0
         assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()
+        if self.even_layer_evict:
+            # should have same number of allocated KVs per layer
+            # randomly sample to make check less time-consuming
+            check_idx = np.random.randint(self.num_layers)
+            check_idx_count = (self.layer_index_by_block[allocated_mask] == check_idx).sum()
+            per_layer_count = self.layer_index_by_block[allocated_mask].sum() / self.num_layers
+            assert check_idx_count == per_layer_count, f'{check_idx_count=}, {per_layer_count=}'
 
     def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
         flat_indices = slot_mapping.flatten().type(torch.long)
@@ -406,9 +417,6 @@ class CompressionMetrics:
                               .sort()
         )
 
-        if checkpoint:
-            CHECKPOINTER.checkpoint('sort__metric_sorted_indices', sorted_indices)
-
         # Sort by sequence index
         sorted_indices = sorted_indices.gather(
             dim=0,
@@ -417,7 +425,7 @@ class CompressionMetrics:
         sorted_indices = sorted_indices.contiguous()
 
         if checkpoint:
-            CHECKPOINTER.checkpoint('sort__seq_metric_sorted_indices', sorted_indices)
+            CHECKPOINTER.checkpoint('sort__sorted_indices', sorted_indices)
 
         # Get block offsets for each sequence
         seq_block_offsets = []

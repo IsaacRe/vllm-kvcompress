@@ -173,6 +173,7 @@ class LLMEngine:
                     max_kv_per_sort=self.kvcompress_config.max_kv_per_compression,
                     kv_head_bias_file=self.kvcompress_config.kv_head_bias_path,
                     random=self.kvcompress_config.random_evict,
+                    even_layer_evict=self.kvcompress_config.even_layer_evict,
                 )
             )
             self.kvcompress_state = kvcompress_shared_state

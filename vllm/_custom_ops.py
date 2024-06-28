@@ -389,7 +389,13 @@ def schedule_cache_evictions(
     last_position: torch.Tensor,
     block_size: int,
     protected_window_size: int,
+    evict_evenly_per_layer: bool = False,
 ) -> None:
+    if evict_evenly_per_layer and block_size > 1:
+        raise RuntimeError(f"cannot evict evenly across layers when block_size > 1 (got {block_size=})")
+    if evict_evenly_per_layer:
+        assert (evicted_blocks_per_seq % context_lens.size(0) == 0).all()
+
     # never filter evictions by protected window
     print(f'{kv_position.shape=},{last_position=},{kv_position.max()=},{protected_window_size=}')
     # print(f'{kv_position=}')
@@ -413,6 +419,7 @@ def schedule_cache_evictions(
         last_position.type(torch.int),
         block_size,
         protected_window_size,
+        evict_evenly_per_layer,
     )
     # TODO fails half the time when protected_window is set to 50 above
     # assert not (out_evicted_kv_indices > last_position.max() - protected_window_size).any()

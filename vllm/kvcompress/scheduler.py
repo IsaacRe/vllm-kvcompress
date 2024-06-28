@@ -126,6 +126,13 @@ class CompressionScheduler:
             evict_kv_count = max(0, compressed_kv_count - target_kv_count)
 
         evict_block_count = evict_kv_count // self.block_size
+
+        # make sure # block evictions is evenly divisible by num_layers if even_layer_evict
+        if self.config.even_layer_evict:
+            evict_block_count = ((evict_block_count // self.config.num_layers)
+                                 * self.config.num_layers)
+
+        evict_kv_count = evict_block_count * self.block_size
         return evict_kv_count, evict_block_count
     
     def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
@@ -235,6 +242,7 @@ class CompressionScheduler:
             last_token_positions,
             self.block_size,
             self.config.protected_window_size,
+            self.config.even_layer_evict,
         )
 
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices', evicted_kv_indices)
