@@ -530,7 +530,7 @@ class ModelRunner:
                     slot_mapping.append(
                         seq_block_state_view.get_decode_slot_mapping())
                     block_tables.append(seq_block_state_view.get_block_tables())
-                    new_block_meta = seq_block_state_view.get_new_block_metadata(position)
+                    new_block_meta, _ = seq_block_state_view.get_new_block_metadata(position)
                     if new_block_meta:
                         block_metadata.append(new_block_meta)
                 else:
@@ -935,7 +935,8 @@ class ModelRunner:
         if self.kvcompress_config:
             for block_metadata in block_metadata_list:
                 # Pass input positions to update KV positions for metrics tracking
-                kvc_state.kv_metrics.insert_metadata(block_metadata)
+                # kvc_state.kv_metrics.insert_metadata(block_metadata)
+                pass
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)

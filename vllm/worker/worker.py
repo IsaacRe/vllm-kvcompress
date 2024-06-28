@@ -165,7 +165,7 @@ class Worker(WorkerBase):
         
         peak_metric_sort_mem = kv_metrics.profile_sort()
 
-        # peak_memory += 1e9
+        peak_memory += 1e9
 
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(

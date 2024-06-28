@@ -277,31 +277,46 @@ class CompressionMetrics:
         metadata: BlockMetadata,
     ) -> None:
         """Insert metadata for newly allocated blocks."""
+        # debug
+        new_mask = torch.zeros_like(self.seq_index_by_block, dtype=torch.bool)
+        new_mask[metadata.physical_blocks] = True
+        alloc_mask = self.seq_index_by_block >= 0
+        print(f"INSERTING METADATA: {alloc_mask.sum()} total allocated blocks")
+        assert not (new_mask & alloc_mask).any(), "slot already allocated"
+        
         self.seq_index_by_block[metadata.physical_blocks] = metadata.seq_indices
         self.logical_block_num_by_block[metadata.physical_blocks] = (
             metadata.logical_blocks.type(torch.int))
         self.layer_index_by_block[metadata.physical_blocks] = metadata.layer_indices
         self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
         self.token_positions[metadata.physical_blocks] = metadata.token_positions
-        self.validate_metadata()
+        # self.validate_metadata()
+        # metadata.validate_even_layer_evict()
+        self.validate_metadata_even_layer_evict()
 
     def remove_metadata(self, physical_blocks: torch.Tensor) -> None:
+        print(f"REMOVING METADATA: {physical_blocks}")
         # Used to set seq index for evicted blocks back to -1 so they aren't
         # selected during sort
         self.seq_index_by_block[physical_blocks] = -1
-        self.validate_metadata()
+        # self.validate_metadata()
+        self.validate_metadata_even_layer_evict()
 
     def validate_metadata(self) -> None:
         # All allocated blocks (with seq idx >= 0) should have valid setting
         # for head index
         allocated_mask = self.seq_index_by_block >= 0
         assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()
+
+    def validate_metadata_even_layer_evict(self) -> None:
         if self.even_layer_evict:
+            allocated_mask = self.seq_index_by_block >= 0
             # should have same number of allocated KVs per layer
             # randomly sample to make check less time-consuming
             check_idx = np.random.randint(self.num_layers)
+            print(allocated_mask.sum())
             check_idx_count = (self.layer_index_by_block[allocated_mask] == check_idx).sum()
-            per_layer_count = self.layer_index_by_block[allocated_mask].sum() / self.num_layers
+            per_layer_count = self.layer_index_by_block[allocated_mask].numel() / self.num_layers
             assert check_idx_count == per_layer_count, f'{check_idx_count=}, {per_layer_count=}'
 
     def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
@@ -355,6 +370,8 @@ class CompressionMetrics:
         """Sort and return a view of the indices limited to a subset
         of all sequences.
         """
+        assert len(seq_indices) > 0
+
         # TODO handle this better
         assert list(sorted(seq_indices)) == seq_indices, (
             "sort_seq_metrics input not ordered by ascending index")
@@ -371,8 +388,10 @@ class CompressionMetrics:
         allocated_mask = self.seq_index_by_block >= 0
 
         # debug
-        assert not (mask & ~allocated_mask).any()
-        self.validate_metadata()
+        if checkpoint:
+            assert not (mask & ~allocated_mask).any()
+            # self.validate_metadata()
+            self.validate_metadata_even_layer_evict()
 
         torch.ones(1).to(0)
 

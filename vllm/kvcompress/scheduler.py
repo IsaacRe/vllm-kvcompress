@@ -196,7 +196,7 @@ class CompressionScheduler:
         sort_output = self.compression_metrics.sort_seq_metrics(slot_indices)
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        # print(f"RAN SORT: {final_mem - init_mem}")
+        print(f"RAN SORT: {final_mem - init_mem}")
 
         # Get context lengths, block tables and hanging token counts
         batch_block_state = self.block_manager.get_block_state_batch_view(
@@ -244,6 +244,10 @@ class CompressionScheduler:
             self.config.protected_window_size,
             self.config.even_layer_evict,
         )
+        if self.config.even_layer_evict:
+            layerwise_eviction_sums = evicted_kv_count.sum(dim=-1)
+            assert (layerwise_eviction_sums[0,:1] == layerwise_eviction_sums[0]).all()
+            print("PASSED EVEN LAYER ASSERTION")
 
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices', evicted_kv_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count', evicted_kv_count)

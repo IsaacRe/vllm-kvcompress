@@ -119,6 +119,7 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids = output_token_ids
         self.reference_token_ids = reference_token_ids or []
+        self.use_reference_token_ids = bool(reference_token_ids)
         self.cumulative_logprob = 0.0
         # The number of tokens that are computed (that run against the model).
         self._num_computed_tokens = 0
@@ -130,7 +131,7 @@ class SequenceData:
         # pop from the reference tokens list so that next time we query its
         # first item it will be the next token in the list. Skip if it is the
         # first decoding iteration.
-        if len(self.output_token_ids) > 1:
+        if self.use_reference_token_ids and len(self.output_token_ids) > 1:
             self.reference_token_ids.pop(0)
 
     def get_len(self) -> int:

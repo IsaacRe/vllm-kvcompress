@@ -278,7 +278,7 @@ class Scheduler:
                 num_gpu_blocks=cache_config.num_gpu_blocks,
                 num_cpu_blocks=cache_config.num_cpu_blocks,
                 kvcompress_config=self.kvcompress_config,
-                block_state=kvcompress_shared_state.block_state)
+                shared_state=kvcompress_shared_state)
             self.kvcompress_scheduler = CompressionScheduler(
                 config=self.kvcompress_config,
                 block_manager=self.block_manager,

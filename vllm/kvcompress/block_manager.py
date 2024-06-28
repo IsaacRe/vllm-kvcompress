@@ -8,6 +8,7 @@ import itertools
 import torch
 from tqdm.auto import tqdm
 
+from vllm.kvcompress.state import KVCompressState
 from vllm.kvcompress.block import BlockState, PhysicalTokenBlock, BlockStateView
 from vllm.benchmark import BENCHMARKER
 from vllm.debug import CHECKPOINTER
@@ -148,7 +149,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         num_gpu_blocks: int,
         num_cpu_blocks: int,
         kvcompress_config: KVCompressConfig,
-        block_state: BlockState,
+        shared_state: KVCompressState,
         watermark: float = 0.01,
         device: str = "cuda:0",
     ) -> None:
@@ -170,8 +171,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         
         # KV-Compress uses pre-allocated block tables that are shared between
         # the model executor and scheduler/block manager
-        self.block_state = block_state
-        self.free_batch_slots = set(range(block_state.max_num_seqs))
+        self.block_state = shared_state.block_state
+        self.kv_metrics = shared_state.kv_metrics
+        self.free_batch_slots = set(range(self.block_state.max_num_seqs))
         self.batch_slot_mapping = {}
 
     def _validate_allocator(self) -> None:
@@ -208,6 +210,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # self.block_state._validate()
         # self._validate_allocator()
 
+        # Add metric metadata associated with the newly added sequence blocks
+        block_state_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
+        metadata = block_state_view.get_allocated_block_metadata()
+        self.kv_metrics.insert_metadata(metadata)
+
     def _remove_sequence(self, seq_id: int) -> torch.Tensor:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
         self.free_batch_slots.add(batch_slot_idx)
@@ -232,18 +239,32 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         return (new_kv_count + self.block_size) // self.block_size
 
-    def _append_to_sequence(self, seq_id: int, token_count: int):
+    def _append_to_sequence(self, seq: Sequence, token_count: int):
+        seq_id = seq.seq_id
         batch_slot_idx = self.batch_slot_mapping[seq_id]
 
-        old_mask = self.block_state.get_block_state_seq_view(batch_slot_idx).allocated_block_mask()
+        block_state_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
+        old_mask = block_state_view.allocated_block_mask()
         self.block_state.context_lens[:,batch_slot_idx] += token_count
-        new_mask = self.block_state.get_block_state_seq_view(batch_slot_idx).allocated_block_mask()
+        new_mask = block_state_view.allocated_block_mask()
         new_mask = (new_mask & ~old_mask)
         # TODO debug
-        self.block_state.block_tables[:,batch_slot_idx][new_mask] = (self.gpu_allocator
-                                                       .allocate(new_mask.sum())
-                                                       .to(self.device)
-                                                       .type(torch.int))        
+        new_blocks = new_mask.sum()
+        if new_blocks > 0:
+            self.block_state.block_tables[:,batch_slot_idx][new_mask] = (self.gpu_allocator
+                                                        .allocate(new_blocks)
+                                                        .to(self.device)
+                                                        .type(torch.int))
+
+            # Add metric metadata associated with the newly allocated blocks
+            metadata, mask = block_state_view.get_new_block_metadata(
+                last_token_position=seq.data.get_len() - 1
+            )
+            self.kv_metrics.insert_metadata(metadata)
+
+            # assert parity between new_mask and mask computed in get_new_block_metadata
+            print(new_mask.shape, mask.shape)
+            assert (new_mask == mask[:,0]).all()
 
     def get_batch_slot_index(self, seq: Sequence) -> int:
         return self.batch_slot_mapping[seq.seq_id]
@@ -316,7 +337,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     ) -> Dict[int, List[int]]:
         """Allocate a physical slot for a new token."""
         with BENCHMARKER.time("append_slots"):
-            self._append_to_sequence(seq_id=seq.seq_id, token_count=1)
+            self._append_to_sequence(seq=seq, token_count=1)
         return {}  # no copy on writes since we disallow multi-seq block references
 
     def fork(self, parent_seq: Sequence, child_seq: Sequence) -> None:
