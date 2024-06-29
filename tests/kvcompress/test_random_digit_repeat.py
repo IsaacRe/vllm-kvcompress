@@ -78,6 +78,9 @@ def test_parity_with_simulated_compression(
         protected_window_size=100,
         metric_collection_buffer_size=10,
         even_layer_evict=True,
+        control_layers=[0, 1],
+        save_checkpoint_dir='./checkpoint',
+        kv_head_bias_path='./kv_head_bias.npz',
     )
     random_digit_prompts, random_digit_responses = random_digit_generator(num_digits, random_seed)
     max_tokens = max(len(response) for response in random_digit_responses)

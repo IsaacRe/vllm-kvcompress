@@ -55,6 +55,12 @@ class CompressionScheduler:
         self.block_manager = block_manager
         self.compression_metrics = compression_metrics
         self.iteration_count = 0
+        self.control_layers = (
+            torch.tensor(self.config.control_layers,
+                         device=self.device,
+                         dtype=torch.int)
+            if self.config.control_layers else None
+        )
         # Mapping: seq_id -> num iters
         self._iters_since_compression: Dict[int, int] = {}
         self.total_evicted_kvs = {}
@@ -243,9 +249,15 @@ class CompressionScheduler:
             self.block_size,
             self.config.protected_window_size,
             self.config.even_layer_evict,
+            self.control_layers,
         )
         if self.config.even_layer_evict:
+            # debug
             layerwise_eviction_sums = evicted_kv_count.sum(dim=-1)
+            if self.control_layers is not None:
+                non_control_mask = torch.ones(layerwise_eviction_sums.size(1), dtype=torch.bool, device=self.device)
+                non_control_mask[self.control_layers.type(torch.int64)] = False
+                layerwise_eviction_sums = layerwise_eviction_sums[:,non_control_mask]
             assert (layerwise_eviction_sums[0,:1] == layerwise_eviction_sums[0]).all()
             print("PASSED EVEN LAYER ASSERTION")
 

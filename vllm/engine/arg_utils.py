@@ -1,7 +1,7 @@
 import argparse
 import dataclasses
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, List
 
 from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          EngineConfig, LoadConfig, LoRAConfig, ModelConfig,
@@ -87,6 +87,7 @@ class EngineArgs:
     kv_head_bias_path: str = ""
     random_evict: bool = False
     even_layer_evict: bool = False
+    control_layers: List[int] = field(default_factory=list)
 
     # Checkpointing (for debugging purposes)
     save_checkpoint_dir: str = ""
@@ -539,6 +540,14 @@ class EngineArgs:
                             action='store_true',
                             help='Whether to evict the same number of KVs '
                             'per layer.')
+        
+        parser.add_argument('--control-layers',
+                            nargs='*',
+                            type=int,
+                            help='Specify indices of layers for which '
+                            'KV cache compression will be avoided. '
+                            'Can only be specified when --even-layer-evict '
+                            'is also set.')
 
         # Checkpointing
         parser.add_argument('--save-checkpoint-dir',
@@ -663,6 +672,7 @@ class EngineArgs:
                 kv_head_bias_path=self.kv_head_bias_path,
                 random_evict=self.random_evict,
                 even_layer_evict=self.even_layer_evict,
+                control_layers=self.control_layers,
                 save_checkpoint_dir=self.save_checkpoint_dir,
                 load_checkpoint_dir=self.load_checkpoint_dir,
             )

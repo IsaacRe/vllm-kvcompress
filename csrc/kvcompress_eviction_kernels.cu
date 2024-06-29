@@ -41,10 +41,22 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
   const int max_evicted_tokens,
   const int protected_window_size,
-  const bool evict_evenly_per_layer) {
+  const bool evict_evenly_per_layer,
+  const int num_control_layers,
+  const int* __restrict__ control_layer_indices) {
   const int num_seqs = gridDim.x * blockDim.x;
   const int seq_idx = blockIdx.x * blockDim.x + threadIdx.x;  // allow block-level or thread-level parallelization (or both)
   const int thread_layer_idx = blockIdx.y * blockDim.y + threadIdx.y;  // parallelize kernel over layers when evict_evenly_per_layer_is_set
+
+  // If evicting evenly per layer, return threads that are evicting for a control layer
+  if (evict_evenly_per_layer) {
+    for (int i = 0; i < num_control_layers; ++i) {
+      if (thread_layer_idx == control_layer_indices[i]) {
+        return;
+      }
+    }
+  }
+
   const int max_evictable_position = last_position[seq_idx] - protected_window_size;
 
   const int output_head_stride = max_evicted_tokens;
@@ -363,7 +375,9 @@ __global__ void execute_cache_moves_kernel(
     total_blocks, \
     max_evicted_tokens, \
     protected_window_size, \
-    evict_evenly_per_layer);
+    evict_evenly_per_layer, \
+    num_control_layers, \
+    control_layer_indices_ptr);
 
 #define SCHEDULE_EVICTIONS_KERNEL(BLOCK_SIZE) \
   switch (BLOCK_SIZE) { \
@@ -398,12 +412,20 @@ void schedule_cache_evictions(
   torch::Tensor& last_position,             // [num_seqs]
   const int block_size,
   const int protected_window_size,
-  const bool evict_evenly_per_layer) {
+  const bool evict_evenly_per_layer,
+  const c10::optional<torch::Tensor>& control_layers) {
   const int num_seqs = evicted_kv_indices.size(0);
   const int num_layers = evicted_kv_indices.size(1);
   const int num_kv_heads = evicted_kv_indices.size(2);
   const int max_evicted_tokens = evicted_kv_indices.size(3);
   const int total_blocks = layer_by_block.size(0);
+
+  int num_control_layers = 0;
+  int* control_layer_indices_ptr = nullptr;
+  if (control_layers) {
+    num_control_layers = control_layers.value().size(0);
+    control_layer_indices_ptr = reinterpret_cast<int*>(control_layers.value().data_ptr());
+  }
 
   int* evicted_kv_indices_ptr = reinterpret_cast<int*>(evicted_kv_indices.data_ptr());
   int* evicted_kv_count_ptr = reinterpret_cast<int*>(evicted_kv_count.data_ptr());

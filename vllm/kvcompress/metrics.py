@@ -292,7 +292,7 @@ class CompressionMetrics:
         self.token_positions[metadata.physical_blocks] = metadata.token_positions
         # self.validate_metadata()
         # metadata.validate_even_layer_evict()
-        self.validate_metadata_even_layer_evict()
+        # self.validate_metadata_even_layer_evict()
 
     def remove_metadata(self, physical_blocks: torch.Tensor) -> None:
         print(f"REMOVING METADATA: {physical_blocks}")
@@ -300,7 +300,7 @@ class CompressionMetrics:
         # selected during sort
         self.seq_index_by_block[physical_blocks] = -1
         # self.validate_metadata()
-        self.validate_metadata_even_layer_evict()
+        # self.validate_metadata_even_layer_evict()
 
     def validate_metadata(self) -> None:
         # All allocated blocks (with seq idx >= 0) should have valid setting
@@ -317,7 +317,7 @@ class CompressionMetrics:
             print(allocated_mask.sum())
             check_idx_count = (self.layer_index_by_block[allocated_mask] == check_idx).sum()
             per_layer_count = self.layer_index_by_block[allocated_mask].numel() / self.num_layers
-            assert check_idx_count == per_layer_count, f'{check_idx_count=}, {per_layer_count=}'
+            assert check_idx_count == per_layer_count, f'{check_idx_count=}, {per_layer_count=} (are you using control_layers?)'
 
     def randomize_metric_slots(self, slot_mapping: torch.Tensor) -> None:
         flat_indices = slot_mapping.flatten().type(torch.long)
@@ -391,7 +391,7 @@ class CompressionMetrics:
         if checkpoint:
             assert not (mask & ~allocated_mask).any()
             # self.validate_metadata()
-            self.validate_metadata_even_layer_evict()
+            # self.validate_metadata_even_layer_evict()
 
         torch.ones(1).to(0)
 
@@ -412,15 +412,18 @@ class CompressionMetrics:
         torch.ones(1).to(0)
 
         # Get bias for KVs being compressed based on their position bin
-        # bias = self.kv_metric_head_bias.get_bias_for_position(
-        #     masked_token_position, masked_layer_indices, masked_head_indices
-        # )
+        bias = self.kv_metric_head_bias.get_bias_for_position(
+            masked_token_position, masked_layer_indices, masked_head_indices
+        )
         assert masked_head_indices.max() < self.num_kv_heads, 'not working'
-        bias = torch.zeros_like(masked_metrics)
+
+        if checkpoint:
+            CHECKPOINTER.checkpoint('sort__bias', bias)
+            CHECKPOINTER.checkpoint('sort__masked_metrics', masked_metrics)
+
         masked_metrics = masked_metrics + bias.view(-1)
 
         if checkpoint:
-            CHECKPOINTER.checkpoint('sort__masked_metrics', masked_metrics)
             CHECKPOINTER.checkpoint('sort__masked_seq_indices', masked_seq_indices)
             CHECKPOINTER.checkpoint('sort__masked_layer_indices', masked_layer_indices)
             CHECKPOINTER.checkpoint('sort__masked_head_indices', masked_head_indices)

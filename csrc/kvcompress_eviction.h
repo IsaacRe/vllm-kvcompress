@@ -17,7 +17,8 @@ void schedule_cache_evictions(
   torch::Tensor& last_position,             // [num_seqs]
   const int block_size,
   const int protected_window_size,
-  const bool evict_evenly_per_layer);
+  const bool evict_evenly_per_layer,
+  const c10::optional<torch::Tensor>& control_layers);
 
 void schedule_t1_cache_moves(
   torch::Tensor& cache_moves_idx,           // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens, 2]  (virtual token indices)

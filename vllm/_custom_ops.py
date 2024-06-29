@@ -390,6 +390,7 @@ def schedule_cache_evictions(
     block_size: int,
     protected_window_size: int,
     evict_evenly_per_layer: bool = False,
+    control_layers: Optional[torch.Tensor] = None,
 ) -> None:
     if evict_evenly_per_layer and block_size > 1:
         raise RuntimeError(f"cannot evict evenly across layers when block_size > 1 (got {block_size=})")
@@ -420,6 +421,7 @@ def schedule_cache_evictions(
         block_size,
         protected_window_size,
         evict_evenly_per_layer,
+        control_layers,
     )
     # TODO fails half the time when protected_window is set to 50 above
     # assert not (out_evicted_kv_indices > last_position.max() - protected_window_size).any()

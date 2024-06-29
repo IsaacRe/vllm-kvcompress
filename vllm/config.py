@@ -609,6 +609,7 @@ class KVCompressConfig:
         kv_head_bias_path: str,
         random_evict: bool,
         even_layer_evict: bool,
+        control_layers: List[int],
         save_checkpoint_dir: str,
         load_checkpoint_dir: str,
     ) -> None:
@@ -626,6 +627,7 @@ class KVCompressConfig:
         self.kv_head_bias_path = kv_head_bias_path
         self.random_evict = random_evict
         self.even_layer_evict = even_layer_evict
+        self.control_layers = control_layers
         self.save_checkpoint_dir = save_checkpoint_dir
         self.load_checkpoint_dir = load_checkpoint_dir
 
@@ -669,6 +671,17 @@ class KVCompressConfig:
         if self.random_evict and self.even_layer_evict:
             raise ValueError("cannot specify both random_evict and "
                              "even_layer_evict")
+        
+        if self.control_layers and min(self.control_layers) < 0:
+            raise ValueError("control_layers cannot include indices < 0")
+        
+        if self.control_layers and max(self.control_layers) >= self.num_layers:
+            raise ValueError("control_layers cannot include indices "
+                             f"> maximum layer index (={self.num_layers})")
+        
+        if self.control_layers and not self.even_layer_evict:
+            raise ValueError("control_layers can only be scpecified "
+                             "when setting even_layer_evict")
 
     def get_cache_block_size(
         self,
