@@ -2,6 +2,7 @@ import pytest
 from transformers import AutoTokenizer
 from copy import deepcopy
 import numpy as np
+import torch
 
 MODELS = [
     "NousResearch/Llama-2-7b-hf",
@@ -60,6 +61,7 @@ def test_no_compression(
 def test_parity_with_simulated_compression(
     vllm_runner,
     random_digit_generator,
+    checkpointer,
     random_seed: int,
     num_digits: int,
     model: str,
@@ -82,6 +84,10 @@ def test_parity_with_simulated_compression(
         save_checkpoint_dir='./checkpoint',
         kv_head_bias_path='./kv_head_bias.npz',
     )
+
+    # Only checkpoint the first non-controlled layer
+    checkpointer.set_condition(checkpoint_layer=lambda layer: layer == 2)
+
     random_digit_prompts, random_digit_responses = random_digit_generator(num_digits, random_seed)
     max_tokens = max(len(response) for response in random_digit_responses)
     tokenizer = AutoTokenizer.from_pretrained(model)
@@ -93,6 +99,10 @@ def test_parity_with_simulated_compression(
         len(tokenizer.encode(prompt)) + len(completion_token_ids)
         for prompt, completion_token_ids in zip(random_digit_prompts, reference_token_ids)
     ]
+
+    checkpointer.checkpoint('input_token_ids', torch.tensor(tokenizer.encode(random_digit_prompts[0])))
+    checkpointer.checkpoint('reference_token_ids', torch.tensor(reference_token_ids[0]))
+
     topk_ll = 5
     vllm_outputs = vllm_model.generate_greedy_logprobs(random_digit_prompts,
                                                 max_tokens,

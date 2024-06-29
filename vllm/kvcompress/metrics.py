@@ -156,6 +156,9 @@ class CompressionMetrics:
                 torch.zeros((1,), dtype=torch.int, device=device),
             )
 
+        CHECKPOINTER.checkpoint('kv_metric_head_bias__bias', self.kv_metric_head_bias.bias)
+        CHECKPOINTER.checkpoint('kv_metric_head_bias__position_bins', self.kv_metric_head_bias.position_bins)
+
         # Crucial for limiting runtime and memory
         # overhead of sort during each iteration.
         # Should be < 100,000,000, but can be set

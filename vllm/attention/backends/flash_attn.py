@@ -17,6 +17,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionMetadataPerStage)
 from vllm.attention.ops.paged_attn import (PagedAttention, KVCAttention,
                                            PagedAttentionMetadata)
+from vllm.debug import CHECKPOINTER
 
 
 class FlashAttentionBackend(AttentionBackend):
@@ -175,6 +176,8 @@ class FlashAttentionImpl(AttentionImpl):
         attn_metadata: AttentionMetadata[FlashAttentionMetadata],
         kv_scale: float,
     ) -> torch.Tensor:
+        CHECKPOINTER.condition(checkpoint_layer=layer_index)
+
         """Forward pass with FlashAttention and PagedAttention.
 
         Args:
@@ -197,6 +200,10 @@ class FlashAttentionImpl(AttentionImpl):
         kvcompress_enabled = bool(kv_metrics)
         kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
 
+        CHECKPOINTER.checkpoint('flash_attn__query', query)
+        CHECKPOINTER.checkpoint('flash_attn__key', key)
+        CHECKPOINTER.checkpoint('flash_attn__value', value)
+
         if kv_cache is not None:
             # Reshape the input keys and values and store them in the cache.
             # If kv_cache is not provided, the new key and value tensors are
@@ -215,12 +222,18 @@ class FlashAttentionImpl(AttentionImpl):
                     device=key.device,
                 )  #attn_metadata.kv_metric_head_bias[layer_index]
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
+
+                CHECKPOINTER.checkpoint('flash_attn__slot_mapping', slot_mapping)
+
                 KVCAttention.write_to_paged_cache(key, value, key_cache,
                                                   value_cache, kv_metrics.metrics,
                                                   slot_mapping,
                                                   kv_metric_head_bias,
                                                   attn_metadata.kv_cache_dtype,
                                                   kv_scale)
+                
+                CHECKPOINTER.checkpoint('flash_attn__kv_metrics', kv_metrics.metrics)
+
                 if kv_metrics.random:
                     # if running random-eviction baseline, randomize the metrics that
                     # were just inserted
@@ -233,6 +246,9 @@ class FlashAttentionImpl(AttentionImpl):
                                                     attn_metadata.slot_mapping,
                                                     attn_metadata.kv_cache_dtype,
                                                     kv_scale)
+                
+        CHECKPOINTER.checkpoint('flash_attn__key_cache', key_cache)
+        CHECKPOINTER.checkpoint('flash_attn__value_cache', value_cache)
 
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens
@@ -256,6 +272,9 @@ class FlashAttentionImpl(AttentionImpl):
                 # Extract layer-dependent metadata
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
                 slot_mapping = slot_mapping[:num_prefill_tokens]
+
+                CHECKPOINTER.checkpoint('flash_attn__prefill_slot_mapping', slot_mapping)
+
                 if self.num_kv_heads != self.num_heads:
                     # Interleave for MQA workaround.
                     key = self.repeat_kv(key, self.num_queries_per_kv)
@@ -268,10 +287,17 @@ class FlashAttentionImpl(AttentionImpl):
                     self.scale,
                     kv_metric_buffer_len,
                 )
+
+                CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
+                CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metric_out', kv_metric_out)
+
                 kv_metrics.aggregate_prefill(
                     kv_metric_out,
                     slot_mapping,
                 )
+
+                CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metrics_agg', kv_metrics.metrics)
+
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
             elif kv_cache is None or prefill_meta.block_tables.numel() == 0:
@@ -335,6 +361,13 @@ class FlashAttentionImpl(AttentionImpl):
                     kv_scale,
                     kv_metrics.temp_metrics,
                 )
+
+                CHECKPOINTER.checkpoint('flash_attn__decode_block_tables', block_tables)
+                CHECKPOINTER.checkpoint('flash_attn__decode_context_lens', context_lens)
+                CHECKPOINTER.checkpoint('flash_attn__decode_kv_positions', kv_metrics.token_positions)
+                CHECKPOINTER.checkpoint('flash_attn__decode_q_positions', decode_positions)
+                CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
+
             else:
                 output[num_prefill_tokens:] = PagedAttention.forward_decode(
                     decode_query,
@@ -349,6 +382,9 @@ class FlashAttentionImpl(AttentionImpl):
                     self.alibi_slopes,
                     kv_scale,
                 )
+
+        CHECKPOINTER.checkpoint('flash_attn__output', output)
+        CHECKPOINTER.end_condition()
 
         # Reshape the output tensor.
         return output.view(num_tokens, hidden_size)

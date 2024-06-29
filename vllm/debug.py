@@ -1,5 +1,6 @@
 import torch
 import os
+from typing import Optional
 
 _MAX_SAVE_ITERS = 3
 _MANIFEST_FILENAME = "files.txt"
@@ -14,10 +15,15 @@ class Checkpointer:
         self.checkpoint_counts = {}
         self.files = []
         self.manifest = None
+        self.disabled = False
+        self.conditions = {}
 
-    def __del__(self):
+    def __del__(self) -> None:
         if self.manifest is not None:
             self.manifest.close()
+
+    def set_condition(self, **conditions) -> None:
+        self.conditions.update(conditions)
 
     def init_manifest(self) -> None:
         if not os.path.exists(self.base_dir):
@@ -38,7 +44,9 @@ class Checkpointer:
             raise RuntimeError('file not found: {path}')
         return torch.load(path)
     
-    def checkpoint(self, name: str, tensor: torch.Tensor):
+    def checkpoint(self, name: str, tensor: torch.Tensor, max_save_iters: Optional[int] = None):
+        if max_save_iters is None:
+            max_save_iters = _MAX_SAVE_ITERS
         if not self.do_checkpoint:
             return
         if name not in self.checkpoint_counts:
@@ -48,7 +56,7 @@ class Checkpointer:
             self.files.append(name)
             self.manifest.write(name)
             self.manifest.flush()
-        if self.checkpoint_counts[name] < _MAX_SAVE_ITERS:
+        if self.checkpoint_counts[name] < max_save_iters:
             if self.do_save:
                 self.torch_save(name, tensor)
             elif self.do_validate:
@@ -56,6 +64,21 @@ class Checkpointer:
                 assert (reference.to(tensor.device) == tensor).all(), f'checkpoint {name}({self.checkpoint_counts[name]}) failed:\n{reference} != {tensor}'
                 print(f'checkpoint {name}({self.checkpoint_counts[name]}) passed')
         self.checkpoint_counts[name] += 1
+
+    def condition(self, **condition_params) -> None:
+        """Disables checkpointing if conditions are not met until
+        next call to end_condition().
+        """
+        self.disabled = True
+        for name, value in condition_params.items():
+            if name not in self.conditions:
+                raise RuntimeError(f'undefined condition {name}')
+            if self.conditions[name](value):
+                self.disabled = False
+                return
+
+    def end_condition(self):
+        self.disabled = False
 
 
 CHECKPOINTER = Checkpointer()
