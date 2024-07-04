@@ -84,6 +84,7 @@ class SortedMetricOutputs:
     layer_by_block: torch.Tensor
     head_by_block: torch.Tensor
     logical_block_num_by_block: torch.Tensor
+    token_positions: torch.Tensor
 
 
 class CompressionMetrics:
@@ -470,6 +471,7 @@ class CompressionMetrics:
             layer_by_block=masked_layer_indices.contiguous(),
             head_by_block=masked_head_indices.contiguous(),
             logical_block_num_by_block=masked_logical_block_nums.contiguous(),
+            token_positions=masked_token_position.contiguous(),
         )
     
     def checkpoint(self) -> None:

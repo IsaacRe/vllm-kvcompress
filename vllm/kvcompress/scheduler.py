@@ -173,6 +173,11 @@ class CompressionScheduler:
         if not seqs_to_compress:
             return
 
+        # Checkpoint
+        if CHECKPOINTER.do_checkpoint:
+            self.block_manager.checkpoint()
+            self.compression_metrics.checkpoint()
+
         # Sort sequences by batch_slot_index index
         seqs_to_compress, evicted_blocks_per_seq = zip(*sorted(
             zip(seqs_to_compress, evicted_blocks_per_seq),
@@ -244,7 +249,7 @@ class CompressionScheduler:
             evicted_blocks_per_seq,
             context_lens,
             hanging_token_count,
-            self.compression_metrics.token_positions,
+            sort_output.token_positions,
             last_token_positions,
             self.block_size,
             self.config.protected_window_size,
@@ -358,8 +363,4 @@ class CompressionScheduler:
         self.iteration_count += 1
         if self.iteration_count >= self.config.compression_interval:
             self.iteration_count = 0
-            # Checkpoint
-            if CHECKPOINTER.do_checkpoint:
-                self.block_manager.checkpoint()
-                self.compression_metrics.checkpoint()
             return self._schedule_compression(seqs)
