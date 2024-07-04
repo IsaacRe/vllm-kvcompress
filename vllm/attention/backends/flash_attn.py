@@ -445,5 +445,5 @@ def _naive_kvc_masked_attention(
     out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
     kv_metric_mask = torch.tril(ones, diagonal=kv_metric_buffer_len)
     # sum L2 of attention over queries
-    kv_metrics = (attn_weights ** 2 * kv_metric_mask).sum(dim=-1)
+    kv_metrics = (attn_weights ** 2 * kv_metric_mask).sum(dim=-2)
     return out, kv_metrics
