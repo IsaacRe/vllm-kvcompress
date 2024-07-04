@@ -4,6 +4,8 @@ from copy import deepcopy
 import numpy as np
 import torch
 
+from vllm.debug import RandomDigitCheckpointConfig
+
 MODELS = [
     "NousResearch/Llama-2-7b-hf",
 ]
@@ -70,20 +72,32 @@ def test_parity_with_simulated_compression(
     """Checks for alignment between the vLLM integration and the experimental implementation
     that simulates eviction within a single forward pass.
     """
+    checkpoint_cfg = RandomDigitCheckpointConfig(
+        model_name=model,
+        max_cache_tokens=150,
+        protected_window_size=100,
+        metric_collection_buffer_size=10,
+        num_digits=num_digits,
+        control_layers=[0, 1],
+    )
+
+    # Don't checkpoint during profiling
+    checkpointer.set_condition(checkpoint_layer=lambda _: False)
     vllm_model = vllm_runner(
         model,
         dtype=dtype,
         enforce_eager=True,
         enable_kvcompress=True,
-        max_cache_tokens=150,
+        max_cache_tokens=checkpoint_cfg.max_cache_tokens,
         block_size=1,
-        protected_window_size=100,
-        metric_collection_buffer_size=10,
+        protected_window_size=checkpoint_cfg.protected_window_size,
+        metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
         even_layer_evict=True,
-        control_layers=[0, 1],
+        control_layers=checkpoint_cfg.control_layers,
         save_checkpoint_dir='./checkpoint',
         kv_head_bias_path='./kv_head_bias.npz',
     )
+    checkpointer.set_config(checkpoint_cfg)
 
     # Only checkpoint the first non-controlled layer
     checkpointer.set_condition(checkpoint_layer=lambda layer: layer == 2)

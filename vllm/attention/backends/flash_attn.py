@@ -176,8 +176,6 @@ class FlashAttentionImpl(AttentionImpl):
         attn_metadata: AttentionMetadata[FlashAttentionMetadata],
         kv_scale: float,
     ) -> torch.Tensor:
-        CHECKPOINTER.condition(checkpoint_layer=layer_index)
-
         """Forward pass with FlashAttention and PagedAttention.
 
         Args:
@@ -196,6 +194,9 @@ class FlashAttentionImpl(AttentionImpl):
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
         layer_index = attn_metadata.layer_index
+
+        CHECKPOINTER.condition(checkpoint_layer=layer_index)
+
         kv_metrics = attn_metadata.kv_metrics
         kvcompress_enabled = bool(kv_metrics)
         kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
@@ -247,8 +248,8 @@ class FlashAttentionImpl(AttentionImpl):
                                                     attn_metadata.kv_cache_dtype,
                                                     kv_scale)
                 
-        CHECKPOINTER.checkpoint('flash_attn__key_cache', key_cache)
-        CHECKPOINTER.checkpoint('flash_attn__value_cache', value_cache)
+            CHECKPOINTER.checkpoint('flash_attn__key_cache', key_cache)
+            CHECKPOINTER.checkpoint('flash_attn__value_cache', value_cache)
 
         num_prefill_tokens = attn_metadata.num_prefill_tokens
         num_decode_tokens = attn_metadata.num_decode_tokens

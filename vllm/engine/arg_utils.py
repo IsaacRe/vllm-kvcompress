@@ -7,9 +7,10 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          EngineConfig, LoadConfig, LoRAConfig, ModelConfig,
                          ParallelConfig, SchedulerConfig, SpeculativeConfig,
                          TokenizerPoolConfig, VisionLanguageConfig,
-                         KVCompressConfig)
+                         KVCompressConfig, CheckpointConfig)
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.utils import str_to_int_tuple
+from vllm.debug import CHECKPOINTER
 
 
 @dataclass
@@ -650,6 +651,12 @@ class EngineArgs:
         decoding_config = DecodingConfig(
             guided_decoding_backend=self.guided_decoding_backend)
 
+        if self.load_checkpoint_dir or self.save_checkpoint_dir:
+            CheckpointConfig(
+                self.save_checkpoint_dir,
+                self.load_checkpoint_dir,
+            )
+
         if self.enable_kvcompress:
             max_model_len = self.max_model_len or model_config.max_model_len
             max_blocks_per_head = (max_model_len + self.block_size
@@ -673,8 +680,6 @@ class EngineArgs:
                 random_evict=self.random_evict,
                 even_layer_evict=self.even_layer_evict,
                 control_layers=self.control_layers,
-                save_checkpoint_dir=self.save_checkpoint_dir,
-                load_checkpoint_dir=self.load_checkpoint_dir,
             )
         else:
             kvcompress_config = None

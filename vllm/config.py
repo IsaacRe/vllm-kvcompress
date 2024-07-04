@@ -555,6 +555,29 @@ class ParallelConfig:
                              "run with Ray.")
 
 
+class CheckpointConfig:
+
+    def __init__(
+        self,
+        save_checkpoint_dir: str,
+        load_checkpoint_dir: str,
+    ) -> None:
+        self.save_checkpoint_dir = save_checkpoint_dir
+        self.load_checkpoint_dir = load_checkpoint_dir
+
+        # Configure checkpointer
+        CHECKPOINTER.do_save = bool(save_checkpoint_dir)
+        CHECKPOINTER.do_validate = bool(load_checkpoint_dir)
+        CHECKPOINTER.base_dir = save_checkpoint_dir or load_checkpoint_dir
+
+        self._verify_args()
+
+    def _verify_args(self):
+        if self.save_checkpoint_dir and self.load_checkpoint_dir:
+            raise ValueError("cannot specify both save_checkpoint_dir and "
+                             "load_checkpoint_dir")
+
+
 class KVCompressConfig:
     """Configuration for KV-Compress
     
@@ -610,8 +633,6 @@ class KVCompressConfig:
         random_evict: bool,
         even_layer_evict: bool,
         control_layers: List[int],
-        save_checkpoint_dir: str,
-        load_checkpoint_dir: str,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
@@ -628,13 +649,6 @@ class KVCompressConfig:
         self.random_evict = random_evict
         self.even_layer_evict = even_layer_evict
         self.control_layers = control_layers
-        self.save_checkpoint_dir = save_checkpoint_dir
-        self.load_checkpoint_dir = load_checkpoint_dir
-
-        # Configure checkpointer
-        CHECKPOINTER.do_save = bool(save_checkpoint_dir)
-        CHECKPOINTER.do_validate = bool(load_checkpoint_dir)
-        CHECKPOINTER.base_dir = save_checkpoint_dir or load_checkpoint_dir
         
         self._verify_args()
 
@@ -663,10 +677,6 @@ class KVCompressConfig:
             and self.protected_window_size > self.max_cache_tokens):
             raise ValueError("max_cache_tokens must be greater than "
                              "protected_window_size if it is specified")
-        
-        if self.save_checkpoint_dir and self.load_checkpoint_dir:
-            raise ValueError("cannot specify both save_checkpoint_dir and "
-                             "load_checkpoint_dir")
 
         if self.random_evict and self.even_layer_evict:
             raise ValueError("cannot specify both random_evict and "

@@ -163,9 +163,9 @@ class Worker(WorkerBase):
             "Error in memory profiling. This happens when the GPU memory was "
             "not properly cleaned up before initializing the vLLM instance.")
         
-        peak_metric_sort_mem = kv_metrics.profile_sort()
+        # peak_metric_sort_mem = kv_metrics.profile_sort()
 
-        peak_memory += 2e9
+        peak_memory += 2e9  # save 2GB vRAM for compression overhead
 
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(
