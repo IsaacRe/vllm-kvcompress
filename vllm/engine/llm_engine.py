@@ -172,6 +172,7 @@ class LLMEngine:
                     num_queries_per_kv=self.kvcompress_config.num_queries_per_kv,
                     max_kv_per_sort=self.kvcompress_config.max_kv_per_compression,
                     kv_head_bias_file=self.kvcompress_config.kv_head_bias_path,
+                    kv_head_bias_weight=self.kvcompress_config.kv_head_bias_weight,
                     random=self.kvcompress_config.random_evict,
                     even_layer_evict=self.kvcompress_config.even_layer_evict,
                 )

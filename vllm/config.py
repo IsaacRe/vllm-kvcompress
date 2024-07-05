@@ -630,6 +630,7 @@ class KVCompressConfig:
         protected_window_size: int,
         metric_collection_buffer_size: int,
         kv_head_bias_path: str,
+        kv_head_bias_weight: float,
         random_evict: bool,
         even_layer_evict: bool,
         control_layers: List[int],
@@ -646,6 +647,7 @@ class KVCompressConfig:
         self.protected_window_size = protected_window_size
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.kv_head_bias_path = kv_head_bias_path
+        self.kv_head_bias_weight = kv_head_bias_weight
         self.random_evict = random_evict
         self.even_layer_evict = even_layer_evict
         self.control_layers = control_layers

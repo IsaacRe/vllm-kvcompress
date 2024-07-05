@@ -96,6 +96,7 @@ def test_parity_with_simulated_compression(
         control_layers=checkpoint_cfg.control_layers,
         save_checkpoint_dir='./checkpoint',
         kv_head_bias_path='./kv_head_bias.npz',
+        kv_head_bias_weight=50,
     )
     checkpointer.set_config(checkpoint_cfg)
 

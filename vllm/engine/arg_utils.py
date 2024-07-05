@@ -86,6 +86,7 @@ class EngineArgs:
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 32
     kv_head_bias_path: str = ""
+    kv_head_bias_weight: int = 1.0
     random_evict: bool = False
     even_layer_evict: bool = False
     control_layers: List[int] = field(default_factory=list)
@@ -532,6 +533,12 @@ class EngineArgs:
                             help='Path to the tensor containing bias '
                             'for each KV head of the model. Can be a '
                             'URL, local path or huggingface repo/path.')
+        
+        parser.add_argument('--kv-head-bias-weight',
+                            type=float,
+                            default=1.0,
+                            help='Global weight applied to all KV head '
+                            'biases.')
 
         parser.add_argument('--random-evict',
                             action='store_true',
@@ -677,6 +684,7 @@ class EngineArgs:
                 protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 kv_head_bias_path=self.kv_head_bias_path,
+                kv_head_bias_weight=self.kv_head_bias_weight,
                 random_evict=self.random_evict,
                 even_layer_evict=self.even_layer_evict,
                 control_layers=self.control_layers,

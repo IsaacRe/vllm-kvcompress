@@ -119,6 +119,7 @@ class CompressionMetrics:
         num_queries_per_kv: int,
         max_kv_per_sort: int,
         kv_head_bias_file: Optional[str],
+        kv_head_bias_weight: float,
         device: str = "cuda:0",
         random: bool = False,
         even_layer_evict: bool = False,
@@ -156,6 +157,7 @@ class CompressionMetrics:
                 ),
                 torch.zeros((1,), dtype=torch.int, device=device),
             )
+        self.kv_metric_bias_weight = kv_head_bias_weight
 
         CHECKPOINTER.checkpoint('kv_metric_head_bias__bias', self.kv_metric_head_bias.bias)
         CHECKPOINTER.checkpoint('kv_metric_head_bias__position_bins', self.kv_metric_head_bias.position_bins)
@@ -432,7 +434,7 @@ class CompressionMetrics:
             CHECKPOINTER.checkpoint('sort__bias', bias)
             CHECKPOINTER.checkpoint('sort__masked_metrics', masked_metrics)
 
-        masked_metrics = masked_metrics + bias.view(-1)
+        masked_metrics = masked_metrics + bias.view(-1) * self.kv_metric_bias_weight
 
         if checkpoint:
             CHECKPOINTER.checkpoint('sort__masked_seq_indices', masked_seq_indices)
