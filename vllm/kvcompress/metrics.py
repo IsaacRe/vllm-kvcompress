@@ -261,7 +261,7 @@ class CompressionMetrics:
         self.logical_block_num_by_block[:] = 0
         init_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        self.sort_seq_metrics([0], checkpoint=False)
+        self.sort_seq_metrics([0], [1], checkpoint=False)
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
         self.clear_kv_metadata()
@@ -370,7 +370,7 @@ class CompressionMetrics:
 
         self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
 
-    def sort_seq_metrics(self, seq_indices: List[int], checkpoint: bool = True) -> SortedMetricOutputs:
+    def sort_seq_metrics(self, seq_indices: List[int], seq_positions: List[int], checkpoint: bool = True) -> SortedMetricOutputs:
         """Sort and return a view of the indices limited to a subset
         of all sequences.
         """
@@ -414,6 +414,13 @@ class CompressionMetrics:
         torch.ones(1).to(0)
         masked_token_position = self.token_positions[mask]
         torch.ones(1).to(0)
+
+        # Normalize KV metrics by the number of queries seen for each KV
+        current_positions = torch.tensor(seq_positions, device=self.device)[
+            masked_seq_indices.type(torch.int64)
+        ]
+        masked_query_count = current_positions[:,None] - masked_token_position
+        masked_metrics /= masked_query_count.view(-1)
 
         # Get bias for KVs being compressed based on their position bin
         bias = self.kv_metric_head_bias.get_bias_for_position(

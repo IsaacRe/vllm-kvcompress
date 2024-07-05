@@ -200,11 +200,15 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__slot_indices', torch.tensor(slot_indices))
         CHECKPOINTER.checkpoint('schedule_compression__seq_lens', torch.tensor(seq_lens))
 
+        last_token_positions = torch.tensor(
+            seq_lens, dtype=torch.int, device=self.device) - 1
+
         # Sort compression metrics
         # Should not have begun handling requests
         init_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        sort_output = self.compression_metrics.sort_seq_metrics(slot_indices)
+        sort_output = self.compression_metrics.sort_seq_metrics(
+            slot_indices, last_token_positions)
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
         print(f"RAN SORT: {final_mem - init_mem}")
@@ -236,8 +240,6 @@ class CompressionScheduler:
             dtype=torch.int,
             device=self.device,
         )
-        last_token_positions = torch.tensor(
-            seq_lens, dtype=torch.int, device=self.device) - 1
         schedule_cache_evictions(
             evicted_kv_indices,
             evicted_kv_count,
