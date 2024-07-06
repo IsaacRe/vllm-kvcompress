@@ -50,14 +50,22 @@ CUDA_DEVICES = [
     # constexpr int block_size = 32;
 
 # void schedule_cache_evictions(
-#   torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
-#   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
-#   torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
-#   torch::Tensor& seq_block_offsets,         // [num_seqs]
-#   torch::Tensor& layer_by_block,            // [total_blocks]
-#   torch::Tensor& head_by_block,             // [total_blocks]
-#   torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
-#   torch::Tensor& evicted_blocks_per_seq)    // [num_seqs]
+#     torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
+#     torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
+#     torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
+#     torch::Tensor& seq_block_offsets,         // [num_seqs]
+#     torch::Tensor& layer_by_block,            // [total_blocks]  TODO: could use uint8
+#     torch::Tensor& head_by_block,             // [total_blocks]  TODO: could use uint8
+#     torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
+#     torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
+#     torch::Tensor& context_lens,              // [num_seqs, num_layers, num_kv_heads]
+#     torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
+#     torch::Tensor& kv_position,               // [total_blocks, BLOCK_SIZE]
+#     torch::Tensor& last_position,             // [num_seqs]
+#     const int block_size,
+#     const int protected_window_size,
+#     const bool evict_evenly_per_layer,
+#     const c10::optional<torch::Tensor>& control_layers)
 def ref_schedule_cache_evictions(
     out_evicted_kv_indices: torch.Tensor,  # store virtual kv indices
     out_evicted_kv_count: torch.Tensor,
@@ -69,8 +77,15 @@ def ref_schedule_cache_evictions(
     evicted_blocks_per_seq: torch.Tensor,
     context_lens: torch.Tensor,
     hanging_token_count: torch.Tensor,
+    kv_position: torch.Tensor,
+    last_position: torch.Tensor,
     block_size: int,
+    protected_window: int,
+    evict_evenly_per_layer: bool,
+    control_layers: torch.Tensor,
 ):
+    if evict_evenly_per_layer:
+        raise NotImplementedError
     # assert (
     #     head_by_block[16] != head_by_block[18]
     #     or layer_by_block[16] != layer_by_block[18]
@@ -99,10 +114,26 @@ def ref_schedule_cache_evictions(
     print(f'hanging_toks:\n{hanging_token_count}')
     print(f'sequence_block_offsets:\n{seq_block_offsets}')
     print(f'evicted_blocks_per_seq:\n{evicted_blocks_per_seq}')
+
+    evictable_kv = torch.zeros_like(context_lens)
+    next_seq_offset = 0
+    seq_idx = -1
+    for i in range(kv_position.size(0)):
+        if i >= next_seq_offset:
+            seq_idx += 1
+            next_seq_offset = seq_block_offsets[seq_idx + 1] if seq_idx < seq_block_offsets.size(0) - 1 else float('inf')
+        evictable_kv[seq_idx, layer_by_block[i], head_by_block[i]] += (
+            (kv_position >= 0) & (kv_position <= last_position[0] - protected_window)
+        )[i].sum()
+
+    print(f'evictable_keys:\n{evictable_kv}')
+
     for i in range(num_seqs):
+        # blocks_to_evict = min(evicted_blocks_per_seq[i], )
         remaining_kv = torch.ones((num_layers, num_kv_heads)) * hanging_token_count[i]
         evicted_blocks = 0
         tot_iter = torch.zeros_like(remaining_kv)
+        current_pos = last_position[i]
         j = seq_block_offsets[i] * block_size
         end_j = (seq_block_offsets[i+1] if i+1 < len(seq_block_offsets) else total_blocks) * block_size
         print(f'start, end: {j}, {end_j}')
@@ -113,11 +144,16 @@ def ref_schedule_cache_evictions(
             layer_idx = layer_by_block[block_num]
             head_idx = head_by_block[block_num]
             virtual_block_num = virtual_block_num_by_block[block_num]
+            kv_pos = kv_position[block_num, block_offset]
 
             kv_idx = virtual_block_num * block_size + block_offset
             print(f'kv_idx: {sorted_indices[j]}, v_kv_idx: {kv_idx}, j: {j}, i: {i}, l: {layer_idx}, h: {head_idx}, evicted: {out_evicted_kv_count[i, layer_idx, head_idx] + 1}, remaining: {remaining_kv[layer_idx, head_idx]}, blk#: {block_num}, blk%: {block_offset}')
             assert kv_idx.item() not in {x.item() for x in out_evicted_kv_indices[i, layer_idx, head_idx]}
             if kv_idx >= context_lens[i, layer_idx, head_idx].item():
+                j += 1
+                continue
+
+            if kv_pos > current_pos - protected_window:
                 j += 1
                 continue
 
@@ -311,6 +347,7 @@ def test_kvcompress_schedule_evictions(
     seed = 4
     device = 'cuda:0'
 
+    protected_window = 2
     num_seqs = 3
     num_kv_heads = 2
     block_size = 4
@@ -358,7 +395,6 @@ def test_kvcompress_schedule_evictions(
     ], dtype=torch.int) + hanging_token_count
 
     block_tables_by_layer = []
-    layer_idxs_by_layer = []
     key_cache_by_layer = []
     value_cache_by_layer = []
     max_num_blocks_per_seq_per_layer = []
@@ -375,7 +411,8 @@ def test_kvcompress_schedule_evictions(
     kv_head_idxs = torch.empty(total_blocks, dtype=torch.int)
     seq_idxs = torch.empty(total_blocks, dtype=torch.int)
     layer_idxs = torch.empty(total_blocks, dtype=torch.int)
-    virtual_block_nums = torch.empty(total_blocks, dtype=torch.int)
+    virtual_block_nums = -torch.ones(total_blocks, dtype=torch.int)
+    last_positions = torch.tensor([MAX_SEQ_LEN - 1] * num_seqs, dtype=torch.int)
     block_idx = 0
     for l in range(NUM_LAYERS):
         context_lens = context_lens_by_layer[l]
@@ -427,6 +464,14 @@ def test_kvcompress_schedule_evictions(
         key_cache_by_layer.append(key_cache)
         value_cache_by_layer.append(value_cache)
 
+    # Set KV positions to be the logical block number * block size + block offset
+    kv_positions = -torch.ones((total_blocks, block_size), dtype=torch.int)
+    allocated_mask = virtual_block_nums >= 0
+    kv_positions[allocated_mask] = (
+        (virtual_block_nums * block_size)[:,None] +
+        torch.arange(block_size, device=device, dtype=torch.int)[None]
+    )[allocated_mask]
+
     # Add to metrics_by_layer, setting empty token slots to inf to prevent eviction
     all_kv_metrics = torch.rand(total_blocks, block_size)
 
@@ -443,11 +488,12 @@ def test_kvcompress_schedule_evictions(
 
     # Create evicted_blocks_per_seq
     num_blocks_by_seq = num_blocks_by_layer.sum(dim=0).sum(dim=1)  # [num_seqs]
+    protected_window_blocks = ((protected_window + block_size - 1) // block_size) * NUM_LAYERS * num_kv_heads
     evicted_blocks_per_seq = torch.tensor(
-        [random.randint(0, n) for n in num_blocks_by_seq],
+        [random.randint(0, n) for n in num_blocks_by_seq - protected_window_blocks],
         dtype=torch.int,
     )
-    evicted_blocks_per_seq[-1] = num_blocks_by_seq[-1]
+    evicted_blocks_per_seq[-1] = num_blocks_by_seq[-1] - protected_window_blocks
     if num_seqs > 1:
         evicted_blocks_per_seq[-2] = 0
 
@@ -462,6 +508,7 @@ def test_kvcompress_schedule_evictions(
     all_kv_head_idxs = kv_head_idxs
     all_layer_idxs = layer_idxs
     all_virtual_block_nums = virtual_block_nums
+    all_kv_positions = kv_positions
 
     # Stack block tables
     all_block_tables = torch.stack(block_tables_by_layer)
@@ -540,6 +587,24 @@ def test_kvcompress_schedule_evictions(
     out_evicted_kv_indices = torch.empty_like(ref_evicted_kv_indices)
     out_evicted_kv_count = torch.empty_like(ref_evicted_kv_count)
 
+    """
+    torch::Tensor& evicted_kv_indices,        // [num_seqs, num_layers, num_kv_heads, max_evicted_tokens]
+    torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
+    torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
+    torch::Tensor& seq_block_offsets,         // [num_seqs]
+    torch::Tensor& layer_by_block,            // [total_blocks]  TODO: could use uint8
+    torch::Tensor& head_by_block,             // [total_blocks]  TODO: could use uint8
+    torch::Tensor& virtual_block_num_by_block,  // [total_blocks]
+    torch::Tensor& evicted_blocks_per_seq,    // [num_seqs]
+    torch::Tensor& context_lens,              // [num_seqs, num_layers, num_kv_heads]
+    torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
+    torch::Tensor& kv_position,               // [total_blocks, BLOCK_SIZE]
+    torch::Tensor& last_position,             // [num_seqs]
+    const int block_size,
+    const int protected_window_size,
+    const bool evict_evenly_per_layer,
+    const c10::optional<torch::Tensor>& control_layers)"""
+
     ref_schedule_cache_evictions(
         ref_evicted_kv_indices,
         ref_evicted_kv_count,
@@ -551,7 +616,12 @@ def test_kvcompress_schedule_evictions(
         evicted_blocks_per_seq,
         context_lens_by_layer.transpose(0, 1),
         hanging_token_count.transpose(0, 1),
+        all_kv_positions,
+        last_positions,
         block_size,
+        protected_window,
+        False,
+        None,
     )
     for i, t in enumerate([
         out_evicted_kv_indices,
@@ -577,10 +647,23 @@ def test_kvcompress_schedule_evictions(
         evicted_blocks_per_seq,
         context_lens_by_layer.transpose(0, 1).contiguous(),
         hanging_token_count.transpose(0, 1).contiguous(),
+        all_kv_positions,
+        last_positions,
         block_size,
+        protected_window,
+        False, #True,
+        None, #torch.tensor([], dtype=torch.int),
     )
 
-    mask = ref_evicted_kv_indices < MAX_INT
+    # mask = ref_evicted_kv_indices < MAX_INT
+    mask = ~(
+        torch.arange(out_evicted_kv_indices.shape[-1])[None,None,None]
+                .to(out_evicted_kv_count.device)
+        >= out_evicted_kv_count[...,None]
+    )
+
+    assert out_evicted_kv_indices[mask].max() <= last_positions.max() - protected_window, 'hi'
+
     print(out_evicted_kv_indices[mask])
     print(ref_evicted_kv_indices[mask])
     print(out_evicted_kv_indices)
@@ -818,6 +901,7 @@ def test_kvcompress_schedule_evictions(
         out_key_cache,
         out_value_cache,
         out_kv_metrics,
+        all_kv_positions,
         ref_cache_moves_idx,
         ref_cache_moves_count,
         1, 1,
@@ -1049,7 +1133,11 @@ def test_kvcompress_schedule_evictions(
             else:
                 print(f'equal: sort_idx {idx}, seq {s}, layer {l}, head {h}, v_idx {v_idx}, blk_idx {block_idx}, blk_offset {block_offset}, ctx_len {context_lens_by_layer[l,s,h]} adj_ctx_len {(context_lens_by_layer[l,s,h] - truncated_evicted_kv_count[s,l,h]).item()}')
                 assert not evict_scheduled
-                done_evicting_for_current_seq[l,h] = True
+                
+                # if the KV is within the protected range it was not a candidate for eviction
+                # in the first place, so eviction for this head is not necessarily concluded
+                if all_kv_positions.view(-1)[i] <= last_positions[s] - protected_window:
+                    done_evicting_for_current_seq[l,h] = True
 
         except Exception as e:
             print(seqs_)
@@ -1060,7 +1148,6 @@ def test_kvcompress_schedule_evictions(
 
             raise e
 
-    # TODO still failing for some reason
     print(f'Remaining KVs:\n{remaining_kvs_per_block[0][0]}\n{remaining_kvs_per_block[1][0]}')
     print(f'evict idxs:\n{evicted_kv_indices_sorted[0]}')
     print(f'evict count:\n{truncated_evicted_kv_count[0]}')
