@@ -100,10 +100,7 @@ class Checkpointer:
         """
         self.disabled = True
         for name, value in condition_params.items():
-            if name not in self.conditions:
-                print(self.conditions)
-                raise RuntimeError(f'undefined condition {name}')
-            if self.conditions[name](value):
+            if name not in self.conditions or self.conditions[name](value):
                 self.disabled = False
                 return
 
