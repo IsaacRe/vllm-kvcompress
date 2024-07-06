@@ -60,8 +60,9 @@ remove_trailing_blocks and other code used to free evicted KV blocks and reorgan
 
 ### Open Questions
 Re-adjust watermark level
-Add on-demand compression (to avoid preemption/swapping)
+Add on-demand compression (to avoid preemption/swapping) (use max_cache_tokens)
 How to support multi-GPU? (broadcast full block tables across all devices)
 How to support chunked-prefill?
 How to support prefix-caching/beam-search? -- will NOT support
+Support for alibi positional encodings
 Support for CPU/neuron implementations
