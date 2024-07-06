@@ -89,11 +89,11 @@ def test_parity_with_simulated_compression(
         enforce_eager=True,
         enable_kvcompress=True,
         max_cache_tokens=checkpoint_cfg.max_cache_tokens,
-        block_size=1,
+        block_size=16, #1,
         protected_window_size=checkpoint_cfg.protected_window_size,
         metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
-        even_layer_evict=True,
-        control_layers=checkpoint_cfg.control_layers,
+        even_layer_evict=False, #True,
+        control_layers=[], #checkpoint_cfg.control_layers,
         save_checkpoint_dir='./checkpoint',
         kv_head_bias_path='./kv_head_bias.npz',
         kv_head_bias_weight=50,
@@ -129,7 +129,7 @@ def test_parity_with_simulated_compression(
     for i, (reference_completion, ref_token_ids, (_, output, logprobs)) in enumerate(
         zip(random_digit_responses, reference_token_ids, vllm_outputs)
     ):
-        nll = [-d[t].logprob for d, t in zip(logprobs, ref_token_ids) if t in d]
+        nll = [-d[t].logprob for d, t in zip(logprobs, ref_token_ids)]
         ppl = np.exp(sum(nll) / len(nll))
         print(ppl)
         assert ppl < 1.01

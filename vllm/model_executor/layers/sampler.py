@@ -657,6 +657,14 @@ def _get_logprobs(
         if sampling_params.logprobs is not None:
             largest_num_logprobs = max(largest_num_logprobs,
                                        sampling_params.logprobs)
+        if seq_reference_token_ids := (
+            sampling_metadata.seq_data[seq_ids[0]].reference_token_ids
+        ):
+            # Token ids in reference_token_ids are popped from the front
+            # so that the first element always contains the next correct
+            # next-token prediction.
+            batched_logprobs_query_seq_indices.append(sample_idx)
+            batched_logprobs_query_token_indices.append(seq_reference_token_ids[0])
         sample_idx += num_parent_seqs
     assert sample_idx == logprobs.size(0)
 
