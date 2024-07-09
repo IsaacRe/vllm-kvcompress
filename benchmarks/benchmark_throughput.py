@@ -86,6 +86,7 @@ def run_vllm(
     kvc_rate: float = 1.0,
     protected_window_size: int = 50,
     kv_head_bias_path: str = "./kv_head_bias.npz",
+    kvc_interval: int = 1,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -111,6 +112,7 @@ def run_vllm(
         target_compression_rate=kvc_rate,
         protected_window_size=protected_window_size,
         kv_head_bias_path=kv_head_bias_path,
+        compression_interval=kvc_interval,
     )
 
     # Add the requests to the engine.
@@ -241,7 +243,8 @@ def main(args: argparse.Namespace):
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
             args.download_dir, args.max_batch_size, args.enable_kvc,
-            args.kvc_rate, args.protected_window_size, args.kv_head_bias_path)
+            args.kvc_rate, args.protected_window_size, args.kv_head_bias_path,
+            args.kvc_interval)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -416,6 +419,12 @@ if __name__ == "__main__":
         type=str,
         default="./kv_head_bias.npz",
         help="Path to KV head bias for KV cache compression",
+    )
+    parser.add_argument(
+        "--kvc-interval",
+        type=int,
+        default=1,
+        help="Compress KV cache every n iterations",
     )
     args = parser.parse_args()
     if args.tokenizer is None:
