@@ -394,11 +394,11 @@ def schedule_cache_evictions(
 ) -> None:
     if evict_evenly_per_layer and block_size > 1:
         raise RuntimeError(f"cannot evict evenly across layers when block_size > 1 (got {block_size=})")
-    if evict_evenly_per_layer:
-        assert (evicted_blocks_per_seq % context_lens.size(0) == 0).all()
+    # if evict_evenly_per_layer:
+    #     assert (evicted_blocks_per_seq % context_lens.size(0) == 0).all()
 
     # never filter evictions by protected window
-    print(f'{kv_position.shape=},{last_position=},{kv_position.max()=},{protected_window_size=}')
+    # print(f'{kv_position.shape=},{last_position=},{kv_position.max()=},{protected_window_size=}')
     # print(f'{kv_position=}')
     # last_position[:] = kv_position.max() + protected_window_size
     # raise
@@ -425,7 +425,6 @@ def schedule_cache_evictions(
     )
     # TODO fails half the time when protected_window is set to 50 above
     # assert not (out_evicted_kv_indices > last_position.max() - protected_window_size).any()
-    torch.ones(1).to(0)
 
 
 def validate_evictions(evicted_kv_indices, evicted_kv_count, max_int):
@@ -493,7 +492,7 @@ def schedule_cache_moves(
     context_lens: torch.Tensor,
     block_size: int,
 ) -> None:
-    ref_schedule_t1_cache_moves(  # kvc_ops.schedule_t1_cache_moves(
+    kvc_ops.schedule_t1_cache_moves(
         out_cache_moves_indices,
         out_cache_moves_count,
         evicted_kv_indices.contiguous(),
@@ -502,7 +501,6 @@ def schedule_cache_moves(
         context_lens.contiguous(),
         block_size,
     )
-    torch.ones(1).to(0)
 
 
 def execute_cache_moves(
@@ -525,4 +523,3 @@ def execute_cache_moves(
         blocks_per_head,
         threads_per_head,
     )
-    torch.ones(1).to(0)

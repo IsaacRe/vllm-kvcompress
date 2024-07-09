@@ -628,7 +628,6 @@ def _get_logprobs(
     sample_results: List[Tuple[List[int], List[int]]],
 ) -> Tuple[List[Optional[List[Optional[Dict[int, float]]]]], List[List[Dict[
         int, float]]]]:
-    print("IN _GET_LOGPROBS")
     # Prepare query indices
     batched_logprobs_query_seq_indices: List[int] = []
     batched_logprobs_query_token_indices: List[int] = []
@@ -638,7 +637,6 @@ def _get_logprobs(
     next_ref_token_ids = []
     ref_token_seq_indices = []
     seq_id_to_ref_seq_index = {}
-    debug_len = None
     for i, (seq_group, sample_result) in enumerate(
             zip(sampling_metadata.seq_groups, sample_results)):
         seq_ids, sampling_params = seq_group
@@ -662,7 +660,6 @@ def _get_logprobs(
         if sampling_params.logprobs is not None:
             largest_num_logprobs = max(largest_num_logprobs,
                                        sampling_params.logprobs)
-        debug_len = sampling_metadata.seq_data[seq_ids[0]].get_len()
         if seq_reference_token_ids := (
             sampling_metadata.seq_data[seq_ids[0]].reference_token_ids
         ):
@@ -674,7 +671,6 @@ def _get_logprobs(
             next_ref_token_ids.append(next_ref_token_id)
             ref_token_seq_indices.append(sample_idx)
             seq_id_to_ref_seq_index[seq_ids[0]] = reference_sample_idx
-            remaining_ref_tokens = len(seq_reference_token_ids)
             reference_sample_idx += 1
         sample_idx += num_parent_seqs
     assert sample_idx == logprobs.size(0)

@@ -84,6 +84,8 @@ def run_vllm(
     max_batch_size: Optional[int] = None,
     enable_kvc: bool = False,
     kvc_rate: float = 1.0,
+    protected_window_size: int = 50,
+    kv_head_bias_path: str = "./kv_head_bias.npz",
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -107,6 +109,8 @@ def run_vllm(
         max_num_seqs=max_batch_size,
         enable_kvcompress=enable_kvc,
         target_compression_rate=kvc_rate,
+        protected_window_size=protected_window_size,
+        kv_head_bias_path=kv_head_bias_path,
     )
 
     # Add the requests to the engine.
@@ -237,7 +241,7 @@ def main(args: argparse.Namespace):
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
             args.download_dir, args.max_batch_size, args.enable_kvc,
-            args.kvc_rate)
+            args.kvc_rate, args.protected_window_size, args.kv_head_bias_path)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -283,7 +287,7 @@ if __name__ == "__main__":
                         default=None,
                         help="Output length for each request. Overrides the "
                         "output length from the dataset.")
-    parser.add_argument("--model", type=str, default="facebook/opt-125m")
+    parser.add_argument("--model", type=str, default="NousResearch/Llama-2-7b-hf")
     parser.add_argument("--tokenizer", type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',
@@ -400,6 +404,18 @@ if __name__ == "__main__":
         "--enable-kvc",
         action="store_true",
         help="Enable KV cache compression",
+    )
+    parser.add_argument(
+        "--protected-window-size",
+        type=int,
+        default=50,
+        help="Protected window size for KV cache compression",
+    )
+    parser.add_argument(
+        "--kv-head-bias-path",
+        type=str,
+        default="./kv_head_bias.npz",
+        help="Path to KV head bias for KV cache compression",
     )
     args = parser.parse_args()
     if args.tokenizer is None:

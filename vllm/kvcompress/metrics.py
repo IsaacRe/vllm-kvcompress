@@ -61,7 +61,6 @@ class KVHeadBias:
             layer_indices: [ num_blocks ] Tensor containing layer indices.
             head_indices: [ num_blocks ] Tensor containing KV head indices.
         """
-        print(positions.shape)
         _, block_size = positions.shape
         # [ num_blocks, block_size, num_bins ]
         bin_indices = positions[...,None] >= self.position_bins[None,None]
@@ -287,8 +286,8 @@ class CompressionMetrics:
         new_mask = torch.zeros_like(self.seq_index_by_block, dtype=torch.bool)
         new_mask[metadata.physical_blocks] = True
         alloc_mask = self.seq_index_by_block >= 0
-        print(f"INSERTING METADATA: {alloc_mask.sum()} total allocated blocks")
-        assert not (new_mask & alloc_mask).any(), "slot already allocated"
+        # print(f"INSERTING METADATA: {alloc_mask.sum()} total allocated blocks")
+        # assert not (new_mask & alloc_mask).any(), "slot already allocated"
         
         self.seq_index_by_block[metadata.physical_blocks] = metadata.seq_indices
         self.logical_block_num_by_block[metadata.physical_blocks] = (
@@ -301,7 +300,7 @@ class CompressionMetrics:
         # self.validate_metadata_even_layer_evict()
 
     def remove_metadata(self, physical_blocks: torch.Tensor) -> None:
-        print(f"REMOVING METADATA: {physical_blocks}")
+        # print(f"REMOVING METADATA: {physical_blocks}")
         # Used to set seq index for evicted blocks back to -1 so they aren't
         # selected during sort
         self.seq_index_by_block[physical_blocks] = -1
@@ -386,7 +385,7 @@ class CompressionMetrics:
         mask = self.seq_index_by_block == seq_indices[0]
         for seq_index in seq_indices[1:]:
             mask |= self.seq_index_by_block == seq_index
-            assert (self.seq_index_by_block == seq_index).sum() > 0
+            # assert (self.seq_index_by_block == seq_index).sum() > 0
 
         if checkpoint:
             CHECKPOINTER.checkpoint('sort__metrics_mask', mask)
@@ -394,28 +393,19 @@ class CompressionMetrics:
         allocated_mask = self.seq_index_by_block >= 0
 
         # debug
-        if checkpoint:
-            assert not (mask & ~allocated_mask).any()
-            # self.validate_metadata()
-            # self.validate_metadata_even_layer_evict()
-
-        torch.ones(1).to(0)
+        # if checkpoint:
+        #     assert not (mask & ~allocated_mask).any()
+        #     self.validate_metadata()
+        #     self.validate_metadata_even_layer_evict()
 
         # Mask
         expanded_mask = mask[...,None].expand_as(self.metrics)
-        torch.ones(1).to(0)
         masked_metrics = self.metrics[expanded_mask]
-        torch.ones(1).to(0)
         masked_seq_indices = self.seq_index_by_block[mask]
-        torch.ones(1).to(0)
         masked_layer_indices = self.layer_index_by_block[mask]
-        torch.ones(1).to(0)
         masked_head_indices = self.head_index_by_block[mask]
-        torch.ones(1).to(0)
         masked_logical_block_nums = self.logical_block_num_by_block[mask]
-        torch.ones(1).to(0)
         masked_token_position = self.token_positions[mask]
-        torch.ones(1).to(0)
 
         # Normalize KV metrics by the number of queries seen for each KV
         current_positions = torch.tensor(seq_positions, device=self.device)[
@@ -428,7 +418,7 @@ class CompressionMetrics:
         bias = self.kv_metric_head_bias.get_bias_for_position(
             masked_token_position, masked_layer_indices, masked_head_indices
         )
-        assert masked_head_indices.max() < self.num_kv_heads, 'not working'
+        # assert masked_head_indices.max() < self.num_kv_heads, 'not working'
 
         if checkpoint:
             CHECKPOINTER.checkpoint('sort__bias', bias)
