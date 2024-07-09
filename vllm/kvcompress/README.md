@@ -50,6 +50,7 @@ Agreggate temp_metrics after each layer's attention rather than at end
 Is kv metadata getting moved during execute_cache_moves/does it need to be? - Just need to reorder metrics tensor--logical block numbers remain valid since both physical and logical blocks are changed when a KV is moved.
 Need to skip KVs within protected window in schedule_evictions kernel and skip recording of attention between Qs and Ks within buffer length in paged attention kernel.
 Test with multiple input prompts
+Validate kvc paged attention v2 kernel correctness
 
 
 

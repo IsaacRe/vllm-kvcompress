@@ -361,6 +361,7 @@ class FlashAttentionImpl(AttentionImpl):
                     kv_metric_buffer_len,
                     kv_scale,
                     kv_metrics.temp_metrics,
+                    kv_metrics.temp_v2_metrics,
                 )
 
                 CHECKPOINTER.checkpoint('flash_attn__decode_block_tables', block_tables)

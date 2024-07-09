@@ -176,6 +176,7 @@ class CompressionMetrics:
         # Allocated after profiling
         self.metrics = None
         self.temp_metrics = None
+        self.temp_v2_metrics = None
         self.seq_index_by_block = None
         self.layer_index_by_block = None
         self.head_index_by_block = None
@@ -189,6 +190,7 @@ class CompressionMetrics:
         self.num_blocks = None
         self.metrics = None
         self.temp_metrics = None
+        self.temp_v2_metrics = None
         self.seq_index_by_block = None
         self.layer_index_by_block = None
         self.head_index_by_block = None
@@ -222,6 +224,7 @@ class CompressionMetrics:
             dtype=torch.float32,
             device=self.device,
         )
+        self.temp_v2_metrics = torch.empty_like(self.temp_metrics)
         print(f"Allocating block metadata - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
         # Sequence index for every block in cache
         self.seq_index_by_block = torch.ones(
