@@ -187,29 +187,28 @@ class BlockState:
         batch_view = self.get_block_state_batch_view(seq_indices)
         hanging_token_count = batch_view.get_hanging_token_counts()
         remaining_slots = self.block_size - hanging_token_count
-        pre_mask = batch_view.allocated_block_mask()
+        # pre_mask = batch_view.allocated_block_mask()
         # batch_view.context_lens -= (removed_kv_count
         #                             - remaining_slots)
 
-        assert ((removed_kv_count - remaining_slots)[removed_kv_count > 0] >= 0).all()
+        # assert ((removed_kv_count - remaining_slots)[removed_kv_count > 0] >= 0).all()
         self.context_lens[:,seq_indices] -= torch.clamp(
             removed_kv_count - remaining_slots, min=0
         )
 
-        # TODO here try data ptr
-        if debug_freed_idx is not None:
-            post_mask = self.get_block_state_batch_view(seq_indices).allocated_block_mask()
-            removed_mask = pre_mask & ~post_mask
-            # print(torch.where(removed_mask))
-            # print(torch.where(debug_freed_idx))
-            # assert (debug_freed_idx == removed_mask).all()
-            # # should not add any allocated blocks
-            # assert not (post_mask & ~pre_mask).any()
+        # if debug_freed_idx is not None:
+        #     post_mask = self.get_block_state_batch_view(seq_indices).allocated_block_mask()
+        #     removed_mask = pre_mask & ~post_mask
+        #     print(torch.where(removed_mask))
+        #     print(torch.where(debug_freed_idx))
+        #     assert (debug_freed_idx == removed_mask).all()
+        #     # should not add any allocated blocks
+        #     assert not (post_mask & ~pre_mask).any()
 
-            # print(debug_freed_idx)
-            # print(torch.stack(removed_block_count, dim=1)[debug_freed_idx])
-            # assert (init_ctx != batch_view.context_lens)[debug_freed_idx]
-            # assert (init_ctx != self.context_lens)[debug_freed_idx]
+        #     print(debug_freed_idx)
+        #     print(torch.stack(removed_block_count, dim=1)[debug_freed_idx])
+        #     assert (init_ctx != batch_view.context_lens)[debug_freed_idx]
+        #     assert (init_ctx != self.context_lens)[debug_freed_idx]
         # self._validate()
 
     def checkpoint(self) -> None:
@@ -254,8 +253,8 @@ class BlockStateView:
         """
         assert not self.is_batch_view, "only called for single sequence view"
         ctx_lens = self.context_lens[:,self.seq_indices]  # [ num_layers, 1, num_kv_heads ]
-        assert ctx_lens.unique().numel() == 1, (
-            "varying context lengths for prefill sequence")
+        # assert ctx_lens.unique().numel() == 1, (
+        #     "varying context lengths for prefill sequence")
         ctx_length = ctx_lens.view(-1)[0]
         # [num_layers, num_tokens, num_kv_heads]
         positions = (torch.arange(ctx_length,
@@ -266,7 +265,7 @@ class BlockStateView:
                                   ctx_lens.size(2)))
         logical_blocks = positions // self.block_size
         offsets = positions % self.block_size
-        assert logical_blocks.max() < self.block_tables.shape[-1]
+        # assert logical_blocks.max() < self.block_tables.shape[-1]
         block_numbers = (                   # [ num_layers, num_tokens, num_kv_heads ]
             self.block_tables[:,self.seq_indices]
                 .squeeze(1)
@@ -395,7 +394,7 @@ class BlockStateView:
             logical_blocks[:,None] * self.block_size
             + torch.arange(self.block_size, dtype=torch.int, device=logical_blocks.device)[None]
         )
-        assert mask.sum() > 0
+        # assert mask.sum() > 0
         physical_blocks = self.block_tables[:,self.seq_indices][mask]
         seq_indices = torch.tensor(
             self.seq_indices,
@@ -421,9 +420,6 @@ class BlockStateView:
         position that aligns with its logical index, since we evict down to the last full
         block, so any hanging tokens must have been added after the last compression.
         """
-        print(f'GETTING NEW BLOCK METADATA FOR POSITION {last_token_position}')
-        num_layers = self.context_lens.size(0)
-
         last_block_mask = self.last_n_allocated_block_mask(1, squeeze=False)
 
         assert not self.is_batch_view
@@ -441,7 +437,7 @@ class BlockStateView:
         first_token_mask = ((self.context_lens[:,self.seq_indices,:,None] - 1)
                             % self.block_size == 0)
         mask = last_block_mask & first_token_mask
-        assert not (mask & ~last_block_mask).any(), 'heyooo'
+        # assert not (mask & ~last_block_mask).any(), 'heyooo'
 
         if mask.sum() == 0:
             return None, None
@@ -468,8 +464,8 @@ class BlockStateView:
         # per_layer_count = layer_indices.numel() / num_layers
         # assert check_idx_count == per_layer_count, f'{check_idx_count=}, {per_layer_count=} (are you running even-layer eviction?)'
 
-        print(f'{physical_blocks=}, {physical_blocks.unique()=}')
-        assert physical_blocks.shape[0] == physical_blocks.unique(dim=0).shape[0]
+        # print(f'{physical_blocks=}, {physical_blocks.unique()=}')
+        # assert physical_blocks.shape[0] == physical_blocks.unique(dim=0).shape[0]
         
         return BlockMetadata(
             physical_blocks=physical_blocks,

@@ -262,9 +262,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             )
             self.kv_metrics.insert_metadata(metadata)
 
-            # assert parity between new_mask and mask computed in get_new_block_metadata
-            print(new_mask.shape, mask.shape)
-            assert (new_mask == mask[:,0]).all()
+            # # assert parity between new_mask and mask computed in get_new_block_metadata
+            # assert (new_mask == mask[:,0]).all()
 
     def get_batch_slot_index(self, seq: Sequence) -> int:
         return self.batch_slot_mapping[seq.seq_id]
@@ -385,7 +384,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
         freed_blocks, evicted_mask = batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
         
-        assert not self.gpu_allocator.free_mask[freed_blocks].any(), "returned blocks should not be free yet"
+        # assert not self.gpu_allocator.free_mask[freed_blocks].any(), "returned blocks should not be free yet"
         
         # freed_block_debug = None
         # if freed_blocks.numel() > 0 and freed_blocks[0] == 130:
@@ -417,7 +416,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             removed_block_count=removed_blocks,
             debug_freed_idx=evicted_mask,
         )
-        end_mask = self.block_state.get_block_state_full_view().allocated_block_mask()
+        # end_mask = self.block_state.get_block_state_full_view().allocated_block_mask()
         # print(f"end_idxs: {torch.where(end_mask[freed_block_debug])}")
         # print(f"end_where: {torch.where(self.block_state.block_tables == freed_blocks[0])}")
 

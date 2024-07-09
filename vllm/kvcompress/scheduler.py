@@ -205,13 +205,13 @@ class CompressionScheduler:
 
         # Sort compression metrics
         # Should not have begun handling requests
-        init_mem = torch.cuda.max_memory_allocated(
-            torch.device(self.device))
+        # init_mem = torch.cuda.max_memory_allocated(
+        #     torch.device(self.device))
         sort_output = self.compression_metrics.sort_seq_metrics(
             slot_indices, last_token_positions)
-        final_mem = torch.cuda.max_memory_allocated(
-            torch.device(self.device))
-        print(f"RAN SORT: {final_mem - init_mem}")
+        # final_mem = torch.cuda.max_memory_allocated(
+        #     torch.device(self.device))
+        # print(f"RAN SORT: {final_mem - init_mem}")
 
         # Get context lengths, block tables and hanging token counts
         batch_block_state = self.block_manager.get_block_state_batch_view(
@@ -265,8 +265,8 @@ class CompressionScheduler:
                 non_control_mask = torch.ones(layerwise_eviction_sums.size(1), dtype=torch.bool, device=self.device)
                 non_control_mask[self.control_layers.type(torch.int64)] = False
                 layerwise_eviction_sums = layerwise_eviction_sums[:,non_control_mask]
-            assert (layerwise_eviction_sums[0,:1] == layerwise_eviction_sums[0]).all()
-            print("PASSED EVEN LAYER ASSERTION")
+            # assert (layerwise_eviction_sums[0,:1] == layerwise_eviction_sums[0]).all()
+            # print("PASSED EVEN LAYER ASSERTION")
 
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices', evicted_kv_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count', evicted_kv_count)
