@@ -287,6 +287,7 @@ class KVCAttention(PagedAttention):
         kv_metric_buffer_len: int,
         kv_scale: float,
         kv_metric_out: torch.Tensor,
+        tmp_kv_metric_out: torch.Tensor,
     ) -> torch.Tensor:
         output = torch.empty_like(query)
 
@@ -344,6 +345,7 @@ class KVCAttention(PagedAttention):
                 exp_sums,
                 max_logits,
                 tmp_output,
+                tmp_kv_metric_out,
                 query,
                 key_cache,
                 value_cache,

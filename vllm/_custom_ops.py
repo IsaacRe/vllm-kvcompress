@@ -109,9 +109,11 @@ def paged_attention_kvc_v1(
 
 def paged_attention_kvc_v2(
     out: torch.Tensor,
+    kv_metric_out: torch.Tensor,
     exp_sum: torch.Tensor,
     max_logits: torch.Tensor,
     tmp_out: torch.Tensor,
+    tmp_kv_metric_out: torch.Tensor,
     query: torch.Tensor,
     key_cache: torch.Tensor,
     value_cache: torch.Tensor,
@@ -128,7 +130,9 @@ def paged_attention_kvc_v2(
     kv_metric_buffer_len: int,
     kv_scale: float,
 ) -> None:
-    vllm_ops.kvcompress_paged_attention_v2(out, exp_sum, max_logits, tmp_out,
+    vllm_ops.kvcompress_paged_attention_v2(out, kv_metric_out, exp_sum,
+                                           max_logits, tmp_out,
+                                           tmp_kv_metric_out,
                                            query, key_cache, value_cache,
                                            num_kv_heads, scale, block_tables,
                                            context_lens, kv_position,
