@@ -618,14 +618,12 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
-        with BENCHMARKER.time("schedule"):
-            seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
+        seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
         if not scheduler_outputs.is_empty():
             if self.kvcompress_config:
                 # Temp metrics must be cleared before each forward pass to ensure correct
                 # metric aggregation afterward
-                with BENCHMARKER.time("clear_temp_metrics"):
-                    self.kvcompress_state.kv_metrics.clear_temp_metrics()
+                self.kvcompress_state.kv_metrics.clear_temp_metrics()
             if cache_moves:
                 with BENCHMARKER.time("execute_cache_moves"):
                     self.model_executor.execute_cache_moves(cache_moves,
@@ -641,8 +639,7 @@ class LLMEngine:
             if self.kvcompress_config:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.
-                with BENCHMARKER.time("aggregate_decode_metrics"):
-                    self.kvcompress_state.kv_metrics.aggregate_decode()
+                self.kvcompress_state.kv_metrics.aggregate_decode()
         else:
             output = []
 
