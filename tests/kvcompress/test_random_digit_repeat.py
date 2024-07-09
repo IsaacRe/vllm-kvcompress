@@ -75,7 +75,7 @@ def test_parity_with_simulated_compression(
     checkpoint_cfg = RandomDigitCheckpointConfig(
         model_name=model,
         max_cache_tokens=150,
-        protected_window_size=100,
+        protected_window_size=50,
         metric_collection_buffer_size=10,
         num_digits=num_digits,
         control_layers=[0, 1],
@@ -88,7 +88,8 @@ def test_parity_with_simulated_compression(
         dtype=dtype,
         enforce_eager=True,
         enable_kvcompress=True,
-        max_cache_tokens=checkpoint_cfg.max_cache_tokens,
+        #max_cache_tokens=checkpoint_cfg.max_cache_tokens,
+        target_compression_rate=0.1,
         block_size=16, #1,
         protected_window_size=checkpoint_cfg.protected_window_size,
         metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
@@ -118,7 +119,7 @@ def test_parity_with_simulated_compression(
     checkpointer.checkpoint('input_token_ids', torch.tensor(tokenizer.encode(random_digit_prompts[0])))
     checkpointer.checkpoint('reference_token_ids', torch.tensor(reference_token_ids[0]))
 
-    topk_ll = 5
+    topk_ll = 0
     vllm_outputs = vllm_model.generate_greedy_logprobs(random_digit_prompts,
                                                 max_tokens,
                                                 topk_ll,
@@ -129,6 +130,9 @@ def test_parity_with_simulated_compression(
     for i, (reference_completion, ref_token_ids, (_, output, logprobs)) in enumerate(
         zip(random_digit_responses, reference_token_ids, vllm_outputs)
     ):
+        for i, (d, t) in enumerate(zip(logprobs, ref_token_ids)):
+            if t not in d:
+                raise Exception(f"{i}/{len(logprobs)} fail ({t} not in {d})")
         nll = [-d[t].logprob for d, t in zip(logprobs, ref_token_ids)]
         ppl = np.exp(sum(nll) / len(nll))
         print(ppl)

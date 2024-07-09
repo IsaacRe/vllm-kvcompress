@@ -628,12 +628,17 @@ def _get_logprobs(
     sample_results: List[Tuple[List[int], List[int]]],
 ) -> Tuple[List[Optional[List[Optional[Dict[int, float]]]]], List[List[Dict[
         int, float]]]]:
+    print("IN _GET_LOGPROBS")
     # Prepare query indices
     batched_logprobs_query_seq_indices: List[int] = []
     batched_logprobs_query_token_indices: List[int] = []
     # at least get one logprob for each token
     largest_num_logprobs = 1
-    sample_idx = 0
+    sample_idx = reference_sample_idx = 0
+    next_ref_token_ids = []
+    ref_token_seq_indices = []
+    seq_id_to_ref_seq_index = {}
+    debug_len = None
     for i, (seq_group, sample_result) in enumerate(
             zip(sampling_metadata.seq_groups, sample_results)):
         seq_ids, sampling_params = seq_group
@@ -657,14 +662,20 @@ def _get_logprobs(
         if sampling_params.logprobs is not None:
             largest_num_logprobs = max(largest_num_logprobs,
                                        sampling_params.logprobs)
+        debug_len = sampling_metadata.seq_data[seq_ids[0]].get_len()
         if seq_reference_token_ids := (
             sampling_metadata.seq_data[seq_ids[0]].reference_token_ids
         ):
             # Token ids in reference_token_ids are popped from the front
             # so that the first element always contains the next correct
-            # next-token prediction.
-            batched_logprobs_query_seq_indices.append(sample_idx)
-            batched_logprobs_query_token_indices.append(seq_reference_token_ids[0])
+            # next-token prediction. When passing reference tokens there
+            # should only be one sequence per sequence group.
+            next_ref_token_id = seq_reference_token_ids[1]
+            next_ref_token_ids.append(next_ref_token_id)
+            ref_token_seq_indices.append(sample_idx)
+            seq_id_to_ref_seq_index[seq_ids[0]] = reference_sample_idx
+            remaining_ref_tokens = len(seq_reference_token_ids)
+            reference_sample_idx += 1
         sample_idx += num_parent_seqs
     assert sample_idx == logprobs.size(0)
 
@@ -677,6 +688,12 @@ def _get_logprobs(
     batched_logprobs_query_result = logprobs[[
         batched_logprobs_query_seq_indices_gpu,
         batched_logprobs_query_token_indices_gpu
+    ]]
+
+    # Batched query for logprobs of reference token
+    batched_reference_logprobs_result = logprobs[[
+        torch.tensor(ref_token_seq_indices, device=logprobs.device, dtype=torch.long),
+        torch.tensor(next_ref_token_ids, device=logprobs.device, dtype=torch.long)
     ]]
 
     batched_ranks_query_result = _get_ranks(
@@ -695,6 +712,7 @@ def _get_logprobs(
 
     batched_logprobs_query_result = batched_logprobs_query_result.cpu()
     batched_ranks_query_result = batched_ranks_query_result.cpu()
+    batched_reference_logprobs_result = batched_reference_logprobs_result.cpu()
 
     # Gather results
     result_prompt_logprobs: List[Optional[PromptLogprobs]] = []
@@ -742,12 +760,25 @@ def _get_logprobs(
         if num_logprobs is None:
             num_logprobs = 0
         group_sample_logprobs: SampleLogprobs = []
+        reference_logprobs_dict = None
+        if seq_ids[0] in seq_id_to_ref_seq_index:
+            seq_index = seq_id_to_ref_seq_index[seq_ids[0]]
+            # At the moment rank return is not supported for reference tokens
+            reference_logprobs_dict = {
+                next_ref_token_ids[seq_index]:
+                (batched_reference_logprobs_result[seq_index].item(), None)
+            }
         for next_token_id, parent_id in zip(next_token_ids, parent_ids):
             sample_logprobs_dict = {
                 next_token_id:
                 (batched_logprobs_query_result[query_result_idx].item(),
                  batched_ranks_query_result[query_result_idx].item())
             }
+            if reference_logprobs_dict is not None:
+                sample_logprobs_dict[next_ref_token_ids[seq_index]] = (
+                    sample_logprobs_dict.get(next_ref_token_ids[seq_index],
+                                             reference_logprobs_dict)
+                )
             query_result_idx += 1
             if num_logprobs >= 0:
                 sample_logprobs_dict.update(
