@@ -51,6 +51,7 @@ Is kv metadata getting moved during execute_cache_moves/does it need to be? - Ju
 Need to skip KVs within protected window in schedule_evictions kernel and skip recording of attention between Qs and Ks within buffer length in paged attention kernel.
 Test with multiple input prompts
 Validate kvc paged attention v2 kernel correctness
+Validate GQA correctness
 
 
 
