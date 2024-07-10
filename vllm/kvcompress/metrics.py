@@ -386,14 +386,18 @@ class CompressionMetrics:
 
         # Build metrics mask
         mask = self.seq_index_by_block == seq_indices[0]
-        for seq_index in seq_indices[1:]:
+        all_seq_positions = torch.empty((max(seq_indices) + 1,),
+                                        dtype=torch.int,
+                                        device=self.device)
+        for seq_index, seq_pos in zip(seq_indices[1:], seq_positions[1:]):
             mask |= self.seq_index_by_block == seq_index
             # assert (self.seq_index_by_block == seq_index).sum() > 0
+            all_seq_positions[seq_index] = seq_pos
 
         if checkpoint:
             CHECKPOINTER.checkpoint('sort__metrics_mask', mask)
 
-        allocated_mask = self.seq_index_by_block >= 0
+        # allocated_mask = self.seq_index_by_block >= 0
 
         # debug
         # if checkpoint:
@@ -411,7 +415,7 @@ class CompressionMetrics:
         masked_token_position = self.token_positions[mask]
 
         # Normalize KV metrics by the number of queries seen for each KV
-        current_positions = torch.tensor(seq_positions, device=self.device)[
+        current_positions = all_seq_positions[
             masked_seq_indices.type(torch.int64)
         ]
         masked_query_count = current_positions[:,None] - masked_token_position
