@@ -380,9 +380,12 @@ def ref_schedule_cache_evictions(
 
 def schedule_cache_evictions(
     out_evicted_kv_indices: torch.Tensor,
+    out_evicted_logical_indices: torch.Tensor,
     out_evicted_kv_count: torch.Tensor,
+    out_evicted_kv_offsets: torch.Tensor,
     sorted_indices: torch.Tensor,
     seq_block_offsets: torch.Tensor,
+    seq_evicted_kv_offsets: torch.Tensor,
     layer_by_block: torch.Tensor,
     head_by_block: torch.Tensor,
     logical_block_num_by_block: torch.Tensor,
@@ -393,8 +396,11 @@ def schedule_cache_evictions(
     last_position: torch.Tensor,
     block_size: int,
     protected_window_size: int,
+    max_evicted_kv: int,
+    null_eviction_index: int,
+    truncate: bool,
     evict_evenly_per_layer: bool = False,
-    control_layers: Optional[torch.Tensor] = None,
+    control_layers: Optional[torch.Tensor] = None,    
 ) -> None:
     if evict_evenly_per_layer and block_size > 1:
         raise RuntimeError(f"cannot evict evenly across layers when block_size > 1 (got {block_size=})")
@@ -411,9 +417,12 @@ def schedule_cache_evictions(
     out_evicted_kv_indices.zero_()
     kvc_ops.schedule_cache_evictions(
         out_evicted_kv_indices,
+        out_evicted_logical_indices,
         out_evicted_kv_count,
+        out_evicted_kv_offsets,
         sorted_indices.type(torch.int).contiguous(),
         seq_block_offsets.type(torch.int).contiguous(),
+        seq_evicted_kv_offsets.type(torch.int).contiguous(),
         layer_by_block.contiguous(),
         head_by_block.contiguous(),
         logical_block_num_by_block.contiguous(),
@@ -426,6 +435,9 @@ def schedule_cache_evictions(
         protected_window_size,
         evict_evenly_per_layer,
         control_layers,
+        max_evicted_kv,
+        null_eviction_index,
+        truncate,
     )
     # TODO fails half the time when protected_window is set to 50 above
     # assert not (out_evicted_kv_indices > last_position.max() - protected_window_size).any()
@@ -490,8 +502,9 @@ def ref_schedule_t1_cache_moves(
 def schedule_cache_moves(
     out_cache_moves_indices: torch.Tensor,
     out_cache_moves_count: torch.Tensor,
-    evicted_kv_indices: torch.Tensor,
+    evicted_logical_indices: torch.Tensor,
     evicted_kv_count: torch.Tensor,
+    evicted_kv_offsets: torch.Tensor,
     block_tables: torch.Tensor,
     context_lens: torch.Tensor,
     block_size: int,
@@ -499,8 +512,9 @@ def schedule_cache_moves(
     kvc_ops.schedule_t1_cache_moves(
         out_cache_moves_indices,
         out_cache_moves_count,
-        evicted_kv_indices.contiguous(),
+        evicted_logical_indices.contiguous(),
         evicted_kv_count.contiguous(),
+        evicted_kv_offsets.contiguous(),
         block_tables.contiguous(),
         context_lens.contiguous(),
         block_size,
@@ -514,6 +528,7 @@ def execute_cache_moves(
     kv_position: torch.Tensor,
     cache_moves_indices: torch.Tensor,
     cache_moves_count: torch.Tensor,
+    evicted_kv_offsets: torch.Tensor,
     blocks_per_head: int,
     threads_per_head: int,
 ) -> None:
@@ -524,6 +539,7 @@ def execute_cache_moves(
         kv_position,
         cache_moves_indices,
         cache_moves_count,
+        evicted_kv_offsets,
         blocks_per_head,
         threads_per_head,
     )

@@ -123,6 +123,7 @@ class CacheEngine:
             kv_position=kv_metrics.token_positions,
             cache_moves_indices=cache_moves.index,
             cache_moves_count=cache_moves.count,
+            evicted_kv_offsets=cache_moves.offsets,
             blocks_per_head=1,
             threads_per_head=1,
         )
