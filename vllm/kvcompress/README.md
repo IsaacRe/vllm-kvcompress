@@ -52,7 +52,8 @@ Need to skip KVs within protected window in schedule_evictions kernel and skip r
 Test with multiple input prompts
 Validate kvc paged attention v2 kernel correctness
 Validate GQA correctness
-
+Use evicted_kv_count in _schedule_compression()
+Use stable=True during sort()
 
 
 ### Potential Problem Code

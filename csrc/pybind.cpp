@@ -127,6 +127,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &schedule_cache_evictions,
     "Schedule next cycle of KV evictions");
   kvc_ops.def(
+    "truncate_cache_evictions",
+    &truncate_cache_evictions,
+    "Truncate set of KV evictions per head to be evenly divisible by block size");
+  kvc_ops.def(
     "schedule_t1_cache_moves",
     &schedule_t1_cache_moves,
     "Convert KV evictions into KV moves for single-tiered cache");

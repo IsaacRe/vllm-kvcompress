@@ -26,6 +26,7 @@ class CacheMoves:
 
     index: torch.Tensor
     count: torch.Tensor
+    offsets: torch.Tensor
 
 
 @dataclass
@@ -149,7 +150,6 @@ class CompressionScheduler:
         total_kv_count = 0
         seqs_to_compress: List[Sequence] = []
         evicted_blocks_per_seq = []
-        max_evicted_tokens = 0
         for _, _, seq in sorted(
             [(self._iters_since_compression[s.seq_id], s.seq_id, s) for s in seqs],
             reverse=True,
@@ -163,8 +163,6 @@ class CompressionScheduler:
             total_kv_count += self.block_manager.get_sequence_kv_count(seq)
             if total_kv_count > self.config.max_kv_per_compression:
                 break
-
-            max_evicted_tokens = max(max_evicted_tokens, evicted_kv_count)
 
             seqs_to_compress.append(seq)
             evicted_blocks_per_seq.append(evicted_block_count)
@@ -231,20 +229,25 @@ class CompressionScheduler:
 
         # Schedule evictions
         evicted_kv_indices = torch.empty(
-            (*b_l_h, max_evicted_tokens),
+            (self.config.max_kv_per_compression,),
             dtype=torch.int,
             device=self.device,
         )
+        evicted_logical_indices = torch.empty_like(evicted_kv_indices)
         evicted_kv_count = torch.empty(
             b_l_h,
             dtype=torch.int,
             device=self.device,
         )
+        evicted_kv_offsets = torch.empty_like(evicted_kv_count)
         schedule_cache_evictions(
             evicted_kv_indices,
+            evicted_logical_indices,
             evicted_kv_count,
+            evicted_kv_offsets,
             sort_output.sorted_indices,
             sort_output.seq_block_offsets,
+            sort_output.seq_block_offsets * self.block_size,
             sort_output.layer_by_block,
             sort_output.head_by_block,
             sort_output.logical_block_num_by_block,
@@ -255,10 +258,14 @@ class CompressionScheduler:
             last_token_positions,
             self.block_size,
             self.config.protected_window_size,
+            self.config.max_kv_per_compression,
+            MAX_INT,
+            True,
             self.config.even_layer_evict,
             self.control_layers,
         )
         if self.config.even_layer_evict:
+            raise NotImplementedError("need to implement for flat evicted_kv_indices")
             # debug
             layerwise_eviction_sums = evicted_kv_count.sum(dim=-1)
             if self.control_layers is not None:
@@ -271,20 +278,22 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices', evicted_kv_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count', evicted_kv_count)
 
-        # Truncate eviction counts to last full evicted block
-        no_eviction = evicted_kv_count < hanging_token_count
-        evicted_kv_count = torch.where(
-            no_eviction,
-            torch.zeros_like(evicted_kv_count),
-            evicted_kv_count - (evicted_kv_count - hanging_token_count)
-            % self.block_size,
-        )
-        evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
-        non_evicted_mask = (
-            torch.arange(evicted_kv_indices.shape[-1])[None,None,None]
-                 .to(evicted_kv_count.device)
-            >= evicted_kv_count[...,None]
-        )
+        # # Truncate eviction counts to last full evicted block
+        # no_eviction = evicted_kv_count < hanging_token_count
+        # evicted_kv_count = torch.where(
+        #     no_eviction,
+        #     torch.zeros_like(evicted_kv_count),
+        #     evicted_kv_count - (evicted_kv_count - hanging_token_count)
+        #     % self.block_size,
+        # )
+        # evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
+        # non_evicted_mask = (
+        #     torch.arange(evicted_kv_indices.shape[-1])[None,None,None]
+        #          .to(evicted_kv_count.device)
+        #     >= evicted_kv_count[...,None]
+        # )
+        evicted_block_count = evicted_kv_count // self.block_size
+        assert (evicted_block_count * self.block_size == evicted_kv_count).all()
 
         # print("TOTAL EVICTED KVS:")
         # for i, seq in enumerate(seqs_to_compress):
@@ -306,18 +315,23 @@ class CompressionScheduler:
         #     print(f"{tot_evicted}/{tot_kv}={tot_evicted/tot_kv * 100}% now evicted")
         #     print(f"{tot_evicted_block * self.block_size}/{tot_kv}={tot_evicted_block * self.block_size / tot_kv * 100}% now evicted (block)")
 
-        # Set non-evicted slots to inf so that they are last after sort
-        evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
+        # # Set non-evicted slots to inf so that they are last after sort
+        # evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
 
         # Sort evicted indices
-        evicted_kv_indices = evicted_kv_indices.sort(dim=-1).values
+        logical_index_sort = evicted_logical_indices.type(torch.long).sort(dim=0).indices
+
+        seq_layer_head_logical_index_sort = (
+            evicted_kv_indices[logical_index_sort].sort(dim=0).indices
+        )
+        evicted_logical_indices = evicted_logical_indices[seq_layer_head_logical_index_sort]
 
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices_sorted', evicted_kv_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count_truncated', evicted_kv_count)
 
         # Schedule cache moves
         cache_moves_indices = torch.empty(
-            (*b_l_h, max_evicted_tokens, 2),
+            (self.config.max_kv_per_compression // 2, 2),
             dtype=torch.int64,
             device=self.device,
         )
@@ -329,13 +343,14 @@ class CompressionScheduler:
         schedule_cache_moves(
             cache_moves_indices,
             cache_moves_count,
-            evicted_kv_indices,
+            evicted_logical_indices,
             evicted_kv_count,
+            evicted_kv_offsets,
             block_tables,
             context_lens,
             self.block_size,
         )
-        cache_moves = CacheMoves(cache_moves_indices, cache_moves_count)
+        cache_moves = CacheMoves(cache_moves_indices, cache_moves_count, evicted_kv_offsets)
         
         freed_block_count = {
             seq.seq_id: freed_blocks
