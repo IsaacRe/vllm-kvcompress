@@ -54,6 +54,7 @@ Validate kvc paged attention v2 kernel correctness
 Validate GQA correctness
 Use evicted_kv_count in _schedule_compression()
 Use stable=True during sort()
+Get eviction test passing for even_layer_evict and protected_window > 0
 
 
 ### Potential Problem Code
