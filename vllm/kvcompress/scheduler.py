@@ -67,6 +67,20 @@ class CompressionScheduler:
         self.total_evicted_kvs = {}
         self.total_evicted_blocks = {}
 
+        # Allocate workspace for compression
+        self.evicted_head_indices = torch.empty(
+            (self.config.max_kv_per_compression,),
+            dtype=torch.int,
+            device=self.device,
+        )
+        self.evicted_logical_indices = torch.empty_like(
+            self.evicted_head_indices)
+        self.cache_move_indices = torch.empty(
+            (self.config.max_kv_per_compression, 2),
+            dtype=torch.int,
+            device=self.device,
+        )
+
     def _update_sequences(self, seqs: List[Sequence]) -> None:
         all_seq_ids = set([seq.seq_id for seq in seqs])
         for seq_id in list(self._iters_since_compression):
@@ -228,26 +242,25 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__hanging_token_count', hanging_token_count)
 
         # Schedule evictions
-        evicted_kv_indices = torch.empty(
-            (self.config.max_kv_per_compression,),
-            dtype=torch.int,
-            device=self.device,
-        )
-        evicted_logical_indices = torch.empty_like(evicted_kv_indices)
         evicted_kv_count = torch.empty(
             b_l_h,
             dtype=torch.int,
             device=self.device,
         )
-        evicted_kv_offsets = torch.empty_like(evicted_kv_count)
+        evicted_kv_offsets = (
+            ((context_lens.transpose(0, 1) + self.block_size - 1) // self.block_size)
+            * self.block_size
+        ).flatten().cumsum(dim=0)
+        evicted_kv_offsets = torch.cat(
+            [torch.zeros_like(evicted_kv_offsets[:1]), evicted_kv_offsets[:-1]]
+        ).reshape(*context_lens.transpose(0, 1).shape).type(torch.int)
         schedule_cache_evictions(
-            evicted_kv_indices,
-            evicted_logical_indices,
+            self.evicted_head_indices,
+            self.evicted_logical_indices,
             evicted_kv_count,
             evicted_kv_offsets,
             sort_output.sorted_indices,
             sort_output.seq_block_offsets,
-            sort_output.seq_block_offsets * self.block_size,
             sort_output.layer_by_block,
             sort_output.head_by_block,
             sort_output.logical_block_num_by_block,
@@ -275,7 +288,8 @@ class CompressionScheduler:
             # assert (layerwise_eviction_sums[0,:1] == layerwise_eviction_sums[0]).all()
             # print("PASSED EVEN LAYER ASSERTION")
 
-        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices', evicted_kv_indices)
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_head_indices', self.evicted_head_indices)
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_logical_indices', self.evicted_logical_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count', evicted_kv_count)
 
         # # Truncate eviction counts to last full evicted block
@@ -292,8 +306,8 @@ class CompressionScheduler:
         #          .to(evicted_kv_count.device)
         #     >= evicted_kv_count[...,None]
         # )
-        evicted_block_count = evicted_kv_count // self.block_size
-        assert (evicted_block_count * self.block_size == evicted_kv_count).all()
+        evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
+        # assert (evicted_block_count * self.block_size == evicted_kv_count).all()
 
         # print("TOTAL EVICTED KVS:")
         # for i, seq in enumerate(seqs_to_compress):
@@ -319,45 +333,39 @@ class CompressionScheduler:
         # evicted_kv_indices[non_evicted_mask.expand_as(evicted_kv_indices)] = MAX_INT
 
         # Sort evicted indices
-        logical_index_sort = evicted_logical_indices.type(torch.long).sort(dim=0).indices
+        logical_index_sort = self.evicted_logical_indices.sort(dim=0).indices
 
-        seq_layer_head_logical_index_sort = (
-            evicted_kv_indices[logical_index_sort].sort(dim=0).indices
-        )
-        evicted_logical_indices = evicted_logical_indices[seq_layer_head_logical_index_sort]
+        seq_layer_head_logical_index_sort = logical_index_sort[
+            self.evicted_head_indices[logical_index_sort].sort(dim=0, stable=True).indices
+        ]
+        self.evicted_logical_indices[:] = self.evicted_logical_indices[seq_layer_head_logical_index_sort]
 
-        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_indices_sorted', evicted_kv_indices)
-        CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count_truncated', evicted_kv_count)
+        CHECKPOINTER.checkpoint('schedule_compression__evicted_logical_indices_sorted', self.evicted_logical_indices)
 
         # Schedule cache moves
-        cache_moves_indices = torch.empty(
-            (self.config.max_kv_per_compression // 2, 2),
-            dtype=torch.int64,
-            device=self.device,
-        )
         cache_moves_count = torch.empty(
             b_l_h,
             dtype=torch.int64,
             device=self.device,
         )
         schedule_cache_moves(
-            cache_moves_indices,
+            self.cache_move_indices,
             cache_moves_count,
-            evicted_logical_indices,
+            self.evicted_logical_indices,
             evicted_kv_count,
             evicted_kv_offsets,
             block_tables,
             context_lens,
             self.block_size,
         )
-        cache_moves = CacheMoves(cache_moves_indices, cache_moves_count, evicted_kv_offsets)
-        
+        cache_moves = CacheMoves(self.cache_move_indices, cache_moves_count, evicted_kv_offsets)
+
         freed_block_count = {
             seq.seq_id: freed_blocks
             for seq, freed_blocks in zip(seqs_to_compress, evicted_block_count)
         }
 
-        CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', cache_moves_indices)
+        CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', self.cache_move_indices)
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)
         CHECKPOINTER.checkpoint('schedule_compression__freed_block_count', evicted_block_count)
 
