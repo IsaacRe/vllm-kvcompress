@@ -372,8 +372,7 @@ class CompressionScheduler:
         self._increment_iters_since_compression()
 
         # Free blocks that were removed by compression
-        with BENCHMARKER.time("free_compressed_blocks"):
-            freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)
+        freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)
 
         self.compression_metrics.remove_metadata(freed_blocks)
 

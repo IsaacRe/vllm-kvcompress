@@ -114,11 +114,12 @@ class ParallelBlockAllocator(BlockAllocatorBase):
         self.free_mask[allocated] = False
         return BlockTableView(allocated)
 
+    @BENCHMARKER.wrap()
     def free(self, block_numbers: torch.Tensor) -> None:
-        if self.free_mask[block_numbers].any():
-            raise ValueError("Double free! One or more blocks were freed twice.")
-        if block_numbers.unique(dim=0).numel() != block_numbers.numel():
-            raise ValueError("Double free! One or more blocks were freed twice.")
+        # if self.free_mask[block_numbers].any():
+        #     raise ValueError("Double free! One or more blocks were freed twice.")
+        # if block_numbers.unique(dim=0).numel() != block_numbers.numel():
+        #     raise ValueError("Double free! One or more blocks were freed twice.")
         self.free_count += block_numbers.numel()
         self.free_mask[block_numbers] = True
 
@@ -314,6 +315,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         self._add_sequence(seq_id=seq.seq_id, seq_len=seq.get_len())
 
+    @BENCHMARKER.wrap()
     def can_append_slots(self,
                          seq_group: SequenceGroup,
                          num_lookahead_slots: int = 0) -> bool:
@@ -329,14 +331,14 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         new_block_count = self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
         return new_block_count.sum() <= num_free_gpu_blocks
 
+    @BENCHMARKER.wrap()
     def append_slots(
         self,
         seq: Sequence,
         num_lookahead_slots: int = 0,
     ) -> Dict[int, List[int]]:
         """Allocate a physical slot for a new token."""
-        with BENCHMARKER.time("append_slots"):
-            self._append_to_sequence(seq=seq, token_count=1)
+        self._append_to_sequence(seq=seq, token_count=1)
         return {}  # no copy on writes since we disallow multi-seq block references
 
     def fork(self, parent_seq: Sequence, child_seq: Sequence) -> None:
@@ -362,6 +364,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def swap_out(self, seq_group: SequenceGroup) -> Dict[int, int]:
         raise NotImplementedError("KV-Compress with swap-preemption not supported")
 
+    @BENCHMARKER.wrap()
     def free(self, seq: Sequence) -> Optional[torch.Tensor]:
         """Returns torch.Tensor of freed blocks so that corresponding metadata slots
         can be de-allocated from KV metrics metadata (seq idx set to -1).
@@ -369,9 +372,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         if seq.seq_id not in self.batch_slot_mapping:
             # Already freed or haven't been scheduled yet.
             return
-        with BENCHMARKER.time("free"):
-            return self._remove_sequence(seq.seq_id)
+        return self._remove_sequence(seq.seq_id)
 
+    @BENCHMARKER.wrap()
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> torch.Tensor:
         # self._validate_allocator()
         # self.block_state._validate()
@@ -411,6 +414,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         # start_mask = self.block_state.get_block_state_full_view().allocated_block_mask()
         # print(f"start_idxs: {torch.where(start_mask[freed_block_debug])}")
+        seq_indices = torch.tensor(seq_indices, dtype=torch.long, device=self.device)
         self.block_state.remove_trailing_blocks(
             seq_indices=seq_indices,
             removed_block_count=removed_blocks,

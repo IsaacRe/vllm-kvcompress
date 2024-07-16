@@ -6,6 +6,7 @@ import numpy as np
 
 from vllm.utils import Device
 from vllm.debug import CHECKPOINTER
+from vllm.benchmark import BENCHMARKER
 
 
 class BlockMetadata(NamedTuple):
@@ -83,6 +84,7 @@ class BlockState:
         self.block_tables = None
         self.t2_block_tables = None
         self.context_lens = None
+        self.block_table_indices = None
         self._initialize()
 
     def _initialize(self):
@@ -115,6 +117,9 @@ class BlockState:
                  self.max_num_blocks_per_head),
                 dtype=torch.int,
                 device="cuda:0")
+        self.block_table_indices = (
+            torch.arange(self.block_tables.size(-1))[None,None,None].to("cuda:0")
+        )
             
     def _validate(self) -> None:
         seq_ids = range(self.context_lens.size(1))
@@ -150,6 +155,7 @@ class BlockState:
             t2_block_tables=self.t2_block_tables,
             context_lens=self.context_lens,
             is_batch_view=True,
+            block_table_indices=self.block_table_indices,
         )
 
     def get_block_state_seq_view(self, seq_index: int) -> "BlockStateView":
@@ -170,6 +176,7 @@ class BlockState:
     ) -> torch.Tensor:
         return (self.context_lens[:,seq_indices,:] - 1) // self.block_size
     
+    @BENCHMARKER.wrap()
     def remove_trailing_blocks(
         self,
         seq_indices: List[int],
@@ -229,6 +236,7 @@ class BlockStateView:
         t2_block_tables: torch.Tensor,
         context_lens: torch.Tensor,
         is_batch_view: bool,
+        block_table_indices: Optional[torch.Tensor] = None,
     ) -> None:
         self.seq_indices = seq_indices
         self.is_batch_view = is_batch_view
@@ -240,6 +248,7 @@ class BlockStateView:
         self.block_table_indices = (
             torch.arange(block_tables.size(-1))[None,None,None]
                  .to(block_tables.device)
+            if block_table_indices is None else block_table_indices
         )
 
     def _squeeze_out(self, out: torch.Tensor) -> torch.Tensor:
@@ -298,6 +307,7 @@ class BlockStateView:
     def get_block_tables(self) -> torch.Tensor:
         return self.block_tables[:,self.seq_indices]
     
+    @BENCHMARKER.wrap()
     def get_hanging_token_counts(self) -> torch.Tensor:
         """Returns the number of KVs in the final block"""
         remaining_kv = self.context_lens[:,self.seq_indices] % self.block_size
@@ -305,7 +315,8 @@ class BlockStateView:
         full_last_block = (remaining_kv == 0).type(torch.int) * self.block_size
         return self._squeeze_out(torch.maximum(remaining_kv, full_last_block))
     
-    def get_block_counts(self, increment_on_full: bool = False, squeeze: bool = True) -> torch.Tensor:
+    @BENCHMARKER.wrap()
+    def get_block_counts(self, increment_on_full: bool = False, squeeze: bool = True, benchmark: bool = False) -> torch.Tensor:
         """Returns count of non-empty blocks per head given the current state
         of context_lens.
         
@@ -313,16 +324,25 @@ class BlockStateView:
             increment_on_full: if set, increment the block count by one for heads
                 whose last non-empty block is full.
         """
+        BENCHMARKER.start_range("get_block_counts - 1")
         context_lens = self.context_lens[:,self.seq_indices]
+        BENCHMARKER.end_range("get_block_counts - 1")
+        BENCHMARKER.start_range("get_block_counts - 2")
         counts = (
             (context_lens + self.block_size) // self.block_size
             if increment_on_full else
             (context_lens + self.block_size - 1) // self.block_size
         )
+        BENCHMARKER.end_range("get_block_counts - 2")
+        BENCHMARKER.start_range("get_block_counts - 3")
         empty_seq_mask = context_lens == 0
+        BENCHMARKER.end_range("get_block_counts - 3")
+        BENCHMARKER.start_range("get_block_counts - 4")
         counts[empty_seq_mask] = 0
+        BENCHMARKER.end_range("get_block_counts - 4")
         return self._squeeze_out(counts) if squeeze else counts
     
+    @BENCHMARKER.wrap()
     def allocated_block_mask(self, squeeze: bool = True) -> torch.Tensor:
         """Returns a mask of allocated blocks per head. In the case of heads
         whose last block is full, this includes an additional empty block for
@@ -332,11 +352,12 @@ class BlockStateView:
         out = self.block_table_indices < block_counts[...,None]
         return self._squeeze_out(out) if squeeze else out
     
-    def last_n_allocated_block_mask(self, n: Union[int, torch.Tensor], squeeze: bool = True) -> torch.Tensor:
+    @BENCHMARKER.wrap()
+    def last_n_allocated_block_mask(self, n: Union[int, torch.Tensor], squeeze: bool = True, benchmark: bool = False) -> torch.Tensor:
         """Returns a mask of the last n allocated blocks per head
         starting from the last block with at least one KV.
         """
-        block_counts = self.get_block_counts(increment_on_full=False, squeeze=False)
+        block_counts = self.get_block_counts(increment_on_full=False, squeeze=False, benchmark=benchmark)
         if isinstance(n, torch.Tensor):
             assert block_counts.shape == n.shape
 
@@ -346,6 +367,7 @@ class BlockStateView:
         )
         return self._squeeze_out(out) if squeeze else out
 
+    @BENCHMARKER.wrap()
     def move_empty_trailing_blocks(self, n: torch.Tensor) -> None:
         """Moves the final block for each head back n positions ONLY if the
         block is empty.
@@ -373,8 +395,9 @@ class BlockStateView:
     def get_allocated_blocks(self) -> torch.Tensor:
         return self.block_tables[:,self.seq_indices][self.allocated_block_mask(squeeze=False)]
     
+    @BENCHMARKER.wrap()
     def get_last_n_allocated_blocks(self, n: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        mask = self.last_n_allocated_block_mask(n, squeeze=False)
+        mask = self.last_n_allocated_block_mask(n, squeeze=False, benchmark=True)
         return self.block_tables[:,self.seq_indices][mask], mask
 
     def get_allocated_block_metadata(self) -> BlockMetadata:

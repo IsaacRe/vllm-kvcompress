@@ -373,6 +373,7 @@ class Scheduler:
     def get_num_unfinished_seq_groups(self) -> int:
         return len(self.waiting) + len(self.running) + len(self.swapped)
 
+    @BENCHMARKER.wrap()
     def _schedule_running(
         self,
         running_queue: deque,
@@ -592,6 +593,7 @@ class Scheduler:
             num_lookahead_slots=self._get_num_lookahead_slots(
                 is_prefill=False))
 
+    @BENCHMARKER.wrap()
     def _schedule_prefills(
         self,
         waiting_queue: deque,
@@ -886,6 +888,7 @@ class Scheduler:
             num_lookahead_slots=running_scheduled.num_lookahead_slots,
         )
 
+    @BENCHMARKER.wrap()
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
@@ -893,6 +896,7 @@ class Scheduler:
         else:
             return self._schedule_default()
 
+    @BENCHMARKER.wrap()
     def _schedule_kvcompress(self) -> Optional[CacheMoves]:
         """Check whether to schedule KV cache compression this 
         iteration. If compression is scheduled, the KV-Compress
@@ -933,83 +937,82 @@ class Scheduler:
             num_lookahead_slots=self._get_num_lookahead_slots(is_prefill),
         )
 
+    @BENCHMARKER.wrap()
     def schedule(
         self
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, Optional[CacheMoves]]:
-        with BENCHMARKER.time("schedule_kvc"):
-            # Schedule sequence groups.
-            # This function call changes the internal states of the scheduler
-            # such as self.running, self.swapped, and self.waiting.
-            cache_moves = (self._schedule_kvcompress()
-                        if self.kvcompress_enabled else None)
+        # Schedule sequence groups.
+        # This function call changes the internal states of the scheduler
+        # such as self.running, self.swapped, and self.waiting.
+        cache_moves = (self._schedule_kvcompress()
+                    if self.kvcompress_enabled else None)
 
-        with BENCHMARKER.time("schedule"):
-            scheduler_outputs = self._schedule()
-            now = time.time()
+        scheduler_outputs = self._schedule()
+        now = time.time()
 
-            # Create input data structures.
-            seq_group_metadata_list: List[SequenceGroupMetadata] = []
-            for i, scheduled_seq_group in enumerate(
-                    scheduler_outputs.scheduled_seq_groups):
-                seq_group = scheduled_seq_group.seq_group
-                token_chunk_size = scheduled_seq_group.token_chunk_size
-                seq_group.maybe_set_first_scheduled_time(now)
+        # Create input data structures.
+        seq_group_metadata_list: List[SequenceGroupMetadata] = []
+        for i, scheduled_seq_group in enumerate(
+                scheduler_outputs.scheduled_seq_groups):
+            seq_group = scheduled_seq_group.seq_group
+            token_chunk_size = scheduled_seq_group.token_chunk_size
+            seq_group.maybe_set_first_scheduled_time(now)
 
-                # seq_id -> SequenceData
-                seq_data: Dict[int, SequenceData] = {}
-                # seq_id -> physical block numbers
-                block_tables: Dict[int, Union[List[int], BlockStateView]] = {}
-                # For KV-Compress, index into global shared block state for
-                # the group's only sequence (multi-sequence groups not supported
-                # with KV-Compress).
-                block_state_index: Optional[int] = None
+            # seq_id -> SequenceData
+            seq_data: Dict[int, SequenceData] = {}
+            # seq_id -> physical block numbers
+            block_tables: Dict[int, Union[List[int], BlockStateView]] = {}
+            # For KV-Compress, index into global shared block state for
+            # the group's only sequence (multi-sequence groups not supported
+            # with KV-Compress).
+            block_state_index: Optional[int] = None
 
-                if self.kvcompress_enabled:
-                    # Multi-sequence groups not supported with KV-Compress
-                    [seq] = seq_group.get_seqs(status=SequenceStatus.RUNNING)
-                    block_state_index = self.block_manager.get_batch_slot_index(seq)
-                for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
-                    seq_id = seq.seq_id
-                    seq_data[seq_id] = seq.data
-                    block_tables[seq_id] = self.block_manager.get_block_table(seq)
-                    self.block_manager.access_all_blocks_in_seq(seq, now)
+            if self.kvcompress_enabled:
+                # Multi-sequence groups not supported with KV-Compress
+                [seq] = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+                block_state_index = self.block_manager.get_batch_slot_index(seq)
+            for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
+                seq_id = seq.seq_id
+                seq_data[seq_id] = seq.data
+                block_tables[seq_id] = self.block_manager.get_block_table(seq)
+                self.block_manager.access_all_blocks_in_seq(seq, now)
 
-                common_computed_block_nums = (
-                    self.block_manager.get_common_computed_block_ids(
-                        seq_group.get_seqs(status=SequenceStatus.RUNNING)))
+            common_computed_block_nums = (
+                self.block_manager.get_common_computed_block_ids(
+                    seq_group.get_seqs(status=SequenceStatus.RUNNING)))
 
-                # It assumes the scheduled_seq_groups is ordered by
-                # prefill < decoding.
-                is_prompt = seq_group.is_prefill()
-                seq_group_metadata = SequenceGroupMetadata(
-                    request_id=seq_group.request_id,
-                    is_prompt=is_prompt,
-                    seq_data=seq_data,
-                    sampling_params=seq_group.sampling_params,
-                    block_tables=block_tables,
-                    token_chunk_size=token_chunk_size,
-                    lora_request=seq_group.lora_request,
-                    computed_block_nums=common_computed_block_nums,
-                    state=seq_group.state,
-                    # `multi_modal_data` will only be present for the 1st comm
-                    # between engine and worker.
-                    # the subsequent comms can still use delta, but
-                    # `multi_modal_data` will be None.
-                    multi_modal_data=seq_group.multi_modal_data
-                    if scheduler_outputs.num_prefill_groups > 0 else None,
-                    block_state_index=block_state_index,
-                )
-                seq_group_metadata_list.append(seq_group_metadata)
+            # It assumes the scheduled_seq_groups is ordered by
+            # prefill < decoding.
+            is_prompt = seq_group.is_prefill()
+            seq_group_metadata = SequenceGroupMetadata(
+                request_id=seq_group.request_id,
+                is_prompt=is_prompt,
+                seq_data=seq_data,
+                sampling_params=seq_group.sampling_params,
+                block_tables=block_tables,
+                token_chunk_size=token_chunk_size,
+                lora_request=seq_group.lora_request,
+                computed_block_nums=common_computed_block_nums,
+                state=seq_group.state,
+                # `multi_modal_data` will only be present for the 1st comm
+                # between engine and worker.
+                # the subsequent comms can still use delta, but
+                # `multi_modal_data` will be None.
+                multi_modal_data=seq_group.multi_modal_data
+                if scheduler_outputs.num_prefill_groups > 0 else None,
+                block_state_index=block_state_index,
+            )
+            seq_group_metadata_list.append(seq_group_metadata)
 
-            # Now that the batch has been created, we can assume all blocks in the
-            # batch will have been computed before the next scheduling invocation.
-            # This is because the engine assumes that a failure in model execution
-            # will crash the vLLM instance / will not retry.
-            for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
-                self.block_manager.mark_blocks_as_computed(
-                    scheduled_seq_group.seq_group)
+        # Now that the batch has been created, we can assume all blocks in the
+        # batch will have been computed before the next scheduling invocation.
+        # This is because the engine assumes that a failure in model execution
+        # will crash the vLLM instance / will not retry.
+        for scheduled_seq_group in scheduler_outputs.scheduled_seq_groups:
+            self.block_manager.mark_blocks_as_computed(
+                scheduled_seq_group.seq_group)
 
-            return seq_group_metadata_list, scheduler_outputs, cache_moves
+        return seq_group_metadata_list, scheduler_outputs, cache_moves
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)
@@ -1031,6 +1034,7 @@ class Scheduler:
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
 
+    @BENCHMARKER.wrap()
     def _append_slots(
         self,
         seq_group: SequenceGroup,
