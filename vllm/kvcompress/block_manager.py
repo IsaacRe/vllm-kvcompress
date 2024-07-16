@@ -240,6 +240,31 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         return (new_kv_count + self.block_size) // self.block_size
 
+    def _append_to_sequence_batch(self, seqs: List[Sequence], token_count: int = 1):
+        batch_slots_idxs = torch.tensor(
+            [self.batch_slot_mapping[seq.seq_id] for seq in seqs],
+            dtype=torch.long,
+            device=self.device,
+        )
+        block_state_view = self.block_state.get_block_state_batch_view(batch_slots_idxs)
+        old_mask = block_state_view.allocated_block_mask()
+        self.block_state.context_lens[:,batch_slots_idxs] += token_count
+        new_mask = block_state_view.allocated_block_mask()
+        new_mask = (new_mask & ~old_mask)
+        new_blocks = new_mask.sum()
+        if new_blocks > 0:
+            self.block_state.block_tables[:,batch_slots_idxs][new_mask] = (self.gpu_allocator
+                                                                           .allocate(new_blocks)
+                                                                           .to(self.device)
+                                                                           .type(torch.int))
+
+            # Add metric metadata associated with the newly allocated blocks
+            metadata, mask = block_state_view.get_batch_new_block_metadata(
+                last_token_position=[seq.data.get_len() - 1 for seq in seqs]
+            )
+
+            self.kv_metrics.insert_metadata(metadata)
+
     def _append_to_sequence(self, seq: Sequence, token_count: int):
         seq_id = seq.seq_id
         batch_slot_idx = self.batch_slot_mapping[seq_id]
@@ -330,6 +355,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
         new_block_count = self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
         return new_block_count.sum() <= num_free_gpu_blocks
+
+    @BENCHMARKER.wrap()
+    def batch_append_slots(self, seqs: List[Sequence]) -> None:
+        self._append_to_sequence_batch(seqs)
 
     @BENCHMARKER.wrap()
     def append_slots(
