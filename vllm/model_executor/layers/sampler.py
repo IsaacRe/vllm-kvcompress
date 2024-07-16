@@ -777,7 +777,7 @@ def _get_logprobs(
             if reference_logprobs_dict is not None:
                 sample_logprobs_dict[next_ref_token_ids[seq_index]] = (
                     sample_logprobs_dict.get(next_ref_token_ids[seq_index],
-                                             reference_logprobs_dict)
+                                             reference_logprobs_dict[next_ref_token_ids[seq_index]])
                 )
             query_result_idx += 1
             if num_logprobs >= 0:
