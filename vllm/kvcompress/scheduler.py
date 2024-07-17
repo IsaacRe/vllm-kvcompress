@@ -66,6 +66,7 @@ class CompressionScheduler:
         self._iters_since_compression: Dict[int, int] = {}
         self.total_evicted_kvs = {}
         self.total_evicted_blocks = {}
+        self.total_evicted = 0
 
         # Allocate workspace for compression
         self.evicted_head_indices = torch.empty(
@@ -306,6 +307,8 @@ class CompressionScheduler:
         #          .to(evicted_kv_count.device)
         #     >= evicted_kv_count[...,None]
         # )
+        self.total_evicted += evicted_kv_count.sum().item()
+        print(f"TOTAL EVICTED:\nKVs: {self.total_evicted}\nTokens: {self.total_evicted / 32 / 32}")
         evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
         # assert (evicted_block_count * self.block_size == evicted_kv_count).all()
 
@@ -389,3 +392,4 @@ class CompressionScheduler:
         if self.iteration_count >= self.config.compression_interval:
             self.iteration_count = 0
             return self._schedule_compression(seqs)
+

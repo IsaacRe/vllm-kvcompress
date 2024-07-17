@@ -75,7 +75,7 @@ def test_parity_with_simulated_compression(
     checkpoint_cfg = RandomDigitCheckpointConfig(
         model_name=model,
         max_cache_tokens=150,
-        protected_window_size=50,
+        protected_window_size=100,
         metric_collection_buffer_size=10,
         num_digits=num_digits,
         control_layers=[0, 1],
@@ -90,7 +90,7 @@ def test_parity_with_simulated_compression(
         enable_kvcompress=True,
         #max_cache_tokens=checkpoint_cfg.max_cache_tokens,
         target_compression_rate=0.1,
-        block_size=16, #1,
+        block_size=16,
         protected_window_size=checkpoint_cfg.protected_window_size,
         metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
         even_layer_evict=False, #True,
@@ -136,6 +136,7 @@ def test_parity_with_simulated_compression(
         nll = [-d[t].logprob for d, t in zip(logprobs, ref_token_ids)]
         ppl = np.exp(sum(nll) / len(nll))
         print(ppl)
+        assert False
         assert ppl < 1.01
         vllm_output = output[:len(reference_completion)]
         assert reference_completion == vllm_output, (
@@ -245,3 +246,4 @@ def test_compression_with_bias(
         vllm_output = output[:len(reference_completion)]
         assert reference_completion == vllm_output, (
             f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
+
