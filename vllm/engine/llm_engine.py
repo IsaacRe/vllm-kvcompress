@@ -625,17 +625,19 @@ class LLMEngine:
                 # metric aggregation afterward
                 self.kvcompress_state.kv_metrics.clear_temp_metrics()
             if cache_moves:
-                with BENCHMARKER.time("execute_cache_moves"):
-                    self.model_executor.execute_cache_moves(cache_moves,
-                                                            self.kvcompress_state.kv_metrics)
-            with BENCHMARKER.time("execute_model"):
-                output = self.model_executor.execute_model(
-                    seq_group_metadata_list=seq_group_metadata_list,
-                    blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
-                    blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
-                    blocks_to_copy=scheduler_outputs.blocks_to_copy,
-                    num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
-                    kvc_state=self.kvcompress_state)
+                BENCHMARKER.start_range("execute_cache_moves")
+                self.model_executor.execute_cache_moves(cache_moves,
+                                                        self.kvcompress_state.kv_metrics)
+                BENCHMARKER.end_range("execute_cache_moves")
+            BENCHMARKER.start_range("execute_model")
+            output = self.model_executor.execute_model(
+                seq_group_metadata_list=seq_group_metadata_list,
+                blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
+                blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
+                blocks_to_copy=scheduler_outputs.blocks_to_copy,
+                num_lookahead_slots=scheduler_outputs.num_lookahead_slots,
+                kvc_state=self.kvcompress_state)
+            BENCHMARKER.end_range("execute_model")
             if self.kvcompress_config:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.

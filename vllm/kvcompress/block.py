@@ -334,22 +334,14 @@ class BlockStateView:
             increment_on_full: if set, increment the block count by one for heads
                 whose last non-empty block is full.
         """
-        BENCHMARKER.start_range("get_block_counts - 1")
         context_lens = self.context_lens[:,self.seq_indices]
-        BENCHMARKER.end_range("get_block_counts - 1")
-        BENCHMARKER.start_range("get_block_counts - 2")
         counts = (
             (context_lens + self.block_size) // self.block_size
             if increment_on_full else
             (context_lens + self.block_size - 1) // self.block_size
         )
-        BENCHMARKER.end_range("get_block_counts - 2")
-        BENCHMARKER.start_range("get_block_counts - 3")
         empty_seq_mask = context_lens == 0
-        BENCHMARKER.end_range("get_block_counts - 3")
-        BENCHMARKER.start_range("get_block_counts - 4")
         counts[empty_seq_mask] = 0
-        BENCHMARKER.end_range("get_block_counts - 4")
         return self._squeeze_out(counts) if squeeze else counts
     
     @BENCHMARKER.wrap()

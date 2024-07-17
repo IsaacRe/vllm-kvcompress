@@ -5,6 +5,7 @@ import numpy as np
 
 from vllm.kvcompress.block import BlockMetadata
 from vllm.debug import CHECKPOINTER
+from vllm.benchmark import BENCHMARKER
 
 _BIAS_KEY = "bias"
 _POSITION_RANGE_KEY = "pos_bins"
@@ -374,6 +375,7 @@ class CompressionMetrics:
 
         self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
 
+    @BENCHMARKER.wrap()
     def sort_seq_metrics(self, seq_indices: List[int], seq_positions: List[int], checkpoint: bool = True) -> SortedMetricOutputs:
         """Sort and return a view of the indices limited to a subset
         of all sequences.

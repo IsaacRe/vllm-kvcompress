@@ -95,6 +95,7 @@ class CompressionScheduler:
         for seq_id in self._iters_since_compression:
             self._iters_since_compression[seq_id] += 1
 
+    @BENCHMARKER.wrap()
     def _schedule_seq_evictions(
         self,
         seq: Sequence,
@@ -157,6 +158,7 @@ class CompressionScheduler:
         evict_kv_count = evict_block_count * self.block_size
         return evict_kv_count, evict_block_count
     
+    @BENCHMARKER.wrap()
     def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         self._update_sequences(seqs)
 
