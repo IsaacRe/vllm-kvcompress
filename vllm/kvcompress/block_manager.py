@@ -241,26 +241,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         return (new_kv_count + self.block_size) // self.block_size
 
     def _append_to_sequence_batch(self, seqs: List[Sequence], token_count: int = 1):
-        # for seq in seqs:
-        #     self._append_to_sequence(seq, token_count)
-        # return
-
-        # 1.a
-        # total = 0
-        # mask_list = []
-        # for seq in seqs:
-        #     batch_slot_idx = self.batch_slot_mapping[seq.seq_id]
-        #     block_state_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
-        #     old_mask = block_state_view.allocated_block_mask()
-        #     self.block_state.context_lens[:,batch_slot_idx] += token_count
-        #     new_mask = block_state_view.allocated_block_mask()
-        #     new_mask = (new_mask & ~old_mask)
-        #     self.block_state.context_lens[:,batch_slot_idx] -= token_count
-        #     total += new_mask.sum()
-        #     mask_list.append(new_mask)
-        # mask = torch.stack(mask_list, dim=1)
-
-        # 1.b
         batch_slots_idxs = torch.tensor(
             [self.batch_slot_mapping[seq.seq_id] for seq in seqs],
             dtype=torch.long,
@@ -268,56 +248,18 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         block_state_view = self.block_state.get_block_state_batch_view(batch_slots_idxs)
         old_mask = block_state_view.allocated_block_mask()
-        # for seq in seqs:
-        #     seq_view = self.block_state.get_block_state_seq_view(self.batch_slot_mapping[seq.seq_id])
-        #     seq_mask = seq_view.allocated_block_mask()
-        #     assert not (seq_mask[:,None] & ~old_mask).any()
         self.block_state.context_lens[:,batch_slots_idxs] += token_count
         new_mask = block_state_view.allocated_block_mask()
         new_mask = (new_mask & ~old_mask)
         new_blocks = new_mask.sum()
 
-        # assert new_blocks == total, f"{new_blocks=}, {total=}"
-        # assert (new_mask == mask).all()
-
         if new_blocks > 0:
-            # 2.a
-            # allocated = self.gpu_allocator.allocate(new_blocks).to(self.device).type(torch.int)
-            # last_new_blocks = 0
-            # for seq, mask in zip(seqs, new_mask.transpose(0, 1)):
-            #     new_blocks_ = mask.sum()
-            #     if new_blocks_ > 0:
-            #         self.block_state.block_tables[:,self.batch_slot_mapping[seq.seq_id]][mask] = (
-            #             allocated[last_new_blocks:last_new_blocks+new_blocks_]
-            #         )
-            #         last_new_blocks += new_blocks_
-
-            # 2.b
-            # start_block_tables = self.block_state.block_tables.clone()
             tmp = self.block_state.block_tables[:,batch_slots_idxs]
-            # start_tmp = tmp.clone()
             newly_allocated = (
                 self.gpu_allocator.allocate(new_blocks).to(self.device).type(torch.int)
             )
-            # assert newly_allocated.numel() > 0
             tmp[new_mask] = newly_allocated
-            # assert (tmp != start_tmp).any()
             self.block_state.block_tables[:,batch_slots_idxs] = tmp
-            # assert (self.block_state.block_tables != start_block_tables).any()
-
-            # 3.a
-            # metadata_list = []
-            # for seq, mask in zip(seqs, new_mask.transpose(0, 1)):
-            #     new_blocks_ = mask.sum()
-            #     if new_blocks_ > 0:
-            #         metadata, _ = (
-            #             self.block_state.get_block_state_seq_view(self.batch_slot_mapping[seq.seq_id])
-            #                             .get_new_block_metadata(seq.data.get_len() - 1)
-            #         )
-            #         metadata_list.append(metadata)
-            # self.kv_metrics.insert_metadata(BlockMetadata.concat(metadata_list))
-
-            # 3.b
             metadata, _ = (
                 self.block_state.get_block_state_batch_view(batch_slots_idxs)
                                 .get_batch_new_block_metadata([seq.data.get_len() - 1 for seq in seqs])
