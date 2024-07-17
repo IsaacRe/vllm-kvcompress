@@ -2,6 +2,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 
+from vllm.benchmark import BENCHMARKER
 try:
     from vllm._C import cache_ops as vllm_cache_ops
     from vllm._C import ops as vllm_ops
@@ -32,6 +33,7 @@ def gelu_new(out: torch.Tensor, x: torch.Tensor) -> None:
 
 
 # page attention ops
+@BENCHMARKER.wrap()
 def paged_attention_v1(
     out: torch.Tensor,
     query: torch.Tensor,
@@ -53,6 +55,7 @@ def paged_attention_v1(
                                 alibi_slopes, kv_cache_dtype, kv_scale)
 
 
+@BENCHMARKER.wrap()
 def paged_attention_v2(
     out: torch.Tensor,
     exp_sum: torch.Tensor,
@@ -79,6 +82,7 @@ def paged_attention_v2(
 
 
 # paged attention ops with KV-Compress cache
+@BENCHMARKER.wrap()
 def paged_attention_kvc_v1(
     out: torch.Tensor,
     kv_metric_out: torch.Tensor,
@@ -107,6 +111,7 @@ def paged_attention_kvc_v1(
                                            kv_metric_buffer_len, kv_scale)
 
 
+@BENCHMARKER.wrap()
 def paged_attention_kvc_v2(
     out: torch.Tensor,
     kv_metric_out: torch.Tensor,
@@ -236,6 +241,7 @@ def moe_align_block_size(topk_ids: torch.Tensor, num_experts: int,
                                   num_tokens_post_pad)
 
 
+@BENCHMARKER.wrap()
 def reshape_and_cache(
     key: torch.Tensor,
     value: torch.Tensor,
@@ -249,6 +255,7 @@ def reshape_and_cache(
                                      slot_mapping, kv_cache_dtype, kv_scale)
 
 
+@BENCHMARKER.wrap()
 def reshape_and_cache_kvc(
     key: torch.Tensor,
     value: torch.Tensor,
@@ -378,6 +385,7 @@ def ref_schedule_cache_evictions(
         assert evicted_blocks == evicted_blocks_per_seq[i], "schedule_cache_evictions loop failed"
 
 
+@BENCHMARKER.wrap()
 def schedule_cache_evictions(
     out_evicted_kv_indices: torch.Tensor,
     out_evicted_logical_indices: torch.Tensor,
@@ -497,6 +505,7 @@ def ref_schedule_t1_cache_moves(
                 out_cache_moves_count[i,layer_idx,j] = move_count
 
 
+@BENCHMARKER.wrap()
 def schedule_cache_moves(
     out_cache_moves_indices: torch.Tensor,
     out_cache_moves_count: torch.Tensor,
@@ -519,6 +528,7 @@ def schedule_cache_moves(
     )
 
 
+@BENCHMARKER.wrap()
 def execute_cache_moves(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,

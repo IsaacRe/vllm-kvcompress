@@ -31,6 +31,7 @@ from vllm.sequence import (MultiModalData, SamplerOutput, SequenceData,
 from vllm.utils import (CudaMemoryProfiler, async_tensor_h2d, is_hip,
                         is_pin_memory_available, make_tensor_with_pad,
                         maybe_expand_dim)
+from vllm.benchmark import BENCHMARKER
 
 logger = init_logger(__name__)
 
@@ -248,6 +249,7 @@ class ModelRunner:
             [_PAD_SLOT_ID] * prompt_len
         )
     
+    @BENCHMARKER.wrap()
     def _prepare_prompt(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -482,6 +484,7 @@ class ModelRunner:
             block_metadata=block_metadata,
         )
 
+    @BENCHMARKER.wrap()
     def _prepare_decode(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
@@ -524,6 +527,7 @@ class ModelRunner:
 
                 # If using KV-Compress
                 if self.kvcompress_config:
+                    BENCHMARKER.start_range("kvc stuff")
                     seq_block_state_view = block_state.get_block_state_seq_view(
                         seq_group_metadata.block_state_index)
                     context_lens.append(seq_block_state_view.get_context_lens())
@@ -533,6 +537,7 @@ class ModelRunner:
                     new_block_meta, _ = seq_block_state_view.get_new_block_metadata(position)
                     if new_block_meta:
                         block_metadata.append(new_block_meta)
+                    BENCHMARKER.end_range("kvc stuff")
                 else:
                     block_table = seq_group_metadata.block_tables[seq_id]
                     context_len = seq_len if self.sliding_window is None else min(
@@ -922,21 +927,17 @@ class ModelRunner:
                 multi_modal_input, block_metadata)
 
     @torch.inference_mode()
+    @BENCHMARKER.wrap_if(profile=None)  # benchmark only when `profile` is not passed
     def execute_model(
         self,
         seq_group_metadata_list: List[SequenceGroupMetadata],
         kv_caches: KVCacheBase,
         kvc_state: Optional[KVCompressState] = None,
+        profile: bool = False,
     ) -> Optional[SamplerOutput]:
         (input_tokens, input_positions, attn_metadata, sampling_metadata,
          lora_requests, lora_mapping, multi_modal_input, block_metadata_list
          ) = self.prepare_input_tensors(seq_group_metadata_list, kvc_state)
-
-        if self.kvcompress_config:
-            for block_metadata in block_metadata_list:
-                # Pass input positions to update KV positions for metrics tracking
-                # kvc_state.kv_metrics.insert_metadata(block_metadata)
-                pass
 
         if self.lora_config:
             self.set_active_loras(lora_requests, lora_mapping)
@@ -1037,7 +1038,7 @@ class ModelRunner:
         num_layers = self.model_config.get_num_layers(self.parallel_config)
         kv_caches = (UnifiedKVCache(None) if self.kvcompress_config else
                      KVCache([None] * num_layers))
-        self.execute_model(seqs, kv_caches)
+        self.execute_model(seqs, kv_caches, profile=True)
         torch.cuda.synchronize()
         return
 

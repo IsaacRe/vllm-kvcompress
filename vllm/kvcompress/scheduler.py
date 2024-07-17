@@ -160,6 +160,9 @@ class CompressionScheduler:
     
     @BENCHMARKER.wrap()
     def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
+        # Benchmark - 1
+        BENCHMARKER.start_range("_schedule_compression - 1")
+
         self._update_sequences(seqs)
 
         # Select sequences to compress this iteration and determine blocks to
@@ -187,6 +190,10 @@ class CompressionScheduler:
 
         if not seqs_to_compress:
             return
+
+        # Benchmark - 2
+        BENCHMARKER.end_range("_schedule_compression - 1")
+        BENCHMARKER.start_range("_schedule_compression - 2")
 
         # Checkpoint
         if CHECKPOINTER.do_checkpoint:
@@ -227,6 +234,10 @@ class CompressionScheduler:
         # final_mem = torch.cuda.max_memory_allocated(
         #     torch.device(self.device))
         # print(f"RAN SORT: {final_mem - init_mem}")
+
+        # Benchmark - 3
+        BENCHMARKER.end_range("_schedule_compression - 2")
+        BENCHMARKER.start_range("_schedule_compression - 3")
 
         # Get context lengths, block tables and hanging token counts
         batch_block_state = self.block_manager.get_block_state_batch_view(
@@ -294,6 +305,11 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__evicted_head_indices', self.evicted_head_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_logical_indices', self.evicted_logical_indices)
         CHECKPOINTER.checkpoint('schedule_compression__evicted_kv_count', evicted_kv_count)
+
+
+        # Benchmark - 4
+        BENCHMARKER.end_range("_schedule_compression - 3")
+        BENCHMARKER.start_range("_schedule_compression - 4")
 
         # # Truncate eviction counts to last full evicted block
         # no_eviction = evicted_kv_count < hanging_token_count
@@ -363,6 +379,11 @@ class CompressionScheduler:
             context_lens,
             self.block_size,
         )
+
+        # Benchmark - 5
+        BENCHMARKER.end_range("_schedule_compression - 4")
+        BENCHMARKER.start_range("_schedule_compression - 5")
+
         cache_moves = CacheMoves(self.cache_move_indices, cache_moves_count, evicted_kv_offsets)
 
         freed_block_count = {
@@ -380,6 +401,9 @@ class CompressionScheduler:
         freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)
 
         self.compression_metrics.remove_metadata(freed_blocks)
+
+        # End Benchmark - 5
+        BENCHMARKER.end_range("_schedule_compression - 5")
 
         return CompressionOutputs(cache_moves, freed_block_count)
 

@@ -157,18 +157,20 @@ class Benchmarker:
         return EnterableRange(self.ranges[name])
 
     def start_range(self, name: str) -> None:
-        cont_name = self._contextualize_name(name)
-        self._walk_in(name)
-        name = cont_name
-        if name not in self.ranges:
-            self.ranges[name] = TimeRange(self.time_range_unit, name)
-        self.ranges[name].start()
+        if not self.disabled:
+            cont_name = self._contextualize_name(name)
+            self._walk_in(name)
+            name = cont_name
+            if name not in self.ranges:
+                self.ranges[name] = TimeRange(self.time_range_unit, name)
+            self.ranges[name].start()
 
     def end_range(self, name: str) -> None:
-        self._walk_out()
-        name = self._contextualize_name(name)
-        assert name in self.ranges, f"no TimeRange found for {name}"
-        self.ranges[name].end()
+        if not self.disabled:
+            self._walk_out()
+            name = self._contextualize_name(name)
+            assert name in self.ranges, f"no TimeRange found for {name}"
+            self.ranges[name].end()
 
     def _summarize_recursive(
         self,
@@ -197,7 +199,7 @@ class Benchmarker:
                 self._summarize_recursive(range_head + [c], topk, sort_by, depth + 1)
             )
         return return_list
-    
+
     def summarize(self):
         summary_list = self._summarize_recursive([], TOPK, SORT_BY, 0)
         names = []
@@ -245,6 +247,27 @@ class Benchmarker:
         def wrapper(fn):
             fn_name = f"{fn.__module__}.{fn.__qualname__}"
             def fn_(*args, **kwargs):
+                if self.disabled:
+                    return fn(*args, **kwargs)
+                self.start_range(fn_name)
+                out = fn(*args, **kwargs)
+                self.end_range(fn_name)
+                return out
+            return fn_
+        return wrapper
+
+    def wrap_if(self, **conditions):
+        def wrapper(fn):
+            fn_name = f"{fn.__module__}.{fn.__qualname__}"
+            def fn_(*args, **kwargs):
+                if self.disabled:
+                    return fn(*args, **kwargs)
+                for k, v in conditions.items():
+                    if kwargs.get(k) != v:
+                        self.disabled = True
+                        out = fn(*args, **kwargs)
+                        self.disabled = False
+                        return out
                 self.start_range(fn_name)
                 out = fn(*args, **kwargs)
                 self.end_range(fn_name)
