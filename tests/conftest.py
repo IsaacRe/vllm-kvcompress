@@ -447,16 +447,22 @@ def vllm_runner():
 
 @pytest.fixture()
 def random_digit_generator():
-    def random_digit_gen(num_digits, random_seed):
+    def random_digit_gen(num_digits, random_seed, n_seqs: int = 1):
+        prompts = []
+        completions = []
         np.random.seed(random_seed)
-        digits = np.random.randint(10, size=(num_digits,))
-        digits_string = ""
-        for d in digits:
-            digits_string += str(d)
-        return (
-            [_RANDOM_DIGIT_PROMPT_TEMPLATE.format(digits_string, digits_string[:_RANDOM_DIGIT_REPEAT_LENGTH])],
-            [digits_string[_RANDOM_DIGIT_REPEAT_LENGTH:]],
-        )
+        for _ in range(n_seqs):
+            digits = np.random.randint(10, size=(num_digits,))
+            digits_string = ""
+            for d in digits:
+                digits_string += str(d)
+            prompts.append(
+                _RANDOM_DIGIT_PROMPT_TEMPLATE.format(
+                    digits_string, digits_string[:_RANDOM_DIGIT_REPEAT_LENGTH]
+                )
+            )
+            completions.append(digits_string[_RANDOM_DIGIT_REPEAT_LENGTH:])
+        return (prompts, completions)
     return random_digit_gen
 
 

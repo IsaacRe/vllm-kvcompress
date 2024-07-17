@@ -104,7 +104,7 @@ def test_parity_with_simulated_compression(
     # Only checkpoint the first non-controlled layer
     checkpointer.set_condition(checkpoint_layer=lambda layer: layer == 2)
 
-    random_digit_prompts, random_digit_responses = random_digit_generator(num_digits, random_seed)
+    random_digit_prompts, random_digit_responses = random_digit_generator(num_digits, random_seed, n_seqs=10)
     max_tokens = max(len(response) for response in random_digit_responses)
     tokenizer = AutoTokenizer.from_pretrained(model)
     reference_token_ids = [
@@ -136,11 +136,11 @@ def test_parity_with_simulated_compression(
         nll = [-d[t].logprob for d, t in zip(logprobs, ref_token_ids)]
         ppl = np.exp(sum(nll) / len(nll))
         print(ppl)
-        assert False
-        assert ppl < 1.01
-        vllm_output = output[:len(reference_completion)]
-        assert reference_completion == vllm_output, (
-            f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
+        # assert ppl < 1.01
+        # vllm_output = output[:len(reference_completion)]
+        # assert reference_completion == vllm_output, (
+        #     f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
+    assert False
         
 
 @pytest.mark.parametrize("random_seed", [1])
