@@ -17,6 +17,10 @@ class BlockMetadata(NamedTuple):
     head_indices: torch.Tensor
     token_positions: torch.Tensor
 
+    @staticmethod
+    def concat(metadata_list: List["BlockMetadata"]) -> "BlockMetadata":
+        return BlockMetadata(*(torch.cat(tensors) for tensors in zip(*metadata_list)))
+
     def validate_even_layer_evict(self):
         num_layers = self.layer_indices.max().item() + 1
         
@@ -155,7 +159,7 @@ class BlockState:
             t2_block_tables=self.t2_block_tables,
             context_lens=self.context_lens,
             is_batch_view=True,
-            block_table_indices=self.block_table_indices,
+            all_logical_block_nums=self.block_table_indices,
         )
 
     def get_block_state_seq_view(self, seq_index: int) -> "BlockStateView":
@@ -236,7 +240,8 @@ class BlockStateView:
         t2_block_tables: torch.Tensor,
         context_lens: torch.Tensor,
         is_batch_view: bool,
-        block_table_indices: Optional[torch.Tensor] = None,
+        all_logical_block_nums: Optional[torch.Tensor] = None,
+        all_seq_indices: Optional[torch.Tensor] = None,
     ) -> None:
         self.seq_indices = seq_indices
         self.is_batch_view = is_batch_view
@@ -245,10 +250,15 @@ class BlockStateView:
         self.block_tables = block_tables
         self.t2_block_tables = t2_block_tables
         self.context_lens = context_lens
-        self.block_table_indices = (
+        self.all_logical_block_nums = (
             torch.arange(block_tables.size(-1))[None,None,None]
                  .to(block_tables.device)
-            if block_table_indices is None else block_table_indices
+            if all_logical_block_nums is None else all_logical_block_nums
+        )
+        self.all_seq_indices = (
+            torch.arange(block_tables.size(1))[None,:,None,None]
+                 .to(device=block_tables.device, dtype=torch.int)
+            if all_seq_indices is None else all_seq_indices
         )
 
     def _squeeze_out(self, out: torch.Tensor) -> torch.Tensor:
@@ -349,7 +359,7 @@ class BlockStateView:
         KVs generated during the next iteration.
         """
         block_counts = self.get_block_counts(increment_on_full=False, squeeze=False)
-        out = self.block_table_indices < block_counts[...,None]
+        out = self.all_logical_block_nums < block_counts[...,None]
         return self._squeeze_out(out) if squeeze else out
     
     @BENCHMARKER.wrap()
@@ -362,8 +372,8 @@ class BlockStateView:
             assert block_counts.shape == n.shape
 
         out = (
-            (self.block_table_indices < block_counts[...,None])
-            & (self.block_table_indices >= (block_counts - n)[...,None])
+            (self.all_logical_block_nums < block_counts[...,None])
+            & (self.all_logical_block_nums >= (block_counts - n)[...,None])
         )
         return self._squeeze_out(out) if squeeze else out
 
@@ -409,7 +419,7 @@ class BlockStateView:
         assert not self.is_batch_view
         mask = self.allocated_block_mask(squeeze=False)
         logical_blocks = (
-            self.block_table_indices
+            self.all_logical_block_nums
                 .expand_as(self.block_tables)[:,self.seq_indices][mask]
         )
         # Assume alignment between logical index and token position
@@ -465,7 +475,7 @@ class BlockStateView:
         if mask.sum() == 0:
             return None, None
 
-        logical_blocks = (self.block_table_indices
+        logical_blocks = (self.all_logical_block_nums
                               .expand_as(self.block_tables)[:,self.seq_indices][mask])
         token_positions = (
             torch.tensor([last_token_position], dtype=torch.int, device=logical_blocks.device)
@@ -490,6 +500,84 @@ class BlockStateView:
         # print(f'{physical_blocks=}, {physical_blocks.unique()=}')
         # assert physical_blocks.shape[0] == physical_blocks.unique(dim=0).shape[0]
         
+        return BlockMetadata(
+            physical_blocks=physical_blocks,
+            logical_blocks=logical_blocks,
+            seq_indices=seq_indices,
+            layer_indices=layer_indices.type(torch.int),
+            head_indices=head_indices.type(torch.int),
+            token_positions=token_positions,
+        ), mask
+
+    def get_batch_new_block_metadata(self, last_token_position: List[int]) -> Optional[BlockMetadata]:
+        """Return block metadata for all blocks that were added
+        during the last scheduling iteration.
+        If there are no new blocks returns None.
+        Uses last token position to infer contiguous token position for each KV in the block.
+        WARNING: we assume that the first KV in the last block will always have a token
+        position that aligns with its logical index, since we evict down to the last full
+        block, so any hanging tokens must have been added after the last compression.
+        """
+        last_block_mask = self.last_n_allocated_block_mask(1, squeeze=False)
+
+        assert self.is_batch_view
+        # num_heads = self.context_lens.size(2)
+        # indices = self.block_table_indices.expand_as(self.block_tables)[:,self.seq_indices]
+        # # divide w/o round so that equality is satisfied for one KV per block
+        # last_block = ((self.context_lens[:,self.seq_indices] + self.block_size - 1)
+        #         / self.block_size)[...,None].expand_as(indices)
+        # print(f'{indices.shape=}, {last_block.shape=}')
+        # mask = (
+        #     indices
+        #     == last_block
+        # )
+
+        seq_indices_tensor = (
+            self.seq_indices if isinstance(self.seq_indices, torch.Tensor) else
+            torch.tensor(
+                self.seq_indices,
+                dtype=torch.long,
+                device=self.block_tables.device,
+            )
+        )
+        first_token_mask = ((self.context_lens[:,seq_indices_tensor,:,None] - 1)
+                            % self.block_size == 0)
+        mask = last_block_mask & first_token_mask
+        # assert not (mask & ~last_block_mask).any(), 'heyooo'
+
+        if mask.sum() == 0:
+            return None, None
+        logical_blocks = (self.all_logical_block_nums
+                              .expand_as(self.block_tables)[:,seq_indices_tensor][mask])
+        physical_blocks = self.block_tables[:,seq_indices_tensor][mask]
+        seq_indices = (self.all_seq_indices
+                           .expand_as(self.block_tables)[:,seq_indices_tensor][mask])
+        # Use seq_indices to extract the last_position for each block's corresponding sequence
+        last_token_position = torch.tensor(
+            last_token_position,
+            dtype=torch.int,
+            device=self.block_tables.device,
+        )
+        token_positions = (
+            self.all_seq_indices.scatter(
+                dim=1,
+                index=seq_indices_tensor[None,:,None,None],
+                src=last_token_position[None,:,None,None],
+            ).expand_as(self.block_tables)[:,seq_indices_tensor][mask][:,None]
+            + torch.arange(self.block_size, dtype=torch.int, device=logical_blocks.device)[None]
+        )
+        layer_indices, _, head_indices, _ = torch.where(mask)
+
+        # # should have same number of allocated KVs per layer
+        # # randomly sample to make check less time-consuming
+        # check_idx = np.random.randint(num_layers)
+        # check_idx_count = (layer_indices == check_idx).sum()
+        # per_layer_count = layer_indices.numel() / num_layers
+        # assert check_idx_count == per_layer_count, f'{check_idx_count=}, {per_layer_count=} (are you running even-layer eviction?)'
+
+        # print(f'{physical_blocks=}, {physical_blocks.unique()=}')
+        # assert physical_blocks.shape[0] == physical_blocks.unique(dim=0).shape[0]
+
         return BlockMetadata(
             physical_blocks=physical_blocks,
             logical_blocks=logical_blocks,

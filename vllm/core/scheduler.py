@@ -419,6 +419,7 @@ class Scheduler:
         now = time.time()
         running_queue = policy.sort_by_priority(now, running_queue)
 
+        append_slot_seqs = []
         while running_queue:
             seq_group = running_queue[0]
             num_running_tokens = self._get_num_new_tokens(
@@ -458,7 +459,11 @@ class Scheduler:
                         swapped_out.append(seq_group)
                     break
             else:
-                self._append_slots(seq_group, blocks_to_copy)
+                # If running with KVCompress we append slots for all sequences at once
+                if self.kvcompress_enabled:
+                    append_slot_seqs.extend(seq_group.get_seqs(status=SequenceStatus.RUNNING))
+                else:
+                    self._append_slots(seq_group, blocks_to_copy)
                 is_prefill = seq_group.is_prefill()
                 if is_prefill:
                     prefill_seq_groups.append(
@@ -480,6 +485,9 @@ class Scheduler:
                     budget.add_num_seqs(seq_group.request_id, num_running_seqs)
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
+
+        if append_slot_seqs:
+            self.block_manager.batch_append_slots(append_slot_seqs)
 
         # Make sure all queues are updated.
         assert len(running_queue) == 0

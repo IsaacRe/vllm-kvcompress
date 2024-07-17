@@ -286,9 +286,9 @@ class CompressionMetrics:
     ) -> None:
         """Insert metadata for newly allocated blocks."""
         # debug
-        new_mask = torch.zeros_like(self.seq_index_by_block, dtype=torch.bool)
-        new_mask[metadata.physical_blocks] = True
-        alloc_mask = self.seq_index_by_block >= 0
+        # new_mask = torch.zeros_like(self.seq_index_by_block, dtype=torch.bool)
+        # new_mask[metadata.physical_blocks] = True
+        # alloc_mask = self.seq_index_by_block >= 0
         # print(f"INSERTING METADATA: {alloc_mask.sum()} total allocated blocks")
         # assert not (new_mask & alloc_mask).any(), "slot already allocated"
         
