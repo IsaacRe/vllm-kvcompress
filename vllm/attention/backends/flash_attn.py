@@ -18,6 +18,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
 from vllm.attention.ops.paged_attn import (PagedAttention, KVCAttention,
                                            PagedAttentionMetadata)
 from vllm.debug import CHECKPOINTER
+from vllm.benchmark import BENCHMARKER
 
 
 class FlashAttentionBackend(AttentionBackend):
@@ -305,6 +306,7 @@ class FlashAttentionImpl(AttentionImpl):
                 # normal attention
                 # When block_tables are not filled, it means q and k are the
                 # prompt, and they have the same length.
+                BENCHMARKER.start_range("flash_attn_varlen_func")
                 out = flash_attn_varlen_func(
                     q=query,
                     k=key,
@@ -318,6 +320,7 @@ class FlashAttentionImpl(AttentionImpl):
                     window_size=self.sliding_window,
                     alibi_slopes=self.alibi_slopes,
                 )
+                BENCHMARKER.end_range("flash_attn_varlen_func")
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
             else:
@@ -393,6 +396,7 @@ class FlashAttentionImpl(AttentionImpl):
 
 
 # For KV-Compress we require aggregated attention allocated to each key
+@BENCHMARKER.wrap()
 def _naive_kvc_attention(
     query: torch.Tensor,
     key: torch.Tensor,

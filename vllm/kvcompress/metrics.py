@@ -332,6 +332,7 @@ class CompressionMetrics:
         flat_indices = slot_mapping.flatten().type(torch.long)
         self.metrics[flat_indices] = self.metrics[flat_indices].uniform_()
 
+    @BENCHMARKER.wrap()
     def aggregate_prefill(
         self,
         prefill_metrics: torch.Tensor,  # [num_prefill_tokens, num_q_heads]
