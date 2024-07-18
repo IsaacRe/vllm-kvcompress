@@ -298,7 +298,6 @@ class BlockStateView:
         """Return the slot mapping for each KV head of each layer at the next
         position into the physical KV cache.
         """
-        assert not self.is_batch_view, "only called for single sequence view"
         # [ num_layers, 1, num_kv_heads ]
         next_pos = self.context_lens[:,self.seq_indices] - 1
         next_block = next_pos // self.block_size
