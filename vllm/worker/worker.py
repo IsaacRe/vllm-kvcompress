@@ -179,6 +179,14 @@ class Worker(WorkerBase):
             self.model_runner.remove_all_loras()
         gc.collect()
         torch.cuda.empty_cache()
+        print_num_tokens = num_gpu_blocks * self.cache_config.block_size
+        if self.kvcompress_config:
+            print_num_tokens //= (
+                self.kvcompress_config.num_layers
+                * self.kvcompress_config.num_kv_heads
+            )
+        print(f"Finished profiling. Found space for {num_gpu_blocks} blocks "
+              f"({print_num_tokens} tokens)")
         return num_gpu_blocks, num_cpu_blocks
 
     def initialize_cache(self, num_gpu_blocks: int,
