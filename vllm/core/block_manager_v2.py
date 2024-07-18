@@ -136,7 +136,8 @@ class BlockSpaceManagerV2(BlockSpaceManager):
             self.block_tables[seq.seq_id] = block_table.fork()
 
     def can_append_slots(self, seq_group: SequenceGroup,
-                         num_lookahead_slots: int) -> bool:
+                         num_lookahead_slots: int,
+                         num_free_blocks: Optional[int] = None) -> bool:
         """Determine if there is enough space in the GPU KV cache to continue
         generation of the specified sequence group.
 

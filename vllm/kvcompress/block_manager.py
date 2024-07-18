@@ -344,7 +344,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     @BENCHMARKER.wrap()
     def can_append_slots(self,
                          seq_group: SequenceGroup,
-                         num_lookahead_slots: int = 0) -> bool:
+                         num_lookahead_slots: int = 0,
+                         num_free_blocks: Optional[int] = None) -> bool:
         assert (num_lookahead_slots == 0
                 ), "lookahead allocation with KV-Compress not supported"
         assert (seq_group.num_seqs() <= 1,
@@ -353,9 +354,14 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         # Simple heuristic: If there are at least num_kv_heads * num_layers free blocks
         # for each sequence, we can append.
-        num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
+        num_free_gpu_blocks = (self.gpu_allocator.get_num_free_blocks()
+                               if num_free_blocks is None else num_free_blocks)
         new_block_count = self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
-        return new_block_count.sum() <= num_free_gpu_blocks
+        return new_block_count.sum().item() <= num_free_gpu_blocks
+    
+    def get_new_block_count(self, seq_group: SequenceGroup) -> int:
+        seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+        return self._get_new_block_count(seq_id=seq.seq_id, token_count=1).sum().item()
 
     @BENCHMARKER.wrap()
     def batch_append_slots(self, seqs: List[Sequence]) -> None:

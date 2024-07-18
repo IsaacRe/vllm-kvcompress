@@ -420,6 +420,8 @@ class Scheduler:
         running_queue = policy.sort_by_priority(now, running_queue)
 
         append_slot_seqs = []
+        remaining_blocks = (self.block_manager.gpu_allocator.get_num_free_blocks()
+                            if self.kvcompress_config else None)
         while running_queue:
             seq_group = running_queue[0]
             num_running_tokens = self._get_num_new_tokens(
@@ -430,7 +432,11 @@ class Scheduler:
             assert num_running_tokens != 0
 
             running_queue.popleft()
-            while not self._can_append_slots(seq_group):
+            while not self._can_append_slots(seq_group,
+                                             num_free_blocks=remaining_blocks):
+                if self.kvcompress_config:
+                    remaining_blocks -= self.block_manager.get_new_block_count(
+                        seq_group)
                 budget.subtract_num_batched_tokens(seq_group.request_id,
                                                    num_running_tokens)
                 num_running_seqs = seq_group.get_max_num_running_seqs()
@@ -924,7 +930,9 @@ class Scheduler:
             # Return physical cache moves to be executed by cache engine
             return kvc_output.cache_moves
 
-    def _can_append_slots(self, seq_group: SequenceGroup) -> bool:
+    def _can_append_slots(self,
+                          seq_group: SequenceGroup,
+                          num_free_blocks: Optional[int] = None) -> bool:
         """Determine whether or not we have enough space in the KV cache to
         continue generation of the sequence group.
         """
@@ -934,6 +942,7 @@ class Scheduler:
         return self.block_manager.can_append_slots(
             seq_group=seq_group,
             num_lookahead_slots=self._get_num_lookahead_slots(is_prefill),
+            num_free_blocks=num_free_blocks,
         )
 
     def _can_swap_in(self, seq_group: SequenceGroup) -> bool:
