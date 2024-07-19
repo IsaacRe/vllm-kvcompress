@@ -382,7 +382,10 @@ class Scheduler:
         policy: Policy,
         enable_chunking: bool = False,
     ) -> Tuple[deque, SchedulerRunningOutputs]:
-        """Schedule sequence groups that are running.
+        """Schedule sequence groups that are running in parallel.
+        Used exclusively by KV-Compress.
+
+        Copy-on-write and chunked prefill not supported.
 
         Running queue should include decode and chunked prefill requests.
 
@@ -403,14 +406,10 @@ class Scheduler:
             A tuple of remaining running queue (should be always 0) after
             scheduling and SchedulerRunningOutputs.
         """
-        # Blocks that need to be swapped or copied before model execution.
-        blocks_to_swap_out: Dict[int, int] = {}
-        blocks_to_copy: Dict[int, List[int]] = {}
-
+        assert not enable_chunking, "batched scheduling does not support chunked prefill"
         decode_seq_groups: List[ScheduledSequenceGroup] = []
         prefill_seq_groups: List[ScheduledSequenceGroup] = []
         preempted: List[SequenceGroup] = []
-        swapped_out: List[SequenceGroup] = []
 
         # NOTE(woosuk): Preemption happens only when there is no available slot
         # to keep all the sequence groups in the RUNNING state.
@@ -418,6 +417,8 @@ class Scheduler:
         # groups to preempt.
         now = time.time()
         running_queue = policy.sort_by_priority(now, running_queue)
+
+        remaining_blocks = self.block_manager.get_num_free_gpu_blocks()
 
         while running_queue:
             seq_group = running_queue[0]
@@ -428,8 +429,10 @@ class Scheduler:
             # queue, which means we can guarantee chunk size is at least 1.
             assert num_running_tokens != 0
 
+            new_blocks = self.block_manager.get_new_block_count(seq_group)
+
             running_queue.popleft()
-            while not self._can_append_slots(seq_group):
+            while new_blocks > remaining_blocks:
                 budget.subtract_num_batched_tokens(seq_group.request_id,
                                                    num_running_tokens)
                 num_running_seqs = seq_group.get_max_num_running_seqs()
@@ -441,24 +444,18 @@ class Scheduler:
                 if running_queue:
                     # Preempt the lowest-priority sequence groups.
                     victim_seq_group = running_queue.pop()
-                    preempted_mode = self._preempt(victim_seq_group,
-                                                   blocks_to_swap_out)
-                    if preempted_mode == PreemptionMode.RECOMPUTE:
-                        preempted.append(victim_seq_group)
-                    else:
-                        swapped_out.append(victim_seq_group)
+                    # We assume single sequence per group
+                    victim_seq = victim_seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+                    remaining_blocks += self.block_manager.get_sequence_block_count(
+                        victim_seq)
+                    preempted.append(victim_seq_group)
                 else:
                     # No other sequence groups can be preempted.
                     # Preempt the current sequence group.
-                    preempted_mode = self._preempt(seq_group,
-                                                   blocks_to_swap_out)
-                    if preempted_mode == PreemptionMode.RECOMPUTE:
-                        preempted.append(seq_group)
-                    else:
-                        swapped_out.append(seq_group)
+                    preempted.append(seq_group)
                     break
             else:
-                self._append_slots(seq_group, blocks_to_copy)
+                remaining_blocks -= self.block_manager.get_new_block_count(seq_group)
                 is_prefill = seq_group.is_prefill()
                 if is_prefill:
                     prefill_seq_groups.append(
@@ -471,15 +468,11 @@ class Scheduler:
                                                token_chunk_size=1))
                 budget.add_num_batched_tokens(seq_group.request_id,
                                               num_running_tokens)
-                # OPTIMIZATION:  Note that get_max_num_running_seqs is
-                # expensive. For the default scheduling chase where
-                # enable_chunking is False, num_seqs are updated before running
-                # this method, so we don't have to update it again here.
-                if enable_chunking:
-                    num_running_seqs = seq_group.get_max_num_running_seqs()
-                    budget.add_num_seqs(seq_group.request_id, num_running_seqs)
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
+
+        self._batch_preempt_by_recompute(preempted)
+        self._batch_append_slots(decode_seq_groups + prefill_seq_groups)
 
         # Make sure all queues are updated.
         assert len(running_queue) == 0
@@ -488,9 +481,9 @@ class Scheduler:
             decode_seq_groups=decode_seq_groups,
             prefill_seq_groups=prefill_seq_groups,
             preempted=preempted,
-            swapped_out=swapped_out,
-            blocks_to_swap_out=blocks_to_swap_out,
-            blocks_to_copy=blocks_to_copy,
+            swapped_out=[],
+            blocks_to_swap_out={},
+            blocks_to_copy={},
             num_lookahead_slots=self._get_num_lookahead_slots(
                 is_prefill=False))
 
@@ -873,12 +866,21 @@ class Scheduler:
         # NOTE: If `_schedule_prefills` doesn't enable chunking, self.running
         # only contains decode requests, not chunked prefills.
         if len(prefills.seq_groups) == 0:
-            remaining_running, running_scheduled = self._schedule_running(
-                self.running,
-                budget,
-                curr_loras,
-                fcfs_policy,
-                enable_chunking=False)
+            # When running KV-Compress we modify block table batches in parallel
+            if self.kvcompress_enabled:
+                remaining_running, running_scheduled = self._batch_schedule_running(
+                    self.running,
+                    budget,
+                    curr_loras,
+                    fcfs_policy,
+                    enable_chunking=False)
+            else:
+                remaining_running, running_scheduled = self._schedule_running(
+                    self.running,
+                    budget,
+                    curr_loras,
+                    fcfs_policy,
+                    enable_chunking=False)
 
             # If any sequence group is preempted, do not swap in any sequence
             # group. because it means there's no slot for new running requests.
@@ -1156,6 +1158,13 @@ class Scheduler:
             seq.status = SequenceStatus.RUNNING
 
     @BENCHMARKER.wrap()
+    def _batch_append_slots(self, seq_groups: List[ScheduledSequenceGroup]) -> None:
+        seqs: List[Sequence] = []
+        for seq_group in seq_groups:
+            seqs.extend(seq_group.seq_group.get_seqs(status=SequenceStatus.RUNNING))
+        self.block_manager.batch_append_slots(seqs)
+
+    @BENCHMARKER.wrap()
     def _append_slots(
         self,
         seq_group: SequenceGroup,
@@ -1212,6 +1221,15 @@ class Scheduler:
         else:
             raise AssertionError("Invalid preemption mode.")
         return preemption_mode
+
+    def _batch_preempt_by_recompute(self, seq_groups: List[SequenceGroup]) -> None:
+        seqs: List[Sequence] = []
+        for seq_group in seq_groups:
+            seqs.extend(seq_group.get_seqs(status=SequenceStatus.RUNNING))
+        self.block_manager.free_batch(seqs)
+        for seq in seqs:
+            seq.status = SequenceStatus.WAITING
+            seq.reset_state_for_recompute()
 
     def _preempt_by_recompute(
         self,

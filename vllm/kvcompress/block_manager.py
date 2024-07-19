@@ -108,7 +108,8 @@ class ParallelBlockAllocator(BlockAllocatorBase):
 
     def allocate(self, num_blocks: int) -> BlockTableView:
         if num_blocks > self.free_count:
-            raise ValueError("Out of memory! No free blocks are available.")
+            raise ValueError(f"Out of memory! Requested {num_blocks} out of "
+                             f"{self.free_count} available blocks.")
         self.free_count -= num_blocks
         allocated = self.block_numbers[self.free_mask][:num_blocks]
         self.free_mask[allocated] = False
@@ -128,7 +129,7 @@ class ParallelBlockAllocator(BlockAllocatorBase):
         self.free_mask[:] = True
 
     def get_num_free_blocks(self) -> int:
-        return self.free_count
+        return int(self.free_count)
     
     def contains_block(self, block_hash: int) -> bool:
         raise NotImplementedError
@@ -233,6 +234,26 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         return freed_blocks
 
+    def _remove_sequence_batch(self, seqs: List[Sequence]) -> Optional[torch.Tensor]:
+        batch_slot_idxs = []
+        for seq in seqs:
+            if seq.seq_id in self.batch_slot_mapping:
+                batch_slot_idx = self.batch_slot_mapping.pop(seq.seq_id)
+                batch_slot_idxs.append(batch_slot_idx)
+                self.free_batch_slots.add(batch_slot_idx)
+        if not batch_slot_idxs:
+            return
+        freed_blocks = (
+            self.block_state
+                .get_block_state_batch_view(batch_slot_idxs)
+                .get_allocated_blocks()
+                .type(torch.long)
+                .to(self.gpu_allocator.device)
+        )
+        self.gpu_allocator.free(freed_blocks)
+        self.block_state.context_lens[:,batch_slot_idxs] = 0
+        return freed_blocks
+
     def _get_new_block_count(self, seq_id: int, token_count: int):
         batch_slot_idx = self.batch_slot_mapping[seq_id]
         new_kv_count = (
@@ -308,6 +329,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def get_sequence_kv_count(self, seq: Sequence) -> int:
         batch_slot_idx = self.batch_slot_mapping[seq.seq_id]
         return int(self.block_state.context_lens[:,batch_slot_idx].sum())
+
+    def get_sequence_block_count(self, seq: Sequence) -> int:
+        batch_slot_idx = self.batch_slot_mapping[seq.seq_id]
+        kv_counts = self.block_state.context_lens[:,batch_slot_idx]
+        return int(((kv_counts + self.block_size - 1) // self.block_size).sum())
 
     def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
         assert (seq_group.num_seqs() <= 1
@@ -409,6 +435,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             # Already freed or haven't been scheduled yet.
             return
         return self._remove_sequence(seq.seq_id)
+
+    @BENCHMARKER.wrap()
+    def free_batch(self, seqs: List[Sequence]) -> Optional[torch.Tensor]:
+        return self._remove_sequence_batch(seqs)
 
     @BENCHMARKER.wrap()
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> torch.Tensor:
