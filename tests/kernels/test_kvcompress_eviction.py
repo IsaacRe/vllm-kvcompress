@@ -735,6 +735,7 @@ def test_kvcompress_schedule_evictions(
         out_evicted_kv_indices,
         out_evicted_logical_indices,
         out_evicted_kv_count,
+        hanging_token_count.transpose(0, 1).clone(),
         evicted_kv_offsets,
         sorted_indices,
         seq_block_offsets,

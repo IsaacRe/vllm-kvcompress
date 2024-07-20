@@ -6,6 +6,7 @@ void schedule_cache_evictions(
   torch::Tensor& evicted_kv_indices,        // [max_evicted_kv]
   torch::Tensor& evicted_logical_indices,   // [max_evicted_kv]
   torch::Tensor& evicted_kv_count,          // [num_seqs, num_layers, num_kv_heads]
+  torch::Tensor& remaining_kv_count,        // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& evicted_kv_offsets,        // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& sorted_indices,            // [total_blocks * BLOCK_SIZE] sorted indices of concat([metrics_0, ..., metrics_N]) where metrics_i[j] is eviction metric for kv j%BLOCK_SIZE of block j/BLOCK_SIZE in sequence i
   torch::Tensor& seq_block_offsets,         // [num_seqs]
