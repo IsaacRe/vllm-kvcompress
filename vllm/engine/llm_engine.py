@@ -642,6 +642,8 @@ class LLMEngine:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.
                 self.kvcompress_state.kv_metrics.aggregate_decode()
+                for seq_group in scheduler_outputs.scheduled_seq_groups:
+                    self.scheduler.block_manager.validate_protected_positions(seq_group.seq_group.get_seqs()[0])
         else:
             output = []
 
