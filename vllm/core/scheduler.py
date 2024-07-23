@@ -1094,6 +1094,7 @@ class Scheduler:
                 # Multi-sequence groups not supported with KV-Compress
                 [seq] = seq_group.get_seqs(status=SequenceStatus.RUNNING)
                 block_state_index = self.block_manager.get_batch_slot_index(seq)
+                assert self.block_manager.block_state.get_block_state_seq_view(block_state_index).context_lens.min() >= 0, "hi"
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data

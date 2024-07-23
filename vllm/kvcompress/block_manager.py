@@ -216,6 +216,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         block_state_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
         metadata = block_state_view.get_allocated_block_metadata()
         self.kv_metrics.insert_metadata(metadata)
+        self.kv_metrics.validate_seq_metadata(batch_slot_idx, seq_len - 1)
 
     def _remove_sequence(self, seq_id: int) -> torch.Tensor:
         batch_slot_idx = self.batch_slot_mapping.pop(seq_id)
@@ -285,8 +286,22 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                 self.block_state.get_block_state_batch_view(batch_slots_idxs)
                                 .get_batch_new_block_metadata([seq.data.get_len() - 1 for seq in seqs])
             )
+            # for seq in seqs:
+            #     self.kv_metrics.validate_seq_metadata(self.batch_slot_mapping[seq.seq_id], seq.data.get_len() - 1)
             self.kv_metrics.insert_metadata(metadata)
-
+            # for seq in seqs:
+            #     seq_pos = seq.data.get_len() - 1
+            #     seq_index = self.batch_slot_mapping[seq.seq_id]
+            #     mask_ = self.kv_metrics.seq_index_by_block == seq_index
+            #     non_evictable = self.kv_metrics.token_positions[mask_] > seq_pos - 50
+            #     non_evictable_ = self.kv_metrics.token_positions[mask_] > seq_pos - 50
+            #     print(f"{non_evictable_.sum()=}")
+            #     if non_evictable_.sum() < min(50, seq_pos) * 32 * 32:
+            #         print(f"{non_evictable_.sum()=} {seq_pos * 32 * 32=}")
+            #         max_ = self.kv_metrics.token_positions[mask_].max()
+            #         print(f"{max_=}")
+            #         print(f"{(self.kv_metrics.token_positions[mask_] == max_).sum()=}")
+            #         raise Exception(seq_index)
 
     def _append_to_sequence(self, seq: Sequence, token_count: int):
         seq_id = seq.seq_id
@@ -312,6 +327,86 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
             # # assert parity between new_mask and mask computed in get_new_block_metadata
             # assert (new_mask == mask[:,0]).all()
+
+    def validate_protected_positions(self, seq: Sequence, cache_moves = None, local_idx = None, decrement = False, test_case=False):
+        batch_slot_idx = self.batch_slot_mapping[seq.seq_id]
+        last_pos = seq.data.get_len() - 2 - int(decrement)
+
+        #####
+        mask = self.kv_metrics.seq_index_by_block == batch_slot_idx
+        layer_head_mask = mask & (self.kv_metrics.layer_index_by_block == 2) & (self.kv_metrics.head_index_by_block == 21)
+        test_pos = 82
+        #######
+
+        if cache_moves:
+            move_idx, move_cnt, move_offset = cache_moves.index, cache_moves.count, cache_moves.offsets
+            tok_pos_flat = self.kv_metrics.token_positions.flatten()
+            for l in range(self.num_layers):
+                for h in range(self.num_kv_heads):
+                    offset = move_offset[local_idx,l,h]
+                    src = move_idx[offset:offset+move_cnt[local_idx,l,h],1]
+                    dst = move_idx[offset:offset+move_cnt[local_idx,l,h],0]
+                    sum_moved = (tok_pos_flat[src] >= last_pos - 50).sum()
+                    remaining_mask = (
+                        (self.kv_metrics.seq_index_by_block == batch_slot_idx) &
+                        (self.kv_metrics.head_index_by_block == h) &
+                        (self.kv_metrics.layer_index_by_block == l)
+                    )
+                    src_pos = tok_pos_flat[src]
+                    sum_remaining = (self.kv_metrics.token_positions[remaining_mask] >= last_pos - 50).sum()
+                    assert sum_moved + sum_remaining >= 50, f"{((batch_slot_idx, l, h), sum_moved, sum_remaining)}, src_pos={src_pos}"
+                    for i in range(max(0, last_pos - 48), last_pos, 10):
+                        sum_moved = (tok_pos_flat[src] == i).sum()
+                        sum_remaining = (self.kv_metrics.token_positions[remaining_mask] == i).sum()
+                        assert sum_moved + sum_remaining >= 1, f"{((batch_slot_idx, l, h), sum_moved, sum_remaining)}, {sum_moved=}, {sum_remaining=}, {(i, last_pos)} src_pos={src_pos}"
+            
+            #####
+            offset = move_offset[local_idx,2,21]
+            src = move_idx[offset:offset+move_cnt[local_idx,2,21], 1]
+            pos_mask = tok_pos_flat[src] == test_pos
+            dst_masked = move_idx[offset:offset+move_cnt[local_idx,2,21], 0][pos_mask]
+            print(f"STEP 2: w/o moves={torch.where(self.kv_metrics.token_positions[layer_head_mask].flatten() == 82)}, w/ moves={dst_masked}, {src[pos_mask]=}")
+            #####
+            return
+
+        tot = self.kv_metrics.token_positions[mask] >= last_pos - 50
+        assert tot.sum() >= 50 * 32 * 32, tot.sum()
+
+        # specific test case seq=0 layer=2 head=21
+        if test_case:
+            i = last_pos - 48
+            print(f"STEP 4: {torch.where(self.kv_metrics.token_positions[layer_head_mask].flatten() == 82)=}")
+            print(f"pos={i}, {(self.kv_metrics.token_positions[layer_head_mask] == i).sum()=}")
+        else:
+            #####
+            print(f"STEP 1: {torch.where(self.kv_metrics.token_positions[layer_head_mask].flatten() == 82)=}")
+            ######
+
+        for i in range(max(0, last_pos - 48), last_pos, 10):
+            last_pos_kv = self.kv_metrics.token_positions[mask] == i
+            if not last_pos_kv.sum() >= 32 * 32:
+                assert last_pos_kv.any(dim=-1).sum() < 32 * 32
+                assert self.num_layers == self.num_kv_heads == 32, "duh-doy"
+                curr_mask = None
+                count_ = 0
+                for l in range(self.num_layers):
+                    # print(f"COUNT: {count_}")
+                    layer_mask = self.kv_metrics.layer_index_by_block[mask] == l
+                    for h in range(self.num_kv_heads):
+                        new_mask = (
+                            last_pos_kv.any(dim=-1) &
+                            layer_mask &
+                            (self.kv_metrics.head_index_by_block[mask] == h)
+                        )
+                        assert (curr_mask is None) or not (new_mask & curr_mask).any()
+                        if not new_mask.any():
+                            # print(f"Failed with {(batch_slot_idx, l, h)}")
+                            break
+                        count_ += 1
+                        curr_mask = new_mask if curr_mask is None else (new_mask | curr_mask)
+                    assert count_ >= self.num_kv_heads
+                assert count_ == 32 * 32, count_
+                assert False, (i, last_pos, last_pos_kv.sum())
 
     def get_batch_slot_index(self, seq: Sequence) -> int:
         return self.batch_slot_mapping[seq.seq_id]

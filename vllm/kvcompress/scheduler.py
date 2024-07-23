@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 import torch
 import math
+from copy import deepcopy
 
 from vllm.debug import CHECKPOINTER
 from vllm._custom_ops import schedule_cache_evictions, schedule_cache_moves
@@ -133,19 +134,28 @@ class CompressionScheduler:
                 return 0, 0
             # Total count of KVs in compressible range if this sequence had never
             # been compressed
-            uncompressed_kv_count = (
+            compressible_kv_count = (
                 compressible_token_count
                 * self.config.num_layers * self.config.num_kv_heads
             )
-            # Actual count of KVs in compressible range
+            # Actual count of KVs in compressible range TODO
             compressed_kv_count = (
                 self.block_manager.get_sequence_kv_count(seq)
                 - self.config.protected_window_size * self.config.num_layers
                 * self.config.num_kv_heads
             )
+            protected_blocks = (
+                (self.config.protected_window_size + self.block_size - 1) // self.block_size
+                * self.config.num_layers * self.config.num_kv_heads
+            )
             # Target count of KVs in compressible range that will yield the
             # desired compression rate
-            target_kv_count = math.ceil(uncompressed_kv_count * compression_rate)
+            target_kv_count = max(
+                math.ceil(compressible_kv_count * compression_rate),
+                protected_blocks * self.block_size,
+            )
+            # target_kv_count = math.ceil(compressible_kv_count * compression_rate)
+
             evict_kv_count = max(0, compressed_kv_count - target_kv_count)
 
         evict_block_count = evict_kv_count // self.block_size
@@ -154,6 +164,12 @@ class CompressionScheduler:
         if self.config.even_layer_evict:
             evict_block_count = ((evict_block_count // self.config.num_layers)
                                  * self.config.num_layers)
+            
+        assert evict_block_count <= max(
+            self.block_manager.get_sequence_block_count(seq)
+            - (self.config.protected_window_size + self.block_size - 1) // self.block_size * self.config.num_kv_heads * self.config.num_layers,
+            0,
+        )
 
         evict_kv_count = evict_block_count * self.block_size
         return evict_kv_count, evict_block_count
@@ -161,9 +177,13 @@ class CompressionScheduler:
     @BENCHMARKER.wrap()
     def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         # Benchmark - 1
-        BENCHMARKER.start_range("_schedule_compression - 1")
-
+        # BENCHMARKER.start_range("_schedule_compression - 1")
+        self.compression_metrics.debug_seqs = deepcopy(self._iters_since_compression)
+        print(f"(seq_idx, iters_since_compression){[(self.block_manager.batch_slot_mapping[seq.seq_id], self._iters_since_compression.get(seq.seq_id)) for seq in seqs]}")
         self._update_sequences(seqs)
+
+        # for seq in seqs:
+        #     self.block_manager.validate_protected_positions(seq)
 
         # Select sequences to compress this iteration and determine blocks to
         # evict.
@@ -175,12 +195,12 @@ class CompressionScheduler:
             reverse=True,
         ):
             # If sequence is not long enough for compression, skip.
-            evicted_kv_count, evicted_block_count = self._schedule_seq_evictions(seq)
+            _, evicted_block_count = self._schedule_seq_evictions(seq)
             if evicted_block_count == 0:
                 continue
 
             # Stop once we reach the maximum number of KVs to compress.
-            total_kv_count += self.block_manager.get_sequence_kv_count(seq)
+            total_kv_count += self.block_manager.get_sequence_block_count(seq) * self.block_size
             if total_kv_count > self.config.max_kv_per_compression:
                 break
 
@@ -192,8 +212,8 @@ class CompressionScheduler:
             return
 
         # Benchmark - 2
-        BENCHMARKER.end_range("_schedule_compression - 1")
-        BENCHMARKER.start_range("_schedule_compression - 2")
+        # BENCHMARKER.end_range("_schedule_compression - 1")
+        # BENCHMARKER.start_range("_schedule_compression - 2")
 
         # Checkpoint
         if CHECKPOINTER.do_checkpoint:
@@ -223,7 +243,7 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__seq_lens', torch.tensor(seq_lens))
 
         last_token_positions = torch.tensor(
-            seq_lens, dtype=torch.int, device=self.device) - 1
+            seq_lens, dtype=torch.int, device=self.device) - 2
 
         # Sort compression metrics
         # Should not have begun handling requests
@@ -236,8 +256,8 @@ class CompressionScheduler:
         # print(f"RAN SORT: {final_mem - init_mem}")
 
         # Benchmark - 3
-        BENCHMARKER.end_range("_schedule_compression - 2")
-        BENCHMARKER.start_range("_schedule_compression - 3")
+        # BENCHMARKER.end_range("_schedule_compression - 2")
+        # BENCHMARKER.start_range("_schedule_compression - 3")
 
         # Get context lengths, block tables and hanging token counts
         batch_block_state = self.block_manager.get_block_state_batch_view(
@@ -268,6 +288,23 @@ class CompressionScheduler:
         evicted_kv_offsets = torch.cat(
             [torch.zeros_like(evicted_kv_offsets[:1]), evicted_kv_offsets[:-1]]
         ).reshape(*context_lens.transpose(0, 1).shape).type(torch.int)
+
+        # for i in range(last_token_positions.shape[0] - 1):
+        #     last_evictable_position = last_token_positions[i] - self.config.protected_window_size
+        #     start_offset = sort_output.seq_block_offsets[i]
+        #     end_offset = sort_output.seq_block_offsets[i+1]
+        #     out_of_range_seq_kvs = sort_output.token_positions[start_offset:end_offset] > last_evictable_position
+        #     protected_kv_count = self.config.protected_window_size * self.config.num_layers * self.config.num_kv_heads
+        #     total_kv_count = (last_token_positions[i] + 1) * self.config.num_layers * self.config.num_kv_heads
+        #     assert out_of_range_seq_kvs.sum() >= min(protected_kv_count, total_kv_count), f"{out_of_range_seq_kvs.sum()=} {protected_kv_count=} {total_kv_count=}"
+        # last_evictable_position = last_token_positions[-1] - self.config.protected_window_size
+        # start_offset = sort_output.seq_block_offsets[-1]
+        # end_offset = sort_output.sorted_indices.numel()
+        # out_of_range_seq_kvs = sort_output.token_positions[start_offset:end_offset] > last_evictable_position
+        # protected_kv_count = self.config.protected_window_size * self.config.num_layers * self.config.num_kv_heads
+        # total_kv_count = (last_token_positions[i] + 1 )* self.config.num_layers * self.config.num_kv_heads
+        # assert out_of_range_seq_kvs.sum() >= min(protected_kv_count, total_kv_count), f"{out_of_range_seq_kvs.sum()=} {protected_kv_count=} {total_kv_count=}"
+
         schedule_cache_evictions(
             self.evicted_head_indices,
             self.evicted_logical_indices,
@@ -291,6 +328,20 @@ class CompressionScheduler:
             self.config.even_layer_evict,
             self.control_layers,
         )
+
+        # for i in range(last_token_positions.shape[0] - 1):
+        #     last_evictable_position = last_token_positions[i] - self.config.protected_window_size
+        #     start_offset = sort_output.seq_block_offsets[i]
+        #     end_offset = sort_output.seq_block_offsets[i+1]
+        #     mask = self.evicted_logical_indices[start_offset * self.block_size:end_offset * self.block_size] != MAX_INT
+        #     # assert (sort_output.token_positions[start_offset:end_offset].flatten()[mask] <= last_evictable_position).all()
+        #     assert (self.evicted_logical_indices[start_offset * self.block_size:end_offset * self.block_size][mask] <= last_evictable_position).all()
+        # last_evictable_position = last_token_positions[-1] - self.config.protected_window_size
+        # start_offset = sort_output.seq_block_offsets[-1]
+        # end_offset = sort_output.sorted_indices.numel()
+        # mask = self.evicted_logical_indices[start_offset * self.block_size:end_offset * self.block_size] != MAX_INT
+        # # assert (sort_output.token_positions[start_offset:end_offset].flatten()[mask] <= last_evictable_position).all()
+        # assert (self.evicted_logical_indices[start_offset * self.block_size:end_offset * self.block_size][mask] <= last_evictable_position).all()
         if self.config.even_layer_evict:
             raise NotImplementedError("need to implement for flat evicted_kv_indices")
             # debug
@@ -308,8 +359,8 @@ class CompressionScheduler:
 
 
         # Benchmark - 4
-        BENCHMARKER.end_range("_schedule_compression - 3")
-        BENCHMARKER.start_range("_schedule_compression - 4")
+        # BENCHMARKER.end_range("_schedule_compression - 3")
+        # BENCHMARKER.start_range("_schedule_compression - 4")
 
         # # Truncate eviction counts to last full evicted block
         # no_eviction = evicted_kv_count < hanging_token_count
@@ -328,6 +379,40 @@ class CompressionScheduler:
         self.total_evicted += evicted_kv_count.sum().item()
         print(f"TOTAL EVICTED:\nKVs: {self.total_evicted}\nTokens: {self.total_evicted / 32 / 32}")
         evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
+        protected_blocks = (self.config.protected_window_size + self.block_size - 1) // self.block_size
+        assert (context_lens.transpose(0, 1) >= torch.minimum(context_lens.transpose(0, 1), torch.tensor(self.config.protected_window_size))).all()
+        num_blocks = (context_lens.transpose(0, 1) + self.block_size - 1) // self.block_size
+        check = (num_blocks - evicted_block_count >= torch.minimum(num_blocks, torch.tensor(protected_blocks))).all()
+        if not check:
+            mask = (num_blocks - evicted_block_count) < torch.minimum(num_blocks, torch.tensor(protected_blocks))
+            print(torch.where(mask))
+            print(context_lens.transpose(0, 1)[mask])
+            print(evicted_block_count[mask])
+            print((num_blocks - evicted_block_count).min())
+
+        assert check
+
+        pos_flat = sort_output.token_positions.flatten()
+        for i in range(sort_output.seq_block_offsets.shape[0] - 1):
+            for l in range(self.config.num_layers):
+                for h in range(self.config.num_kv_heads):
+                    evicted_logical = self.evicted_logical_indices[evicted_kv_offsets[i,l,h]:evicted_kv_offsets[i,l,h]+evicted_kv_count[i,l,h]]
+                    kv_idxs = block_tables[l,i,h,evicted_logical // self.block_size] * self.block_size + evicted_logical % self.block_size
+                    if kv_idxs.numel() > 0:
+                        assert pos_flat[kv_idxs].max() <= (last_token_positions[i]) - self.config.protected_window_size, "please"
+            # evicted = sort_output.sorted_indices[sort_output.seq_block_offsets[i] * self.block_size: sort_output.seq_block_offsets[i+1] * self.block_size]
+            # evicted_pos = pos_flat[evicted.type(torch.long)]
+            # assert evicted_pos.max() <= (last_token_positions[i]) - self.config.protected_window_size, "please"
+
+        # Failing seq=0, layer=1, head=8
+        count_ = evicted_kv_count[0,1,8]
+        offset_ = evicted_kv_offsets[0,1,8]
+        logical_indices = self.evicted_logical_indices[offset_:offset_+count_]
+        physical_indices = block_tables[1,0,8,logical_indices//self.block_size] * self.block_size + logical_indices % self.block_size
+        positions = self.block_manager.kv_metrics.token_positions.flatten()[physical_indices]
+        print(f"{count_} evictions at position {last_token_positions[0]} with positions: {positions} (max={positions.max()})")
+        print(f"context length={context_lens[1,0,8]}, evicted logical indices={logical_indices}")
+
         # assert (evicted_block_count * self.block_size == evicted_kv_count).all()
 
         # print("TOTAL EVICTED KVS:")
@@ -381,8 +466,8 @@ class CompressionScheduler:
         )
 
         # Benchmark - 5
-        BENCHMARKER.end_range("_schedule_compression - 4")
-        BENCHMARKER.start_range("_schedule_compression - 5")
+        # BENCHMARKER.end_range("_schedule_compression - 4")
+        # BENCHMARKER.start_range("_schedule_compression - 5")
 
         cache_moves = CacheMoves(self.cache_move_indices, cache_moves_count, evicted_kv_offsets)
 
@@ -400,10 +485,39 @@ class CompressionScheduler:
         # Free blocks that were removed by compression
         freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)
 
-        self.compression_metrics.remove_metadata(freed_blocks)
+        # Failing seq=0 layer=1 head=8
+        seq_layer_head_mask = (
+            (self.block_manager.kv_metrics.seq_index_by_block[freed_blocks] == 0) &
+            (self.block_manager.kv_metrics.layer_index_by_block[freed_blocks] == 1) &
+            (self.block_manager.kv_metrics.head_index_by_block[freed_blocks] == 8)
+        )
+        pos_ = self.block_manager.kv_metrics.token_positions[freed_blocks][seq_layer_head_mask]
+        removed = ((pos_ > last_token_positions[0] - 50) & (pos_ <= last_token_positions[0])).sum()
+        print(f"Removing metadata for {removed} KVs in protected range")
 
+        for seq in seqs_to_compress:
+            self.block_manager.validate_protected_positions(seq)
+            break
+        self.compression_metrics.remove_metadata(freed_blocks)
+        for i, seq in enumerate(seqs_to_compress):
+            self.block_manager.validate_protected_positions(seq, cache_moves, local_idx=i)
+            print(f"STEP 3 (pre-schedule): {self.block_manager.kv_metrics.token_positions.flatten()[9602]=}")
+            break
+
+        # Failing after execute_cache_moves: seq=0 layer=2 head=21
+        flat_pos = self.block_manager.kv_metrics.token_positions.flatten()
+        count = cache_moves.count[0,2,21]
+        print(f"{count=}")
+        offset = cache_moves.offsets[0,2,21]
+        indices = cache_moves.index[offset:offset+count]
+        print(f"{context_lens[2,0,21]}")
+        print(f"{evicted_block_count[0,2,21]}")
+        pos_src = flat_pos[indices[:,1]]
+        pos_dst = flat_pos[indices[:,0]]
+        print(f"{pos_src=}")
+        print(f"{pos_dst=}")
         # End Benchmark - 5
-        BENCHMARKER.end_range("_schedule_compression - 5")
+        # BENCHMARKER.end_range("_schedule_compression - 5")
 
         return CompressionOutputs(cache_moves, freed_block_count)
 

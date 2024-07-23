@@ -203,9 +203,18 @@ class BlockState:
         #                             - remaining_slots)
 
         # assert ((removed_kv_count - remaining_slots)[removed_kv_count > 0] >= 0).all()
-        self.context_lens[:,seq_indices] -= torch.clamp(
+        print(self.context_lens[:,seq_indices].min())
+        removed = torch.clamp(
             removed_kv_count - remaining_slots, min=0
         )
+        ctx = self.context_lens[:,seq_indices].clone()
+        self.context_lens[:,seq_indices] -= removed
+        mask = self.context_lens[:,seq_indices] < 0
+        print(f"{removed_kv_count[mask]=}")
+        print(f"{remaining_slots[mask]=}")
+        print(f"{removed[mask]=}")
+        print(f"{ctx[mask]=}")
+        assert (self.context_lens >= 0).all(), self.context_lens.min()
 
         # if debug_freed_idx is not None:
         #     post_mask = self.get_block_state_batch_view(seq_indices).allocated_block_mask()
@@ -299,10 +308,12 @@ class BlockStateView:
         position into the physical KV cache.
         """
         # [ num_layers, 1, num_kv_heads ]
+        assert self.context_lens[:,self.seq_indices].min() > 0, self.context_lens[:,self.seq_indices].min()
         next_pos = self.context_lens[:,self.seq_indices] - 1
+        assert next_pos.min() >= 0
         next_block = next_pos // self.block_size
         next_offset = next_pos % self.block_size
-        assert next_block.max() < self.block_tables.shape[-1]
+        assert next_block.max() < self.block_tables.shape[-1] and next_block.min() >= 0
         block_numbers = (                   # [ num_layers, 1, num_kv_heads, 1 ]
             self.block_tables[:,self.seq_indices]
                 .gather(dim=-1, index=next_block[...,None].type(torch.int64))
@@ -568,6 +579,11 @@ class BlockStateView:
 
         # print(f'{physical_blocks=}, {physical_blocks.unique()=}')
         # assert physical_blocks.shape[0] == physical_blocks.unique(dim=0).shape[0]
+
+        for seq_index, last_pos in zip(self.seq_indices, last_token_position):
+            mask_ = seq_indices == seq_index
+            assert (token_positions[mask_] == token_positions[mask_][0:1]).all()
+            assert (token_positions[mask_][:,0] == last_pos).all(), (token_positions[mask_][:,0], last_pos)
 
         return BlockMetadata(
             physical_blocks=physical_blocks,

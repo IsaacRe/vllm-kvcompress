@@ -629,6 +629,10 @@ class LLMEngine:
                 self.model_executor.execute_cache_moves(cache_moves,
                                                         self.kvcompress_state.kv_metrics)
                 BENCHMARKER.end_range("execute_cache_moves")
+                for seq_group in scheduler_outputs.scheduled_seq_groups:
+                    self.scheduler.block_manager.validate_protected_positions(seq_group.seq_group.get_seqs()[0], test_case=True)
+                    break
+                raise Exception("success")
             BENCHMARKER.start_range("execute_model")
             output = self.model_executor.execute_model(
                 seq_group_metadata_list=seq_group_metadata_list,
