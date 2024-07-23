@@ -1019,26 +1019,6 @@ class Scheduler:
         else:
             return self._schedule_default()
 
-    @BENCHMARKER.wrap()
-    def _schedule_kvcompress(self) -> Optional[CacheMoves]:
-        """Check whether to schedule KV cache compression this 
-        iteration. If compression is scheduled, the KV-Compress
-        scheduler will determine which sequences to compress, and
-        return a dict of freed blocks for each compressed sequence
-        and tensor of physical cache moves that must be actioned
-        for the compression to take effect. The freed blocks must
-        be recorded by the scheduler before the current round of
-        inference scheduling and the cache moves must be executed
-        by the cache engine before the current inference step.
-        """
-        # Assume all sequence groups have a single sequence when using
-        # KV-Compress.
-        seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
-        if seqs and (kvc_output := 
-                     self.kvcompress_scheduler.schedule_compression(seqs)):
-            # Return physical cache moves to be executed by cache engine
-            return kvc_output.cache_moves
-
     def _can_append_slots(self, seq_group: SequenceGroup) -> bool:
         """Determine whether or not we have enough space in the KV cache to
         continue generation of the sequence group.
@@ -1061,15 +1041,32 @@ class Scheduler:
         )
 
     @BENCHMARKER.wrap()
+    def schedule_kvcompress(self) -> Optional[CacheMoves]:
+        """Check whether to schedule KV cache compression this 
+        iteration. If compression is scheduled, the KV-Compress
+        scheduler will determine which sequences to compress, and
+        return a dict of freed blocks for each compressed sequence
+        and tensor of physical cache moves that must be actioned
+        for the compression to take effect. The freed blocks must
+        be recorded by the scheduler before the current round of
+        inference scheduling and the cache moves must be executed
+        by the cache engine before the current inference step.
+        """
+        # Assume all sequence groups have a single sequence when using
+        # KV-Compress.
+        seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
+        if seqs and (kvc_output := 
+                     self.kvcompress_scheduler.schedule_compression(seqs)):
+            # Return physical cache moves to be executed by cache engine
+            return kvc_output.cache_moves
+
+    @BENCHMARKER.wrap()
     def schedule(
         self
-    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, Optional[CacheMoves]]:
+    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
-        cache_moves = (self._schedule_kvcompress()
-                    if self.kvcompress_enabled else None)
-
         scheduler_outputs = self._schedule()
         now = time.time()
 
@@ -1136,7 +1133,7 @@ class Scheduler:
             self.block_manager.mark_blocks_as_computed(
                 scheduled_seq_group.seq_group)
 
-        return seq_group_metadata_list, scheduler_outputs, cache_moves
+        return seq_group_metadata_list, scheduler_outputs
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)

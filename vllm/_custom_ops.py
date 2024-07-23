@@ -614,6 +614,7 @@ def schedule_cache_moves(
     context_lens: torch.Tensor,
     block_size: int,
 ) -> None:
+    out_cache_moves_indices.fill_(0)
     # kvc_ops.schedule_t1_cache_moves(
     ref_schedule_t1_cache_moves(
         out_cache_moves_indices,
@@ -641,6 +642,10 @@ def ref_execute_cache_moves(
     ####
     print(f"STEP 3: {kv_positions.flatten()[9602]=}")
     ####
+    # cache_move_dst = cache_moves_idx[:,0].type(torch.long)
+    # cache_move_src = cache_moves_idx[:,1].type(torch.long)
+    # cat = torch.cat([cache_move_dst[cache_move_dst >= 0], cache_move_src[cache_move_src >= 0]])
+    # assert len(cat) == len(cat.unique())
     block_size = v_cache.shape[2]
     num_seqs, num_layers, num_kv_heads = cache_moves_count.shape
     for i in range(num_seqs):
@@ -655,6 +660,7 @@ def ref_execute_cache_moves(
                     src_block_num = cache_moves_idx[cache_moves_offset + k, 1] // block_size
                     src_block_offset = cache_moves_idx[cache_moves_offset + k, 1] % block_size
                     kv_metrics[dst_block_num, dst_block_offset] = kv_metrics[src_block_num, src_block_offset]
+                    assert kv_positions[dst_block_num, dst_block_offset] == kv_positions.view(-1)[cache_moves_idx[cache_moves_offset + k, 0]]
                     kv_positions[dst_block_num, dst_block_offset] = kv_positions[src_block_num, src_block_offset]
                     k_cache[dst_block_num, :, dst_block_offset] = k_cache[src_block_num, :, src_block_offset]
                     v_cache[dst_block_num, :, dst_block_offset] = v_cache[src_block_num, :, src_block_offset]
@@ -684,15 +690,46 @@ def execute_cache_moves(
     blocks_per_head: int,
     threads_per_head: int,
 ) -> None:
-    # kvc_ops.execute_cache_moves(
+    init_kv_pos = kv_position.clone()
+    kv_pos = kv_position.clone()
+    assert kv_position.dtype == torch.int
     ref_execute_cache_moves(
         k_cache,
         v_cache,
         kv_metrics,
-        kv_position,
+        kv_pos,
         cache_moves_indices,
         cache_moves_count,
         evicted_kv_offsets,
         blocks_per_head,
         threads_per_head,
     )
+    kvc_ops.execute_cache_moves(
+        k_cache,
+        v_cache,
+        kv_metrics,
+        kv_position.contiguous(),
+        cache_moves_indices.contiguous(),
+        cache_moves_count.contiguous(),
+        evicted_kv_offsets.contiguous(),
+        blocks_per_head,
+        threads_per_head,
+    )
+    fail_to_move = torch.where(((kv_position == init_kv_pos) & (kv_position != kv_pos)).flatten())[0]
+    for i in range(10):
+        fail_to_move_idx = torch.where(cache_moves_indices[:,0] == fail_to_move[i])[0][0]
+        last_offset = evicted_kv_offsets[evicted_kv_offsets <= fail_to_move_idx].max()
+        print(f"{fail_to_move_idx=}")
+        print(f"{last_offset=}")
+        print(f"{torch.where(evicted_kv_offsets == last_offset)=}")
+    print(f"{len(fail_to_move)}/{kv_position.numel()}={len(fail_to_move)/kv_position.numel()}")
+    incorrect_move = torch.where(((kv_position != init_kv_pos) & (kv_position != kv_pos)).flatten())[0]
+
+    print(f"{fail_to_move=}")
+    print(f"{incorrect_move=}")
+
+    print(f"{(kv_pos != kv_position).sum()=}")
+    print(f"{torch.where(kv_pos != kv_position)[0].unique()}")
+    print(f"{torch.where(kv_pos != kv_position)[1].unique()}")
+    assert ((kv_position == kv_pos).flatten()[evicted_kv_offsets[0,0,0]:evicted_kv_offsets[0,0,1]]).all()
+    assert (kv_position == kv_pos).all(), f"{evicted_kv_offsets=}\n{torch.where(kv_pos != kv_position)}"

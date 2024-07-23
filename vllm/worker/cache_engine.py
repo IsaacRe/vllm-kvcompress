@@ -125,7 +125,7 @@ class CacheEngine:
             cache_moves_count=cache_moves.count,
             evicted_kv_offsets=cache_moves.offsets,
             blocks_per_head=1,
-            threads_per_head=16,
+            threads_per_head=1,
         )
 
     @staticmethod

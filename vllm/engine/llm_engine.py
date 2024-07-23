@@ -618,21 +618,26 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
-        seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
-        if not scheduler_outputs.is_empty():
-            if self.kvcompress_config:
-                # Temp metrics must be cleared before each forward pass to ensure correct
-                # metric aggregation afterward
-                self.kvcompress_state.kv_metrics.clear_temp_metrics()
+        if self.kvcompress_config:
+            cache_moves = self.scheduler.schedule_kvcompress()
             if cache_moves:
                 BENCHMARKER.start_range("execute_cache_moves")
                 self.model_executor.execute_cache_moves(cache_moves,
                                                         self.kvcompress_state.kv_metrics)
                 BENCHMARKER.end_range("execute_cache_moves")
-                for seq_group in scheduler_outputs.scheduled_seq_groups:
-                    self.scheduler.block_manager.validate_protected_positions(seq_group.seq_group.get_seqs()[0], test_case=True)
-                    break
-                raise Exception("success")
+        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
+        ###
+        if cache_moves:
+            for seq_group in scheduler_outputs.scheduled_seq_groups:
+                self.scheduler.block_manager.validate_protected_positions(seq_group.seq_group.get_seqs()[0], test_case=True)
+                break
+            raise Exception("success")
+        ###
+        if not scheduler_outputs.is_empty():
+            if self.kvcompress_config:
+                # Temp metrics must be cleared before each forward pass to ensure correct
+                # metric aggregation afterward
+                self.kvcompress_state.kv_metrics.clear_temp_metrics()
             BENCHMARKER.start_range("execute_model")
             output = self.model_executor.execute_model(
                 seq_group_metadata_list=seq_group_metadata_list,
