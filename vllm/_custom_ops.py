@@ -615,8 +615,8 @@ def schedule_cache_moves(
     block_size: int,
 ) -> None:
     out_cache_moves_indices.fill_(0)
-    # kvc_ops.schedule_t1_cache_moves(
-    ref_schedule_t1_cache_moves(
+    kvc_ops.schedule_t1_cache_moves(
+    # ref_schedule_t1_cache_moves(
         out_cache_moves_indices,
         out_cache_moves_count,
         evicted_logical_indices.contiguous(),
@@ -690,20 +690,23 @@ def execute_cache_moves(
     blocks_per_head: int,
     threads_per_head: int,
 ) -> None:
-    init_kv_pos = kv_position.clone()
-    kv_pos = kv_position.clone()
-    assert kv_position.dtype == torch.int
-    ref_execute_cache_moves(
-        k_cache,
-        v_cache,
-        kv_metrics,
-        kv_pos,
-        cache_moves_indices,
-        cache_moves_count,
-        evicted_kv_offsets,
-        blocks_per_head,
-        threads_per_head,
-    )
+    # init_kv_pos = kv_position.clone()
+    # kv_pos = kv_position.clone()
+    # assert kv_position.dtype == torch.int
+    # assert cache_moves_count.dtype == torch.int
+    # print(f"{cache_moves_count[0,1,8]=}")
+    # print(f"{evicted_kv_offsets[0,1,8]=}")
+    # ref_execute_cache_moves(
+    #     k_cache,
+    #     v_cache,
+    #     kv_metrics,
+    #     kv_pos,
+    #     cache_moves_indices,
+    #     cache_moves_count,
+    #     evicted_kv_offsets,
+    #     blocks_per_head,
+    #     threads_per_head,
+    # )
     kvc_ops.execute_cache_moves(
         k_cache,
         v_cache,
@@ -715,21 +718,21 @@ def execute_cache_moves(
         blocks_per_head,
         threads_per_head,
     )
-    fail_to_move = torch.where(((kv_position == init_kv_pos) & (kv_position != kv_pos)).flatten())[0]
-    for i in range(10):
-        fail_to_move_idx = torch.where(cache_moves_indices[:,0] == fail_to_move[i])[0][0]
-        last_offset = evicted_kv_offsets[evicted_kv_offsets <= fail_to_move_idx].max()
-        print(f"{fail_to_move_idx=}")
-        print(f"{last_offset=}")
-        print(f"{torch.where(evicted_kv_offsets == last_offset)=}")
-    print(f"{len(fail_to_move)}/{kv_position.numel()}={len(fail_to_move)/kv_position.numel()}")
-    incorrect_move = torch.where(((kv_position != init_kv_pos) & (kv_position != kv_pos)).flatten())[0]
+    # fail_to_move = torch.where(((kv_position == init_kv_pos) & (kv_position != kv_pos)).flatten())[0]
+    # for i in range(10):
+    #     fail_to_move_idx = torch.where(cache_moves_indices[:,0] == fail_to_move[i])[0][0]
+    #     last_offset = evicted_kv_offsets[evicted_kv_offsets <= fail_to_move_idx].max()
+    #     print(f"{fail_to_move_idx=}")
+    #     print(f"{last_offset=}")
+    #     print(f"{torch.where(evicted_kv_offsets == last_offset)=}")
+    # print(f"{len(fail_to_move)}/{kv_position.numel()}={len(fail_to_move)/kv_position.numel()}")
+    # incorrect_move = torch.where(((kv_position != init_kv_pos) & (kv_position != kv_pos)).flatten())[0]
 
-    print(f"{fail_to_move=}")
-    print(f"{incorrect_move=}")
+    # print(f"{fail_to_move=}")
+    # print(f"{incorrect_move=}")
 
-    print(f"{(kv_pos != kv_position).sum()=}")
-    print(f"{torch.where(kv_pos != kv_position)[0].unique()}")
-    print(f"{torch.where(kv_pos != kv_position)[1].unique()}")
-    assert ((kv_position == kv_pos).flatten()[evicted_kv_offsets[0,0,0]:evicted_kv_offsets[0,0,1]]).all()
-    assert (kv_position == kv_pos).all(), f"{evicted_kv_offsets=}\n{torch.where(kv_pos != kv_position)}"
+    # print(f"{(kv_pos != kv_position).sum()=}")
+    # print(f"{torch.where(kv_pos != kv_position)[0].unique()}")
+    # print(f"{torch.where(kv_pos != kv_position)[1].unique()}")
+    # assert ((kv_position == kv_pos).flatten()[evicted_kv_offsets[0,0,0]:evicted_kv_offsets[0,0,1]]).all()
+    # assert (kv_position == kv_pos).all(), f"{evicted_kv_offsets=}\n{torch.where(kv_pos != kv_position)}"

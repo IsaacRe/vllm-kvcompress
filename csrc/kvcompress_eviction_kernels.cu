@@ -345,6 +345,10 @@ __global__ void execute_cache_moves_kernel(
   const int max_parallel_kv = gridDim.x * blockDim.x;
   const int move_table_offset = evicted_kv_offsets[seq_layer_head_idx];
 
+  if (seq_layer_head_idx == 40) {
+    printf("seq_layer_head_idx: %d, moved_kv_count: %d, move_table_offset: %d", seq_layer_head_idx, moved_kv_count, move_table_offset);
+  }
+
   for (
     int i = move_table_offset + moved_kv_offset;
     i < move_table_offset + moved_kv_count;
@@ -362,9 +366,10 @@ __global__ void execute_cache_moves_kernel(
     const int dst_k_start = dst_block_start + dst_block_offset * VEC_SIZE;
     const int dst_v_start = dst_block_start + dst_block_offset;
 
-    // printf("seq_layer_head_idx: %d, move_pair_idx: %d, src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
-    //   seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
-
+    if (seq_layer_head_idx == 40) {
+      printf("seq_layer_head_idx: %d, move_pair_idx: %d, src: %d, dst: %d, src_pos: %d, dst_pos: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
+        seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, kv_position[src_idx], kv_position[dst_idx], src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
+    }
     kv_metrics[dst_idx] = kv_metrics[src_idx];
     kv_position[dst_idx] = kv_position[src_idx];
 

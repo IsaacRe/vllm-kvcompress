@@ -451,7 +451,7 @@ class CompressionScheduler:
         # Schedule cache moves
         cache_moves_count = torch.empty(
             b_l_h,
-            dtype=torch.int64,
+            dtype=torch.int,
             device=self.device,
         )
         schedule_cache_moves(
