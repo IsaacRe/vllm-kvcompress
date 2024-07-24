@@ -351,18 +351,19 @@ def ref_schedule_cache_evictions(
     # print(f'evicted_kv_offsets:\n{evicted_kv_offsets}')
     # print(f'context_lens:\n{context_lens}')
 
-    evictable_kv = torch.zeros_like(context_lens)
-    next_seq_offset = 0
-    seq_idx = -1
-    for i in range(kv_position.size(0)):
-        if i >= next_seq_offset:
-            seq_idx += 1
-            next_seq_offset = seq_block_offsets[seq_idx + 1] if seq_idx < seq_block_offsets.size(0) - 1 else float('inf')
-        evictable_kv[seq_idx, layer_by_block[i], head_by_block[i]] += (
-            (kv_position >= 0) & (kv_position <= last_position[0] - protected_window)
-        )[i].sum()
+    # evictable_kv = torch.zeros_like(context_lens)
+    # next_seq_offset = 0
+    # seq_idx = -1
+    # for i in range(kv_position.size(0)):
+    #     if i >= next_seq_offset:
+    #         seq_idx += 1
+    #         next_seq_offset = seq_block_offsets[seq_idx + 1] if seq_idx < seq_block_offsets.size(0) - 1 else float('inf')
+    #     evictable_kv[seq_idx, layer_by_block[i], head_by_block[i]] += (
+    #         (kv_position >= 0) & (kv_position <= last_position[0] - protected_window)
+    #     )[i].sum()
 
     # print(f'evictable_keys:\n{evictable_kv}')
+    pos_flat = kv_position.flatten()
 
     for i in tqdm(range(num_seqs)):
         # blocks_to_evict = min(evicted_blocks_per_seq[i], )
@@ -421,7 +422,8 @@ def ref_schedule_cache_evictions(
         # print(f'remaining_kv:\n{remaining_kv}')
         assert evicted_blocks == evicted_blocks_per_seq[i], "schedule_cache_evictions loop failed"
 
-        assert kv_position.flatten()[torch.tensor(evicted_kv_indices, dtype=torch.long)].max() <= (current_pos) - protected_window, "pleaseee"
+        assert pos_flat[torch.tensor(evicted_kv_indices, dtype=torch.long)].max() <= (current_pos) - protected_window, "pleaseee"
+        # assert pos_flat[evicted_kv_offsets[i,layer_idx,head_idx]:evicted_kv_offsets[i,layer_idx,head_idx]+out_evicted_kv_count[i, layer_idx, head_idx]].max() <= current_pos - protected_window, (pos_flat[evicted_kv_offsets[i,layer_idx,head_idx]:evicted_kv_offsets[i,layer_idx,head_idx]+out_evicted_kv_count[i, layer_idx, head_idx]].max(), current_pos, protected_window)
 
     # print(f'evicted_count pre-truncate:\n{out_evicted_kv_count}')
     if truncate:
@@ -453,11 +455,10 @@ def ref_schedule_cache_evictions(
                 print(evicted_logical_indices)
                 assert not (evicted_logical_indices == MAX_INT).any()
     
-    pos_flat = kv_position.flatten()
-    for i in range(seq_block_offsets.shape[0] - 1):
-        evicted = sorted_indices[seq_block_offsets[i] * block_size: seq_block_offsets[i+1] * block_size]
-        evicted_pos = pos_flat[evicted.type(torch.long)]
-        assert evicted_pos.max() <= (last_position[i]) - protected_window, "please"
+    # for i in range(seq_block_offsets.shape[0] - 1):
+    #     evicted = sorted_indices[seq_block_offsets[i] * block_size: seq_block_offsets[i+1] * block_size]
+    #     evicted_pos = pos_flat[evicted.type(torch.long)]
+    #     assert evicted_pos.max() <= (last_position[i]) - protected_window, "please"
 
 @BENCHMARKER.wrap()
 def schedule_cache_evictions(

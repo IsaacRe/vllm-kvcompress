@@ -618,22 +618,20 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
+        print(f"Begin step - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
+
         if self.kvcompress_config:
             cache_moves = self.scheduler.schedule_kvcompress()
+            
+            print(f"End KVC - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
             if cache_moves:
                 BENCHMARKER.start_range("execute_cache_moves")
                 self.model_executor.execute_cache_moves(cache_moves,
                                                         self.kvcompress_state.kv_metrics)
                 BENCHMARKER.end_range("execute_cache_moves")
         seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
-        ###
-        if cache_moves:
-            for seq_group in scheduler_outputs.scheduled_seq_groups:
-                self.scheduler.block_manager.validate_protected_positions(seq_group.seq_group.get_seqs()[0], test_case=True)
-                break
-            raise Exception("success")
-        ###
         if not scheduler_outputs.is_empty():
+            print(f"Execution scheduled - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
             if self.kvcompress_config:
                 # Temp metrics must be cleared before each forward pass to ensure correct
                 # metric aggregation afterward
@@ -652,6 +650,7 @@ class LLMEngine:
                 # later iterations.
                 self.kvcompress_state.kv_metrics.aggregate_decode()
         else:
+            print(f"Skipping model execution! - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
             output = []
 
         request_outputs = self._process_model_outputs(
@@ -662,6 +661,9 @@ class LLMEngine:
         if self.log_stats:
             self.stat_logger.log(
                 self._get_stats(scheduler_outputs, model_output=output))
+
+        print(f"End step - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
+
 
         return request_outputs
 

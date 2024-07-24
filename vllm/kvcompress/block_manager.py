@@ -131,6 +131,9 @@ class ParallelBlockAllocator(BlockAllocatorBase):
     def get_num_free_blocks(self) -> int:
         return int(self.free_count)
     
+    def get_num_allocated_blocks(self) -> int:
+        return int(self.num_blocks - self.free_count)
+    
     def contains_block(self, block_hash: int) -> bool:
         raise NotImplementedError
     
@@ -201,6 +204,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         total_blocks = self.num_layers * self.num_kv_heads * seq_block_count
         # self._validate_allocator()
         block_numbers = self.gpu_allocator.allocate(total_blocks)
+        print(f"PREFILL ALLOCATION: {block_numbers.numel()} blocks")
         seq_blocks = block_numbers.reshape(
             self.num_layers, self.num_kv_heads, seq_block_count
         ).type(torch.int).to(self.device)
@@ -255,12 +259,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idxs] = 0
         return freed_blocks
 
-    def _get_new_block_count(self, seq_id: int, token_count: int):
+    def _get_new_block_count(self, seq_id: int, token_count: int) -> int:
+        assert token_count == 1
         batch_slot_idx = self.batch_slot_mapping[seq_id]
         new_kv_count = (
             self.block_state.context_lens[:,batch_slot_idx] + token_count
         )
-        return (new_kv_count + self.block_size) // self.block_size
+        return int((new_kv_count % self.block_size == 1).sum())
 
     def _append_to_sequence_batch(self, seqs: List[Sequence], token_count: int = 1):
         batch_slots_idxs = torch.tensor(
@@ -276,6 +281,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         new_blocks = new_mask.sum()
 
         if new_blocks > 0:
+            print(f"DECODE ALLOCATION: {new_blocks} blocks")
             tmp = self.block_state.block_tables[:,batch_slots_idxs]
             newly_allocated = (
                 self.gpu_allocator.allocate(new_blocks).to(self.device).type(torch.int)
@@ -443,6 +449,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             (seq.get_len() + self.block_size) // self.block_size
             * self.num_layers * self.num_kv_heads
         )
+        # print(f"Checking PREFILL allocation: {num_required_blocks} blocks")
 
         num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
 
@@ -478,11 +485,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         num_free_gpu_blocks = (self.gpu_allocator.get_num_free_blocks()
                                if num_free_blocks is None else num_free_blocks)
         new_block_count = self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
-        return new_block_count.sum().item() <= num_free_gpu_blocks
+        return new_block_count <= num_free_gpu_blocks
     
     def get_new_block_count(self, seq_group: SequenceGroup) -> int:
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-        return self._get_new_block_count(seq_id=seq.seq_id, token_count=1).sum().item()
+        return self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
 
     @BENCHMARKER.wrap()
     def batch_append_slots(self, seqs: List[Sequence]) -> None:
@@ -526,6 +533,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         """Returns torch.Tensor of freed blocks so that corresponding metadata slots
         can be de-allocated from KV metrics metadata (seq idx set to -1).
         """
+        print("freeing sequence")
         if seq.seq_id not in self.batch_slot_mapping:
             # Already freed or haven't been scheduled yet.
             return
@@ -610,6 +618,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def get_slot_index(self, seq: Sequence) -> int:
         return self.batch_slot_mapping[seq.seq_id]
+    
+    def get_num_allocated_gpu_blocks(self) -> int:
+        return self.gpu_allocator.get_num_allocated_blocks()
 
     def get_num_free_gpu_blocks(self) -> int:
         return self.gpu_allocator.get_num_free_blocks()

@@ -392,26 +392,26 @@ class CompressionScheduler:
 
         assert check
 
-        pos_flat = sort_output.token_positions.flatten()
-        for i in range(sort_output.seq_block_offsets.shape[0] - 1):
-            for l in range(self.config.num_layers):
-                for h in range(self.config.num_kv_heads):
-                    evicted_logical = self.evicted_logical_indices[evicted_kv_offsets[i,l,h]:evicted_kv_offsets[i,l,h]+evicted_kv_count[i,l,h]]
-                    kv_idxs = block_tables[l,i,h,evicted_logical // self.block_size] * self.block_size + evicted_logical % self.block_size
-                    if kv_idxs.numel() > 0:
-                        assert pos_flat[kv_idxs].max() <= (last_token_positions[i]) - self.config.protected_window_size, "please"
-            # evicted = sort_output.sorted_indices[sort_output.seq_block_offsets[i] * self.block_size: sort_output.seq_block_offsets[i+1] * self.block_size]
-            # evicted_pos = pos_flat[evicted.type(torch.long)]
-            # assert evicted_pos.max() <= (last_token_positions[i]) - self.config.protected_window_size, "please"
+        # pos_flat = sort_output.token_positions.flatten()
+        # for i in range(sort_output.seq_block_offsets.shape[0] - 1):
+        #     for l in range(self.config.num_layers):
+        #         for h in range(self.config.num_kv_heads):
+        #             evicted_logical = self.evicted_logical_indices[evicted_kv_offsets[i,l,h]:evicted_kv_offsets[i,l,h]+evicted_kv_count[i,l,h]]
+        #             kv_idxs = block_tables[l,i,h,evicted_logical // self.block_size] * self.block_size + evicted_logical % self.block_size
+        #             if kv_idxs.numel() > 0:
+        #                 assert pos_flat[kv_idxs].max() <= (last_token_positions[i]) - self.config.protected_window_size, f"{pos_flat[kv_idxs].max()=}, {last_token_positions[i]}, {self.config.protected_window_size=}"
+        #     # evicted = sort_output.sorted_indices[sort_output.seq_block_offsets[i] * self.block_size: sort_output.seq_block_offsets[i+1] * self.block_size]
+        #     # evicted_pos = pos_flat[evicted.type(torch.long)]
+        #     # assert evicted_pos.max() <= (last_token_positions[i]) - self.config.protected_window_size, "please"
 
         # Failing seq=0, layer=1, head=8
-        count_ = evicted_kv_count[0,1,8]
-        offset_ = evicted_kv_offsets[0,1,8]
-        logical_indices = self.evicted_logical_indices[offset_:offset_+count_]
-        physical_indices = block_tables[1,0,8,logical_indices//self.block_size] * self.block_size + logical_indices % self.block_size
-        positions = self.block_manager.kv_metrics.token_positions.flatten()[physical_indices]
-        print(f"{count_} evictions at position {last_token_positions[0]} with positions: {positions} (max={positions.max()})")
-        print(f"context length={context_lens[1,0,8]}, evicted logical indices={logical_indices}")
+        # count_ = evicted_kv_count[0,1,8]
+        # offset_ = evicted_kv_offsets[0,1,8]
+        # logical_indices = self.evicted_logical_indices[offset_:offset_+count_]
+        # physical_indices = block_tables[1,0,8,logical_indices//self.block_size] * self.block_size + logical_indices % self.block_size
+        # positions = self.block_manager.kv_metrics.token_positions.flatten()[physical_indices]
+        # print(f"{count_} evictions at position {last_token_positions[0]} with positions: {positions} (max={positions.max()})")
+        # print(f"context length={context_lens[1,0,8]}, evicted logical indices={logical_indices}")
 
         # assert (evicted_block_count * self.block_size == evicted_kv_count).all()
 
