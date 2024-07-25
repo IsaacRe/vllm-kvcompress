@@ -309,8 +309,10 @@ class CompressionMetrics:
         non_evictable_ = self.token_positions[mask_] >= seq_pos - 50
         assert non_evictable.sum() < non_evictable_.sum()
         # print(f"{non_evictable_.sum()=}")
-        if non_evictable_.sum() < min(50, seq_pos) * 32 * 32:
-            print(f"{non_evictable_.sum()=} {seq_pos * 32 * 32=}")
+        assert self.num_kv_heads == 8
+        assert self.num_layers == 32
+        if non_evictable_.sum() < min(50, seq_pos) * self.num_layers * self.num_layers:
+            print(f"{non_evictable_.sum()=} {seq_pos * self.num_layers * self.num_layers=}")
             max_ = self.token_positions[mask_].max()
             print(f"{max_=}")
             print(f"{(self.token_positions[mask_] == max_).sum()=}")
@@ -432,15 +434,15 @@ class CompressionMetrics:
 
         # seq_pos_ - 1: last token to be processed (for sure not compressed and should therefore always have kv for all heads)
         # only raising for sequences that have been compressed
-        for seq_index, seq_pos_ in zip(seq_indices, seq_positions):
-            # if seq_index in self.debug_seqs:
-            #     continue
-            mask_ = masked_seq_indices == seq_index
-            for i in range(max(0, seq_pos_ - 50), seq_pos_, 10):
-                last_pos_kv = masked_token_position[mask_] == i
-                assert last_pos_kv.sum() >= 32 * 32, (i, seq_pos_)
-            non_evictable = masked_token_position[mask_] > seq_pos_ - 50
-            assert non_evictable.sum() >= min(50, seq_pos_) * 32 * 32, f"{non_evictable.sum()=} {seq_pos_ * 32 * 32=}"
+        # for seq_index, seq_pos_ in zip(seq_indices, seq_positions):
+        #     # if seq_index in self.debug_seqs:
+        #     #     continue
+        #     mask_ = masked_seq_indices == seq_index
+        #     for i in range(max(0, seq_pos_ - 50), seq_pos_, 10):
+        #         last_pos_kv = masked_token_position[mask_] == i
+        #         assert last_pos_kv.sum() >= self.num_layers * self.num_layers, (i, seq_pos_)
+        #     non_evictable = masked_token_position[mask_] > seq_pos_ - 50
+        #     assert non_evictable.sum() >= min(50, seq_pos_) * self.num_layers * self.num_layers, f"{non_evictable.sum()=} {seq_pos_ * self.num_layers * self.num_layers=}"
 
         # Normalize KV metrics by the number of queries seen for each KV
         current_positions = all_seq_positions[

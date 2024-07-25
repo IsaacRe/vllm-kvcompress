@@ -621,6 +621,7 @@ def _get_ranks(x: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
              indices]
     return (x > vals[:, None]).long().sum(1).add_(1)
 
+_DEBUG = {"profile": True, "seq_id": None, "token_ids": []}
 
 def _get_logprobs(
     logprobs: torch.Tensor,
@@ -667,11 +668,20 @@ def _get_logprobs(
             # so that the first element always contains the next correct
             # next-token prediction. When passing reference tokens there
             # should only be one sequence per sequence group.
-            next_ref_token_id = seq_reference_token_ids[1]
+            curr_ref_token_idx = (
+                1 if
+                len(sampling_metadata.seq_data[seq_ids[0]].output_token_ids)
+                > 0 else 0
+            )
+            next_ref_token_id = seq_reference_token_ids[curr_ref_token_idx]
             next_ref_token_ids.append(next_ref_token_id)
             ref_token_seq_indices.append(sample_idx)
             seq_id_to_ref_seq_index[seq_ids[0]] = reference_sample_idx
             reference_sample_idx += 1
+        else:
+            if not _DEBUG["profile"]:
+                print("Reference tokens do not exist")
+                raise
         sample_idx += num_parent_seqs
     assert sample_idx == logprobs.size(0)
 
@@ -775,6 +785,12 @@ def _get_logprobs(
                     sample_logprobs_dict.get(next_ref_token_ids[seq_index],
                                              reference_logprobs_dict[next_ref_token_ids[seq_index]])
                 )
+
+                if _DEBUG["seq_id"] is None:
+                    _DEBUG["seq_id"] = seq_ids[0]
+                if _DEBUG["seq_id"] == seq_ids[0]:
+                    _DEBUG["token_ids"].append(next_ref_token_ids[seq_index])
+                    print(f'TOKEN IDS: {_DEBUG["token_ids"]}')
             query_result_idx += 1
             if num_logprobs >= 0:
                 sample_logprobs_dict.update(
@@ -791,6 +807,8 @@ def _get_logprobs(
             })
         result_sample_logprobs.append(group_sample_logprobs)
         sample_idx += len(seq_ids)
+
+    _DEBUG["profile"] = False
 
     return result_prompt_logprobs, result_sample_logprobs
 

@@ -109,16 +109,27 @@ class CompressionScheduler:
         if compression_rate is None:
             compression_rate = self.config.target_compression_rate
         if max_cache_tokens is None:
-            max_cache_tokens = self.config.max_cache_tokens
+            max_cache_tokens = (
+                self.config.max_cache_tokens + self.block_size - 1
+            ) // self.block_size * self.block_size
 
         if compression_rate < 1.0 and max_cache_tokens > 0:
             raise RuntimeError("both compression_rate and max_cache_tokens "
                                "specified during compression")
 
+        total_kv_heads = self.config.num_layers * self.config.num_kv_heads
+
+        max_cache_kv = (
+            self.config.protected_window_size * total_kv_heads
+        )
+        evict_kv_count = max(
+            0,
+            self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
+        )
         if max_cache_tokens > 0:
             # Evict by max number of KV per sequence.
             max_cache_kv = (
-                max_cache_tokens * self.config.num_layers * self.config.num_kv_heads
+                max_cache_tokens * total_kv_heads
             )
             evict_kv_count = max(
                 0,
@@ -126,35 +137,27 @@ class CompressionScheduler:
             )
         else:
             # Evict by target compression rate.
-            # Total KV count should not go below protected_window_size * num_kv_heads
-            compressible_token_count = (
-                seq.data.get_len() - self.config.protected_window_size
+            # Total KV count should not go below protected_window_size * num_kv_heads.
+            # Need to round up to next full block as remaining tokens in block cannot be
+            # evicted without evicting any protected tokens in the block as well.
+            protected_tokens = (
+                (self.config.protected_window_size + self.block_size - 1) // self.block_size
+                * self.block_size
             )
+            compressible_token_count = (seq.data.get_len() - protected_tokens)
             if compressible_token_count <= 0:
                 return 0, 0
             # Total count of KVs in compressible range if this sequence had never
             # been compressed
-            compressible_kv_count = (
-                compressible_token_count
-                * self.config.num_layers * self.config.num_kv_heads
-            )
-            # Actual count of KVs in compressible range TODO
-            compressed_kv_count = (
-                self.block_manager.get_sequence_kv_count(seq)
-                - self.config.protected_window_size * self.config.num_layers
-                * self.config.num_kv_heads
-            )
-            protected_blocks = (
-                (self.config.protected_window_size + self.block_size - 1) // self.block_size
-                * self.config.num_layers * self.config.num_kv_heads
-            )
+            compressible_kv_count = compressible_token_count * total_kv_heads
+            # Actual count of KVs currently in cache within compressible range
+            compressed_kv_count = self.block_manager.get_sequence_kv_count(seq)
+            protected_kv = protected_tokens * total_kv_heads
             # Target count of KVs in compressible range that will yield the
             # desired compression rate
-            target_kv_count = max(
-                math.ceil(compressible_kv_count * compression_rate),
-                protected_blocks * self.block_size,
+            target_kv_count = (
+                math.ceil(compressible_kv_count * compression_rate) + protected_kv
             )
-            # target_kv_count = math.ceil(compressible_kv_count * compression_rate)
 
             evict_kv_count = max(0, compressed_kv_count - target_kv_count)
 
@@ -164,7 +167,7 @@ class CompressionScheduler:
         if self.config.even_layer_evict:
             evict_block_count = ((evict_block_count // self.config.num_layers)
                                  * self.config.num_layers)
-            
+
         assert evict_block_count <= max(
             self.block_manager.get_sequence_block_count(seq)
             - (self.config.protected_window_size + self.block_size - 1) // self.block_size * self.config.num_kv_heads * self.config.num_layers,
@@ -377,7 +380,7 @@ class CompressionScheduler:
         #     >= evicted_kv_count[...,None]
         # )
         self.total_evicted += evicted_kv_count.sum().item()
-        print(f"TOTAL EVICTED:\nKVs: {self.total_evicted}\nTokens: {self.total_evicted / 32 / 32}")
+        print(f"TOTAL EVICTED:\nKVs: {self.total_evicted}\nTokens: {self.total_evicted / self.config.num_kv_heads / self.config.num_layers}")
         evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
         protected_blocks = (self.config.protected_window_size + self.block_size - 1) // self.block_size
         assert (context_lens.transpose(0, 1) >= torch.minimum(context_lens.transpose(0, 1), torch.tensor(self.config.protected_window_size))).all()
@@ -495,27 +498,27 @@ class CompressionScheduler:
         removed = ((pos_ > last_token_positions[0] - 50) & (pos_ <= last_token_positions[0])).sum()
         print(f"Removing metadata for {removed} KVs in protected range")
 
-        for seq in seqs_to_compress:
-            self.block_manager.validate_protected_positions(seq)
-            break
+        # for seq in seqs_to_compress:
+        #     self.block_manager.validate_protected_positions(seq)
+        #     break
         self.compression_metrics.remove_metadata(freed_blocks)
-        for i, seq in enumerate(seqs_to_compress):
-            self.block_manager.validate_protected_positions(seq, cache_moves, local_idx=i)
-            print(f"STEP 3 (pre-schedule): {self.block_manager.kv_metrics.token_positions.flatten()[9602]=}")
-            break
+        # for i, seq in enumerate(seqs_to_compress):
+        #     self.block_manager.validate_protected_positions(seq, cache_moves, local_idx=i)
+        #     print(f"STEP 3 (pre-schedule): {self.block_manager.kv_metrics.token_positions.flatten()[9602]=}")
+        #     break
 
         # Failing after execute_cache_moves: seq=0 layer=2 head=21
-        flat_pos = self.block_manager.kv_metrics.token_positions.flatten()
-        count = cache_moves.count[0,2,21]
-        print(f"{count=}")
-        offset = cache_moves.offsets[0,2,21]
-        indices = cache_moves.index[offset:offset+count]
-        print(f"{context_lens[2,0,21]}")
-        print(f"{evicted_block_count[0,2,21]}")
-        pos_src = flat_pos[indices[:,1]]
-        pos_dst = flat_pos[indices[:,0]]
-        print(f"{pos_src=}")
-        print(f"{pos_dst=}")
+        # flat_pos = self.block_manager.kv_metrics.token_positions.flatten()
+        # count = cache_moves.count[0,2,21]
+        # print(f"{count=}")
+        # offset = cache_moves.offsets[0,2,21]
+        # indices = cache_moves.index[offset:offset+count]
+        # print(f"{context_lens[2,0,21]}")
+        # print(f"{evicted_block_count[0,2,21]}")
+        # pos_src = flat_pos[indices[:,1]]
+        # pos_dst = flat_pos[indices[:,0]]
+        # print(f"{pos_src=}")
+        # print(f"{pos_dst=}")
         # End Benchmark - 5
         # BENCHMARKER.end_range("_schedule_compression - 5")
 

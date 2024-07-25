@@ -42,7 +42,6 @@ _RANDOM_DIGIT_PROMPT_TEMPLATE = "USER: Repeat the following string of digits:\n{
 _RANDOM_DIGIT_STRINGS = [
     "3445283696391145714477754187117652483539127879511650235737670797020723087965063690307283106268121379"
 ]
-_RANDOM_DIGIT_REPEAT_LENGTH = 10
 assert len(_PIXEL_VALUES_FILES) == len(_IMAGE_FEATURES_FILES) == len(
     _IMAGE_FILES) == len(_IMAGE_PROMPTS)
 
@@ -115,17 +114,17 @@ def vllm_image_prompts(request) -> List[str]:
 
 
 @pytest.fixture()
-def random_digit_prompts() -> List[str]:
+def random_digit_prompts(repeat_len: int = 10) -> List[str]:
     return [
-        _RANDOM_DIGIT_PROMPT_TEMPLATE.format(random_digits, random_digits[:_RANDOM_DIGIT_REPEAT_LENGTH])
+        _RANDOM_DIGIT_PROMPT_TEMPLATE.format(random_digits, random_digits[:repeat_len])
         for random_digits in _RANDOM_DIGIT_STRINGS
     ]
 
 
 @pytest.fixture()
-def random_digit_responses() -> List[str]:
+def random_digit_responses(repeat_len: int = 10) -> List[str]:
     return [
-        random_digits[_RANDOM_DIGIT_REPEAT_LENGTH:]
+        random_digits[repeat_len:]
         for random_digits in _RANDOM_DIGIT_STRINGS
     ]
 
@@ -369,15 +368,17 @@ class VllmRunner:
 
     def generate_w_logprobs(
         self,
-        prompts: List[str],
         sampling_params: SamplingParams,
+        prompts: Optional[List[str]] = None,
+        prompt_token_ids: Optional[List[List[int]]] = None,
         reference_completions: Optional[List[str]] = None,
         reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         assert sampling_params.logprobs is not None
 
-        req_outputs = self.model.generate(prompts,
-                                          sampling_params=sampling_params,
+        req_outputs = self.model.generate(sampling_params=sampling_params,
+                                          prompts=prompts,
+                                          prompt_token_ids=prompt_token_ids,
                                           reference_completions=reference_completions,
                                           reference_token_ids=reference_token_ids)
         outputs = []
@@ -406,16 +407,19 @@ class VllmRunner:
 
     def generate_greedy_logprobs(
         self,
-        prompts: List[str],
         max_tokens: int,
         num_logprobs: int,
+        prompts: Optional[List[str]] = None,
+        prompt_token_ids: Optional[List[List[int]]] = None,
         reference_completions: Optional[List[str]] = None,
         reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         greedy_logprobs_params = SamplingParams(temperature=0.0,
                                                 max_tokens=max_tokens,
                                                 logprobs=num_logprobs)
-        outputs = self.generate_w_logprobs(prompts, greedy_logprobs_params,
+        outputs = self.generate_w_logprobs(greedy_logprobs_params,
+                                           prompts=prompts,
+                                           prompt_token_ids=prompt_token_ids,
                                            reference_completions=reference_completions,
                                            reference_token_ids=reference_token_ids)
 
@@ -447,7 +451,7 @@ def vllm_runner():
 
 @pytest.fixture()
 def random_digit_generator():
-    def random_digit_gen(num_digits, random_seed, n_seqs: int = 1):
+    def random_digit_gen(num_digits, random_seed, n_seqs: int = 1, repeat_len: int = 10):
         prompts = []
         completions = []
         np.random.seed(random_seed)
@@ -458,10 +462,43 @@ def random_digit_generator():
                 digits_string += str(d)
             prompts.append(
                 _RANDOM_DIGIT_PROMPT_TEMPLATE.format(
-                    digits_string, digits_string[:_RANDOM_DIGIT_REPEAT_LENGTH]
+                    digits_string, digits_string[:repeat_len]
                 )
             )
-            completions.append(digits_string[_RANDOM_DIGIT_REPEAT_LENGTH:])
+            completions.append(digits_string[repeat_len:])
+        return (prompts, completions)
+    return random_digit_gen
+
+
+@pytest.fixture()
+def tokenizer_dependent_random_digit_generator():
+    def random_digit_gen(tokenizer, num_tokens, random_seed, n_seqs: int = 1, repeat_len: int = 10):
+        prompts = []
+        completions = []
+        digits_per_tok_estimate = 6  # conservative estimate
+        np.random.seed(random_seed)
+        for _ in range(n_seqs):
+            digits = np.random.randint(10, size=(num_tokens * digits_per_tok_estimate,))
+            digits_string = ""
+            for d in digits:
+                digits_string += str(d)
+
+            tokens = tokenizer.encode(digits_string, add_special_tokens=False)
+            input_tokens = tokens[:num_tokens]
+            repeat_tokens = tokens[:repeat_len]
+            response_tokens = tokens[repeat_len:num_tokens]
+            assert len(tokens) >= num_tokens, "not enough tokens generated"
+            input_tokens_string = tokenizer.decode(input_tokens)
+            repeat_tokens_string = tokenizer.decode(repeat_tokens)
+            response_tokens_string = tokenizer.decode(response_tokens)
+            full_input_string = _RANDOM_DIGIT_PROMPT_TEMPLATE.format(
+                input_tokens_string, repeat_tokens_string
+            )
+            input_tokens = tokenizer.encode(full_input_string)
+            response_tokens = tokenizer.encode(response_tokens_string, add_special_tokens=False)
+
+            prompts.append(input_tokens)
+            completions.append(response_tokens)
         return (prompts, completions)
     return random_digit_gen
 
