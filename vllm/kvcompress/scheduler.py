@@ -83,18 +83,15 @@ class CompressionScheduler:
             device=self.device,
         )
 
-    def _update_sequences(self, seqs: List[Sequence]) -> None:
-        all_seq_ids = set([seq.seq_id for seq in seqs])
-        for seq_id in list(self._iters_since_compression):
-            if seq_id not in all_seq_ids:
-                del self._iters_since_compression[seq_id]
-        for seq_id in all_seq_ids:
-            if seq_id not in self._iters_since_compression:
-                self._iters_since_compression[seq_id] = 0
-    
-    def _increment_iters_since_compression(self) -> None:
+    def complete_seqs(self, completed_seqs: List[Sequence]) -> None:
+        for seq in completed_seqs:
+            del self._iters_since_compression[seq.seq_id]
+
+    def _increment_iters_since_compression(self, compressed_seqs: List[Sequence]) -> None:
         for seq_id in self._iters_since_compression:
             self._iters_since_compression[seq_id] += 1
+        for seq in compressed_seqs:
+            self._iters_since_compression[seq.seq_id] = 0
 
     @BENCHMARKER.wrap()
     def _schedule_seq_evictions(
@@ -183,7 +180,6 @@ class CompressionScheduler:
         # BENCHMARKER.start_range("_schedule_compression - 1")
         self.compression_metrics.debug_seqs = deepcopy(self._iters_since_compression)
         print(f"(seq_idx, iters_since_compression){[(self.block_manager.batch_slot_mapping[seq.seq_id], self._iters_since_compression.get(seq.seq_id)) for seq in seqs]}")
-        self._update_sequences(seqs)
 
         # for seq in seqs:
         #     self.block_manager.validate_protected_positions(seq)
@@ -194,7 +190,7 @@ class CompressionScheduler:
         seqs_to_compress: List[Sequence] = []
         evicted_blocks_per_seq = []
         for _, _, seq in sorted(
-            [(self._iters_since_compression[s.seq_id], s.seq_id, s) for s in seqs],
+            [(self._iters_since_compression.get(s.seq_id, 0), s.seq_id, s) for s in seqs],
             reverse=True,
         ):
             # If sequence is not long enough for compression, skip.
@@ -483,7 +479,7 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)
         CHECKPOINTER.checkpoint('schedule_compression__freed_block_count', evicted_block_count)
 
-        self._increment_iters_since_compression()
+        self._increment_iters_since_compression(seqs_to_compress)
 
         # Free blocks that were removed by compression
         freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)

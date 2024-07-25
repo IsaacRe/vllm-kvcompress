@@ -664,6 +664,11 @@ class LLMEngine:
 
         print(f"End step - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
 
+        # Remove finished sequences from scheduler
+        for seq_group in scheduler_outputs.scheduled_seq_groups:
+            if seq_group.seq_group.is_finished():
+                seq = seq_group.seq_group.get_seqs()[0]
+                self.scheduler.kvcompress_scheduler.complete_seqs([seq])
 
         return request_outputs
 
