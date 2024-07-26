@@ -417,7 +417,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--kv-head-bias-path",
         type=str,
-        default="./kv_head_bias.npz",
+        default=None,
         help="Path to KV head bias for KV cache compression",
     )
     parser.add_argument(

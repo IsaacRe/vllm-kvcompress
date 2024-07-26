@@ -418,6 +418,7 @@ class Scheduler:
         now = time.time()
         running_queue = policy.sort_by_priority(now, running_queue)
 
+        # total_blocks = self.block_manager.num_total_gpu_blocks
         remaining_blocks = self.block_manager.get_num_free_gpu_blocks()
 
         while running_queue:
@@ -430,6 +431,7 @@ class Scheduler:
             assert num_running_tokens != 0
 
             new_blocks = self.block_manager.get_new_block_count(seq_group)
+            # print(f"Checking DECODE allocation: {new_blocks} blocks ({total_blocks - remaining_blocks + new_blocks} total)")
 
             running_queue.popleft()
             while new_blocks > remaining_blocks:
@@ -470,7 +472,7 @@ class Scheduler:
                                               num_running_tokens)
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
-
+        # print(f"schedule_running preempted: {len(preempted)} preempted, {len(decode_seq_groups)} decode, {len(prefill_seq_groups)} prefill")
         self._batch_preempt_by_recompute(preempted)
         self._batch_append_slots(decode_seq_groups + prefill_seq_groups)
 
@@ -906,6 +908,7 @@ class Scheduler:
         # Update swapped requests.
         self.swapped = remaining_swapped
         self.swapped.extend(running_scheduled.swapped_out)
+        print(f"{len(self.running)}/{len(self.waiting)} (runnning/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
@@ -1019,26 +1022,6 @@ class Scheduler:
         else:
             return self._schedule_default()
 
-    @BENCHMARKER.wrap()
-    def _schedule_kvcompress(self) -> Optional[CacheMoves]:
-        """Check whether to schedule KV cache compression this 
-        iteration. If compression is scheduled, the KV-Compress
-        scheduler will determine which sequences to compress, and
-        return a dict of freed blocks for each compressed sequence
-        and tensor of physical cache moves that must be actioned
-        for the compression to take effect. The freed blocks must
-        be recorded by the scheduler before the current round of
-        inference scheduling and the cache moves must be executed
-        by the cache engine before the current inference step.
-        """
-        # Assume all sequence groups have a single sequence when using
-        # KV-Compress.
-        seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
-        if seqs and (kvc_output := 
-                     self.kvcompress_scheduler.schedule_compression(seqs)):
-            # Return physical cache moves to be executed by cache engine
-            return kvc_output.cache_moves
-
     def _can_append_slots(self, seq_group: SequenceGroup) -> bool:
         """Determine whether or not we have enough space in the KV cache to
         continue generation of the sequence group.
@@ -1061,15 +1044,34 @@ class Scheduler:
         )
 
     @BENCHMARKER.wrap()
+    def schedule_kvcompress(self) -> Optional[CacheMoves]:
+        """Check whether to schedule KV cache compression this 
+        iteration. If compression is scheduled, the KV-Compress
+        scheduler will determine which sequences to compress, and
+        return a dict of freed blocks for each compressed sequence
+        and tensor of physical cache moves that must be actioned
+        for the compression to take effect. The freed blocks must
+        be recorded by the scheduler before the current round of
+        inference scheduling and the cache moves must be executed
+        by the cache engine before the current inference step.
+        """
+        # Assume all sequence groups have a single sequence when using
+        # KV-Compress.
+        seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
+        print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
+
+        if seqs and (kvc_output := 
+                     self.kvcompress_scheduler.schedule_compression(seqs)):
+            # Return physical cache moves to be executed by cache engine
+            return kvc_output.cache_moves
+
+    @BENCHMARKER.wrap()
     def schedule(
         self
-    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, Optional[CacheMoves]]:
+    ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
-        cache_moves = (self._schedule_kvcompress()
-                    if self.kvcompress_enabled else None)
-
         scheduler_outputs = self._schedule()
         now = time.time()
 
@@ -1094,6 +1096,7 @@ class Scheduler:
                 # Multi-sequence groups not supported with KV-Compress
                 [seq] = seq_group.get_seqs(status=SequenceStatus.RUNNING)
                 block_state_index = self.block_manager.get_batch_slot_index(seq)
+                # assert self.block_manager.block_state.get_block_state_seq_view(block_state_index).context_lens.min() >= 0, "Got empty KV cache for attention head"
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
@@ -1135,7 +1138,7 @@ class Scheduler:
             self.block_manager.mark_blocks_as_computed(
                 scheduled_seq_group.seq_group)
 
-        return seq_group_metadata_list, scheduler_outputs, cache_moves
+        return seq_group_metadata_list, scheduler_outputs
 
     def fork_seq(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         self.block_manager.fork(parent_seq, child_seq)

@@ -618,17 +618,21 @@ class LLMEngine:
             >>>     if not (engine.has_unfinished_requests() or example_inputs):
             >>>         break
         """
-        seq_group_metadata_list, scheduler_outputs, cache_moves = self.scheduler.schedule()
-        if not scheduler_outputs.is_empty():
-            if self.kvcompress_config:
-                # Temp metrics must be cleared before each forward pass to ensure correct
-                # metric aggregation afterward
-                self.kvcompress_state.kv_metrics.clear_temp_metrics()
+        if self.kvcompress_config:
+            cache_moves = self.scheduler.schedule_kvcompress()
+            
             if cache_moves:
                 BENCHMARKER.start_range("execute_cache_moves")
                 self.model_executor.execute_cache_moves(cache_moves,
                                                         self.kvcompress_state.kv_metrics)
                 BENCHMARKER.end_range("execute_cache_moves")
+        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
+        if not scheduler_outputs.is_empty():
+            # print(f"Execution scheduled - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
+            if self.kvcompress_config:
+                # Temp metrics must be cleared before each forward pass to ensure correct
+                # metric aggregation afterward
+                self.kvcompress_state.kv_metrics.clear_temp_metrics()
             BENCHMARKER.start_range("execute_model")
             output = self.model_executor.execute_model(
                 seq_group_metadata_list=seq_group_metadata_list,
@@ -643,6 +647,7 @@ class LLMEngine:
                 # later iterations.
                 self.kvcompress_state.kv_metrics.aggregate_decode()
         else:
+            # print(f"Skipping model execution! - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
             output = []
 
         request_outputs = self._process_model_outputs(
@@ -653,6 +658,13 @@ class LLMEngine:
         if self.log_stats:
             self.stat_logger.log(
                 self._get_stats(scheduler_outputs, model_output=output))
+
+        # Remove finished sequences from scheduler
+        if self.kvcompress_config:
+            for seq_group in scheduler_outputs.scheduled_seq_groups:
+                if seq_group.seq_group.is_finished():
+                    seq = seq_group.seq_group.get_seqs()[0]
+                    self.scheduler.kvcompress_scheduler.complete_seqs([seq])
 
         return request_outputs
 

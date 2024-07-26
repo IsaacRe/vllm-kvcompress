@@ -315,7 +315,7 @@ class CompressionMetrics:
         # All allocated blocks (with seq idx >= 0) should have valid setting
         # for head index
         allocated_mask = self.seq_index_by_block >= 0
-        assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()
+        assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()        
 
     def validate_metadata_even_layer_evict(self) -> None:
         if self.even_layer_evict:
@@ -416,6 +416,18 @@ class CompressionMetrics:
         masked_head_indices = self.head_index_by_block[mask]
         masked_logical_block_nums = self.logical_block_num_by_block[mask]
         masked_token_position = self.token_positions[mask]
+
+        # seq_pos_ - 1: last token to be processed (for sure not compressed and should therefore always have kv for all heads)
+        # only raising for sequences that have been compressed
+        # for seq_index, seq_pos_ in zip(seq_indices, seq_positions):
+        #     # if seq_index in self.debug_seqs:
+        #     #     continue
+        #     mask_ = masked_seq_indices == seq_index
+        #     for i in range(max(0, seq_pos_ - 50), seq_pos_, 10):
+        #         last_pos_kv = masked_token_position[mask_] == i
+        #         assert last_pos_kv.sum() >= self.num_layers * self.num_layers, (i, seq_pos_)
+        #     non_evictable = masked_token_position[mask_] > seq_pos_ - 50
+        #     assert non_evictable.sum() >= min(50, seq_pos_) * self.num_layers * self.num_layers, f"{non_evictable.sum()=} {seq_pos_ * self.num_layers * self.num_layers=}"
 
         # Normalize KV metrics by the number of queries seen for each KV
         current_positions = all_seq_positions[

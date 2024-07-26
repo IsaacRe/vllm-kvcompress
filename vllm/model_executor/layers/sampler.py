@@ -667,7 +667,12 @@ def _get_logprobs(
             # so that the first element always contains the next correct
             # next-token prediction. When passing reference tokens there
             # should only be one sequence per sequence group.
-            next_ref_token_id = seq_reference_token_ids[1]
+            curr_ref_token_idx = (
+                1 if
+                len(sampling_metadata.seq_data[seq_ids[0]].output_token_ids)
+                > 0 else 0
+            )
+            next_ref_token_id = seq_reference_token_ids[curr_ref_token_idx]
             next_ref_token_ids.append(next_ref_token_id)
             ref_token_seq_indices.append(sample_idx)
             seq_id_to_ref_seq_index[seq_ids[0]] = reference_sample_idx
