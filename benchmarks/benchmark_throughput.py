@@ -87,6 +87,9 @@ def run_vllm(
     protected_window_size: int = 50,
     kv_head_bias_path: str = "./kv_head_bias.npz",
     kvc_interval: int = 1,
+    max_num_kv_per_compression: int = 5_000_000,
+    new_token_limit: int = -1,
+    max_cache_tokens: int = -1,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -113,6 +116,9 @@ def run_vllm(
         protected_window_size=protected_window_size,
         kv_head_bias_path=kv_head_bias_path,
         compression_interval=kvc_interval,
+        max_kv_per_compression=max_num_kv_per_compression,
+        new_token_limit=new_token_limit,
+        max_cache_tokens=max_cache_tokens,
     )
 
     # Add the requests to the engine.
@@ -244,7 +250,8 @@ def main(args: argparse.Namespace):
             args.max_num_batched_tokens, args.gpu_memory_utilization,
             args.download_dir, args.max_batch_size, args.enable_kvc,
             args.kvc_rate, args.protected_window_size, args.kv_head_bias_path,
-            args.kvc_interval)
+            args.kvc_interval, args.max_num_kv_per_compression,
+            args.new_token_limit, args.max_cache_tokens)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -425,6 +432,25 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="Compress KV cache every n iterations",
+    )
+    parser.add_argument(
+        "--max-num-kv-per-compression",
+        type=int,
+        default=5_000_000,
+        help="Max number of KVs per compression",
+    )
+    parser.add_argument(
+        '--new-token-limit',
+        type=int,
+        default=-1,
+        help='Max number of tokens that can be added before compression '
+        'is forced',
+    )
+    parser.add_argument(
+        '--max-cache-tokens',
+        type=int,
+        default=-1,
+        help='Number of tokens to compress to',
     )
     args = parser.parse_args()
     if args.tokenizer is None:

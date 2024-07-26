@@ -90,6 +90,7 @@ class EngineArgs:
     random_evict: bool = False
     even_layer_evict: bool = False
     control_layers: List[int] = field(default_factory=list)
+    new_token_limit: int = -1
 
     # Checkpointing (for debugging purposes)
     save_checkpoint_dir: str = ""
@@ -556,6 +557,12 @@ class EngineArgs:
                             'KV cache compression will be avoided. '
                             'Can only be specified when --even-layer-evict '
                             'is also set.')
+        
+        parser.add_argument('--new-token-limit',
+                            type=int,
+                            default=-1,
+                            help='Number of new tokens to allow before '
+                            'a compression iteration is forced.')
 
         # Checkpointing
         parser.add_argument('--save-checkpoint-dir',
@@ -688,6 +695,7 @@ class EngineArgs:
                 random_evict=self.random_evict,
                 even_layer_evict=self.even_layer_evict,
                 control_layers=self.control_layers,
+                new_token_limit=self.new_token_limit,
             )
         else:
             kvcompress_config = None

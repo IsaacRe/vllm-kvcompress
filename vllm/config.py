@@ -634,6 +634,7 @@ class KVCompressConfig:
         random_evict: bool,
         even_layer_evict: bool,
         control_layers: List[int],
+        new_token_limit: int,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
@@ -651,6 +652,7 @@ class KVCompressConfig:
         self.random_evict = random_evict
         self.even_layer_evict = even_layer_evict
         self.control_layers = control_layers
+        self.new_token_limit = new_token_limit
         
         self._verify_args()
 

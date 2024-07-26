@@ -1073,6 +1073,9 @@ class Scheduler:
         # This function call changes the internal states of the scheduler
         # such as self.running, self.swapped, and self.waiting.
         scheduler_outputs = self._schedule()
+        if self.kvcompress_enabled:
+            self.kvcompress_scheduler.increment_new_tokens(
+                scheduler_outputs.num_batched_tokens)
         now = time.time()
 
         # Create input data structures.

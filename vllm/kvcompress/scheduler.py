@@ -57,6 +57,7 @@ class CompressionScheduler:
         self.block_manager = block_manager
         self.compression_metrics = compression_metrics
         self.iteration_count = 0
+        self.new_tokens = 0
         self.control_layers = (
             torch.tensor(self.config.control_layers,
                          device=self.device,
@@ -478,6 +479,9 @@ class CompressionScheduler:
 
         return CompressionOutputs(cache_moves, freed_block_count)
 
+    def increment_new_tokens(self, new_token_count: int) -> None:
+        self.new_tokens += new_token_count
+
     def schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
         """Returns number of KV evictions per sequence"""
         if (self.config.target_compression_rate == 1.0 and
@@ -485,7 +489,10 @@ class CompressionScheduler:
             # No compression
             return
         self.iteration_count += 1
-        if self.iteration_count >= self.config.compression_interval:
+        if (self.iteration_count >= self.config.compression_interval
+            or (self.config.new_token_limit > -1 and
+                self.new_tokens > self.config.new_token_limit)):
             self.iteration_count = 0
+            self.new_tokens = 0
             return self._schedule_compression(seqs)
 
