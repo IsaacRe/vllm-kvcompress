@@ -356,12 +356,12 @@ class FlashAttentionImpl(AttentionImpl):
                     context_lens,
                     kv_metrics.token_positions,
                     decode_positions,
+                    kv_metric_buffer_len,
                     decode_meta.max_context_len,
                     attn_metadata.kv_cache_dtype,
                     self.num_kv_heads,
                     self.scale,
                     self.alibi_slopes,
-                    kv_metric_buffer_len,
                     kv_scale,
                     kv_metrics.temp_metrics,
                     kv_metrics.temp_v2_metrics,
@@ -403,7 +403,7 @@ def _naive_kvc_attention(
     value: torch.Tensor,
     prompt_lens: List[int],
     scale: float,
-    kv_metric_buffer_len: int = 0,
+    kv_metric_buffer_len: torch.Tensor,
 ) -> torch.Tensor:
     output = torch.empty_like(query)
     seq_len, num_heads, _ = key.shape
@@ -413,14 +413,14 @@ def _naive_kvc_attention(
         device=key.device,
     )
     start = 0
-    for _, prompt_len in enumerate(prompt_lens):
+    for i, prompt_len in enumerate(prompt_lens):
         end = start + prompt_len
         out, kv_metrics = _naive_kvc_masked_attention(
             query[start:end],
             key[start:end],
             value[start:end],
             scale,
-            kv_metric_buffer_len,
+            kv_metric_buffer_len[i],
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
         output[start:end].copy_(out)
@@ -435,7 +435,7 @@ def _naive_kvc_masked_attention(
     key: torch.Tensor,
     value: torch.Tensor,
     scale: float,
-    kv_metric_buffer_len: int = 0,
+    kv_metric_buffer_len: torch.Tensor,
 ) -> torch.Tensor:
     seq_len, num_heads, head_dim = query.shape
     ones = torch.ones(seq_len,

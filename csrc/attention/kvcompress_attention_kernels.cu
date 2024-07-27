@@ -109,11 +109,11 @@ __device__ void single_tier_paged_attention_kernel(
   const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]  (track num KVs per attention head per batch elem)
   const int* __restrict__ kv_position,    // [num_blocks, block_size]
   const int* __restrict__ last_position,  // [num_seqs]
+  const int* __restrict__ kv_metric_buffer_len,  // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
-  const int kv_metric_buffer_len,
   const float kv_scale) {
   const int head_idx = blockIdx.x;
   const int num_heads = gridDim.x;
@@ -122,7 +122,7 @@ __device__ void single_tier_paged_attention_kernel(
   const int query_head_offset = head_idx % num_queries_per_kv;
 
   const int seq_idx = blockIdx.y;
-  const int max_output_metric_position = last_position[seq_idx] - kv_metric_buffer_len;
+  const int max_output_metric_position = last_position[seq_idx] - kv_metric_buffer_len[seq_idx];
   const int seq_head_idx = seq_idx * num_kv_heads + kv_head_idx;
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
@@ -485,16 +485,16 @@ __global__ void single_tier_paged_attention_v1_kernel(
   const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
   const int* __restrict__ kv_position,    // [num_blocks, block_size]
   const int* __restrict__ last_position,  // [num_seqs]
+  const int* __restrict__ kv_metric_buffer_len,  // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
-  const int kv_metric_buffer_len,
   const float kv_scale) {
   single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_KV_CACHE>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
     out, kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens, kv_position, last_position,
-    max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_metric_buffer_len, kv_scale);
+    kv_metric_buffer_len, max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_scale);
 }
 
 // Grid: (num_heads, num_seqs, max_num_partitions).
@@ -520,16 +520,16 @@ __global__ void single_tier_paged_attention_v2_kernel(
   const int* __restrict__ context_lens,   // [num_seqs, num_kv_heads]
   const int* __restrict__ kv_position,    // [num_blocks, block_size]
   const int* __restrict__ last_position,  // [num_seqs]
+  const int* __restrict__ kv_metric_buffer_len,  // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
-  const int kv_metric_buffer_len,
   const float kv_scale) {
   single_tier_paged_attention_kernel<scalar_t, cache_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, IS_FP8_KV_CACHE, PARTITION_SIZE>(
     exp_sums, max_logits, tmp_out, tmp_kv_metric_out, q, k_cache, v_cache, num_kv_heads, scale,
-    block_tables, context_lens, kv_position, last_position, max_num_blocks_per_seq, alibi_slopes,
-    q_stride, kv_block_stride, kv_metric_buffer_len, kv_scale);
+    block_tables, context_lens, kv_position, last_position, kv_metric_buffer_len, max_num_blocks_per_seq,
+    alibi_slopes, q_stride, kv_block_stride, kv_scale);
 }
 
 // Grid: (num_heads, num_seqs).
@@ -675,11 +675,11 @@ __global__ void single_tier_paged_attention_v2_reduce_kernel(
     context_lens_ptr,                                                                         \
     kv_position_ptr,                                                                          \
     last_position_ptr,                                                                        \
+    kv_metric_buffer_len_ptr,                                                                 \
     max_num_blocks_per_seq,                                                                   \
     alibi_slopes_ptr,                                                                         \
     q_stride,                                                                                 \
     kv_block_stride,                                                                          \
-    kv_metric_buffer_len,                                                                     \
     kv_scale);
 
 // TODO(woosuk): Tune NUM_THREADS.
@@ -701,9 +701,9 @@ void kvc_paged_attention_v1_launcher(
   torch::Tensor& context_lens,
   torch::Tensor& kv_position,
   torch::Tensor& last_position,
+  torch::Tensor& kv_metric_buffer_len,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-  int kv_metric_buffer_len,
   float kv_scale) {
   int num_seqs = query.size(0);
   int num_heads = query.size(1);
@@ -729,6 +729,7 @@ void kvc_paged_attention_v1_launcher(
   int* context_lens_ptr = context_lens.data_ptr<int>();
   int* kv_position_ptr = kv_position.data_ptr<int>();
   int* last_position_ptr = last_position.data_ptr<int>();
+  int* kv_metric_buffer_len_ptr = kv_metric_buffer_len.data_ptr<int>();
 
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
   int padded_max_context_len = DIVIDE_ROUND_UP(max_context_len, BLOCK_SIZE) * BLOCK_SIZE;
@@ -783,9 +784,9 @@ void kvc_paged_attention_v1_launcher(
     context_lens,                                                            \
     kv_position,                                                             \
     last_position,                                                           \
+    kv_metric_buffer_len,                                                    \
     max_context_len,                                                         \
     alibi_slopes,                                                            \
-    kv_metric_buffer_len,                                                    \
     kv_scale);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
@@ -821,11 +822,11 @@ void kvcompress_paged_attention_v1(
   torch::Tensor& context_lens,    // [num_seqs, num_kv_heads]
   torch::Tensor& kv_position,     // [num_blocks, block_size]
   torch::Tensor& last_position,   // [num_seqs]
+  torch::Tensor& kv_metric_buffer_len,  // [num_seqs]
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype,
-  int kv_metric_buffer_len,
   float kv_scale) {
   if (kv_cache_dtype == "auto") {
     if (query.dtype() == at::ScalarType::Float) {
@@ -869,11 +870,11 @@ void kvcompress_paged_attention_v1(
     context_lens_ptr,                                                                         \
     kv_position_ptr,                                                                          \
     last_position_ptr,                                                                        \
+    kv_metric_buffer_len_ptr,                                                                 \
     max_num_blocks_per_seq,                                                                   \
     alibi_slopes_ptr,                                                                         \
     q_stride,                                                                                 \
     kv_block_stride,                                                                          \
-    kv_metric_buffer_len,                                                                     \
     kv_scale);                                                                          \
   vllm::single_tier_paged_attention_v2_reduce_kernel<T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, PARTITION_SIZE>           \
   <<<reduce_grid, block, reduce_shared_mem_size, stream>>>(                                   \
@@ -912,9 +913,9 @@ void kvc_paged_attention_v2_launcher(
   torch::Tensor& context_lens,
   torch::Tensor& kv_position,
   torch::Tensor& last_position,
+  torch::Tensor& kv_metric_buffer_len,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
-  int kv_metric_buffer_len,
   float kv_scale) {
   int num_seqs = query.size(0);
   int num_heads = query.size(1);
@@ -944,6 +945,7 @@ void kvc_paged_attention_v2_launcher(
   int* context_lens_ptr = context_lens.data_ptr<int>();
   int* kv_position_ptr = kv_position.data_ptr<int>();
   int* last_position_ptr = last_position.data_ptr<int>();
+  int* kv_metric_buffer_len_ptr = kv_metric_buffer_len.data_ptr<int>();
 
   constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
   int max_num_partitions = DIVIDE_ROUND_UP(max_context_len, PARTITION_SIZE);
@@ -1005,9 +1007,9 @@ void kvc_paged_attention_v2_launcher(
     context_lens,                                                                \
     kv_position,                                                             \
     last_position,                                                           \
+    kv_metric_buffer_len,                                                        \
     max_context_len,                                                             \
     alibi_slopes,                                                                \
-    kv_metric_buffer_len,                                                        \
     kv_scale);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
@@ -1047,11 +1049,11 @@ void kvcompress_paged_attention_v2(
   torch::Tensor& context_lens,    // [num_seqs, num_kv_heads]
   torch::Tensor& kv_position,     // [num_blocks, block_size]
   torch::Tensor& last_position,   // [num_seqs]
+  torch::Tensor& kv_metric_buffer_len,  // [num_seqs]
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype,
-  int kv_metric_buffer_len,
   float kv_scale) {
   if (kv_cache_dtype == "auto") {
     if (query.dtype() == at::ScalarType::Float) {

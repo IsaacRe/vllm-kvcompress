@@ -56,6 +56,7 @@ class PreparePromptMetadata(NamedTuple):
     lora_requests: Set[LoRARequest]
     multi_modal_input: Optional[torch.Tensor]
     slot_mapping: List[Union[int, torch.Tensor]]
+    kv_metric_buffer_len: List[int]
 
     @classmethod
     def empty(cls):
@@ -70,6 +71,7 @@ class PreparePromptMetadata(NamedTuple):
             lora_requests=set(),
             multi_modal_input=None,
             slot_mapping=[],
+            kv_metric_buffer_len=[],
         )
 
 
@@ -81,6 +83,7 @@ class PrepareDecodeMetadata(NamedTuple):
     lora_prompt_mapping: List[int]
     lora_requests: Set[LoRARequest]
     slot_mapping: Union[List[int], torch.Tensor]
+    kv_metric_buffer_len: List[int]
 
     @classmethod
     def empty(cls):
@@ -92,6 +95,7 @@ class PrepareDecodeMetadata(NamedTuple):
             lora_prompt_mapping=[],
             lora_requests=set(),
             slot_mapping=[],
+            kv_metric_buffer_len=[],
         )
 
 
@@ -254,6 +258,7 @@ class ModelRunner:
         input_tokens: List[int] = []
         input_positions: List[int] = []
         slot_mapping: List[int] = []
+        kv_metric_buffer_len: List[int] = []
         lora_index_mapping: List[int] = []
         lora_prompt_mapping: List[int] = []
         lora_requests: Set[LoRARequest] = set()
@@ -367,6 +372,9 @@ class ModelRunner:
                 # [num_layer, num_tokens, num_kv_heads]
                 slot_mapping.append(
                     seq_block_state_view.get_prefill_slot_mapping())
+                kv_metric_buffer_len.append(
+                    seq_group_metadata.sampling_params.metric_collection_buffer_size
+                )
             else:
                 block_table = seq_group_metadata.block_tables[seq_id]
                 # Mask the [0, start_idx) tokens of the prompt with _PAD_SLOT_ID,
@@ -480,6 +488,7 @@ class ModelRunner:
             lora_requests=lora_requests,
             multi_modal_input=multi_modal_input,
             slot_mapping=slot_mapping,
+            kv_metric_buffer_len=kv_metric_buffer_len,
         )
 
     @BENCHMARKER.wrap()
@@ -494,6 +503,7 @@ class ModelRunner:
         context_lens: List[int] = []
         block_tables: List[List[int]] = []
         block_state_indices: List[int] = []
+        kv_metric_buffer_len: List[int] = []
         lora_index_mapping: List[int] = []
         lora_prompt_mapping: List[int] = []
         lora_requests: Set[LoRARequest] = set()
@@ -526,6 +536,9 @@ class ModelRunner:
                 # If using KV-Compress we generate all sequence metadata in parallel
                 if self.kvcompress_config:
                     block_state_indices.append(seq_group_metadata.block_state_index)
+                    kv_metric_buffer_len.append(
+                        seq_group_metadata.sampling_params.metric_collection_buffer_size
+                    )
                 else:
                     block_table = seq_group_metadata.block_tables[seq_id]
                     context_len = seq_len if self.sliding_window is None else min(
@@ -632,6 +645,7 @@ class ModelRunner:
             lora_prompt_mapping=lora_prompt_mapping,
             lora_requests=lora_requests,
             slot_mapping=slot_mapping,
+            kv_metric_buffer_len=kv_metric_buffer_len,
         )
 
     def _prepare_sample(
@@ -764,6 +778,7 @@ class ModelRunner:
                 lora_requests,
                 multi_modal_input,
                 slot_mapping,
+                kv_metric_buffer_len,
             ) = self._prepare_prompt(prefill_reqs, block_state)
             (
                 decode_input_tokens,
@@ -773,6 +788,7 @@ class ModelRunner:
                 decode_lora_prompt_mapping,
                 decode_lora_requests,
                 decode_slot_mapping,
+                decode_kv_metric_buffer_len,
             ) = self._prepare_decode(decode_reqs, block_state)
             sampling_metadata = self._prepare_sample(seq_group_metadata_list,
                                                      prompt_lens,
@@ -789,6 +805,7 @@ class ModelRunner:
             # coalesced for simplicity.
             input_tokens.extend(decode_input_tokens)
             input_positions.extend(decode_input_positions)
+            kv_metric_buffer_len.extend(decode_kv_metric_buffer_len)
             lora_index_mapping.extend(decode_lora_index_mapping)
             lora_prompt_mapping.extend(decode_lora_prompt_mapping)
             lora_requests.update(decode_lora_requests)
@@ -815,6 +832,11 @@ class ModelRunner:
                 slot_mapping = torch.tensor(slot_mapping,
                                             dtype=torch.long,
                                             device=self.device)
+            
+            if kv_metric_buffer_len:
+                kv_metric_buffer_len = torch.tensor(kv_metric_buffer_len,
+                                                    dtype=torch.int,
+                                                    device=self.device)
 
             if self.lora_config:
                 lora_mapping = LoRAMapping(
@@ -848,6 +870,7 @@ class ModelRunner:
                 "slot_mapping": slot_mapping,
                 "num_prefills": num_prefills,
                 "batch_type": batch_type,
+                "kv_metric_buffer_len": kv_metric_buffer_len,
             }
             if prefill_attn_metadata is not None:
                 metadata_dict.update(prefill_attn_metadata.asdict_zerocopy())
@@ -868,6 +891,7 @@ class ModelRunner:
             input_tokens = metadata_dict.pop("input_tokens")
             input_positions = metadata_dict.pop("input_positions")
             slot_mapping = metadata_dict.pop("slot_mapping")
+            kv_metric_buffer_len = metadata_dict.pop("kv_metric_buffer_len")
             num_prefills = metadata_dict.pop("num_prefills")
             selected_token_indices = metadata_dict.pop(
                 "selected_token_indices")
@@ -913,8 +937,7 @@ class ModelRunner:
             decode_metadata=decode_attn_metadata,
             kv_cache_dtype=self.kv_cache_dtype,
             kv_metrics=kvc_state.kv_metrics if kvc_state else None,
-            kv_metric_buffer_len=(self.kvcompress_config.metric_collection_buffer_size
-                                  if self.kvcompress_config else 0),
+            kv_metric_buffer_len=kv_metric_buffer_len,
             token_positions=input_positions.type(torch.int),
         )
 

@@ -413,10 +413,18 @@ class VllmRunner:
         prompt_token_ids: Optional[List[List[int]]] = None,
         reference_completions: Optional[List[str]] = None,
         reference_token_ids: Optional[List[List[int]]] = None,
+        protected_window_size: int = 100,
+        target_compression_rate: float = 1.0,
+        max_cache_tokens: int = -1,
+        metric_collection_buffer_size: int = 10,
     ) -> List[Tuple[List[int], str]]:
         greedy_logprobs_params = SamplingParams(temperature=0.0,
                                                 max_tokens=max_tokens,
-                                                logprobs=num_logprobs)
+                                                logprobs=num_logprobs,
+                                                protected_window_size=protected_window_size,
+                                                target_compression_rate=target_compression_rate,
+                                                max_cache_tokens=max_cache_tokens,
+                                                metric_collection_buffer_size=metric_collection_buffer_size)
         outputs = self.generate_w_logprobs(greedy_logprobs_params,
                                            prompts=prompts,
                                            prompt_token_ids=prompt_token_ids,

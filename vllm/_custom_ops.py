@@ -96,20 +96,20 @@ def paged_attention_kvc_v1(
     context_lens: torch.Tensor,
     kv_position: torch.Tensor,
     last_position: torch.Tensor,
+    kv_metric_buffer_len: torch.Tensor,
     block_size: int,
     max_context_len: int,
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
-    kv_metric_buffer_len: int,
     kv_scale: float,
 ) -> None:
     vllm_ops.kvcompress_paged_attention_v1(out, kv_metric_out, query, key_cache,
                                            value_cache, num_kv_heads, scale,
                                            block_tables, context_lens,
                                            kv_position, last_position,
-                                           block_size, max_context_len,
-                                           alibi_slopes, kv_cache_dtype,
-                                           kv_metric_buffer_len, kv_scale)
+                                           kv_metric_buffer_len, block_size,
+                                           max_context_len, alibi_slopes,
+                                           kv_cache_dtype, kv_scale)
 
 
 @BENCHMARKER.wrap()
@@ -129,11 +129,11 @@ def paged_attention_kvc_v2(
     context_lens: torch.Tensor,
     kv_position: torch.Tensor,
     last_position: torch.Tensor,
+    kv_metric_buffer_len: torch.Tensor,
     block_size: int,
     max_context_len: int,
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
-    kv_metric_buffer_len: int,
     kv_scale: float,
 ) -> None:
     vllm_ops.kvcompress_paged_attention_v2(out, kv_metric_out, exp_sum,
@@ -142,10 +142,10 @@ def paged_attention_kvc_v2(
                                            query, key_cache, value_cache,
                                            num_kv_heads, scale, block_tables,
                                            context_lens, kv_position,
-                                           last_position, block_size,
-                                           max_context_len, alibi_slopes,
-                                           kv_cache_dtype,
-                                           kv_metric_buffer_len, kv_scale)
+                                           last_position, kv_metric_buffer_len,
+                                           block_size, max_context_len,
+                                           alibi_slopes, kv_cache_dtype,
+                                           kv_scale)
 
 
 # pos encoding ops
@@ -309,8 +309,8 @@ def ref_schedule_cache_evictions(
     hanging_token_count: torch.Tensor,
     kv_position: torch.Tensor,
     last_position: torch.Tensor,
+    protected_window: torch.Tensor,
     block_size: int,
-    protected_window: int,
     evict_evenly_per_layer: bool,
     control_layers: torch.Tensor,
     max_evicted_kv: int,
@@ -376,7 +376,7 @@ def ref_schedule_cache_evictions(
         print(f'start, end: {j}, {end_j}')
         total_evictable_keys = end_j - j
         assert total_evictable_keys % block_size == 0
-        protected_blocks = ((protected_window + block_size - 1) // block_size) * num_layers * num_kv_heads
+        protected_blocks = ((protected_window[i] + block_size - 1) // block_size) * num_layers * num_kv_heads
         max_evictable_blocks = total_evictable_keys // block_size
         max_evictable_blocks -= protected_blocks
         assert max_evictable_blocks >= evicted_blocks_per_seq[i], f"Expected at least {evicted_blocks_per_seq[i]} evictable blocks, got {max_evictable_blocks}"
@@ -397,7 +397,7 @@ def ref_schedule_cache_evictions(
                 j += 1
                 continue
 
-            if kv_pos > current_pos - protected_window:
+            if kv_pos > current_pos - protected_window[i]:
                 j += 1
                 continue
 
@@ -421,7 +421,7 @@ def ref_schedule_cache_evictions(
         # print(f'tot_iter: {tot_iter}')
         # print(f'remaining_kv:\n{remaining_kv}')
         assert evicted_blocks == evicted_blocks_per_seq[i], "schedule_cache_evictions loop failed"
-        assert pos_flat[torch.tensor(evicted_kv_indices, dtype=torch.long)].max() <= (current_pos) - protected_window, "schedule_cache_evictions loop failed"
+        assert pos_flat[torch.tensor(evicted_kv_indices, dtype=torch.long)].max() <= (current_pos) - protected_window[i], "schedule_cache_evictions loop failed"
 
     # print(f'evicted_count pre-truncate:\n{out_evicted_kv_count}')
     if truncate:
@@ -469,8 +469,8 @@ def schedule_cache_evictions(
     hanging_token_count: torch.Tensor,
     kv_position: torch.Tensor,
     last_position: torch.Tensor,
+    protected_window_size: torch.Tensor,
     block_size: int,
-    protected_window_size: int,
     max_evicted_kv: int,
     null_eviction_index: int,
     truncate: bool,
@@ -518,8 +518,8 @@ def schedule_cache_evictions(
         hanging_token_count.contiguous(),
         kv_position.type(torch.int),
         last_position.type(torch.int),
-        block_size,
         protected_window_size,
+        block_size,
         evict_evenly_per_layer,
         control_layers,
         max_evicted_kv,

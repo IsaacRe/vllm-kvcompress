@@ -18,8 +18,8 @@ void schedule_cache_evictions(
   torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& kv_position,               // [total_blocks, BLOCK_SIZE]
   torch::Tensor& last_position,             // [num_seqs]
+  torch::Tensor& protected_window_size,     // [num_seqs]
   const int block_size,
-  const int protected_window_size,
   const bool evict_evenly_per_layer,
   const c10::optional<torch::Tensor>& control_layers,
   const int max_evicted_kv,

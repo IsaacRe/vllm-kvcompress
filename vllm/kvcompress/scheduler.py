@@ -11,6 +11,7 @@ from vllm.sequence import Sequence
 from vllm.kvcompress.block_manager import BlockSpaceManagerKVC, FreedBlockCounts
 from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.benchmark import BENCHMARKER
+from vllm.sampling_params import SamplingParams
 
 MAX_INT = 2147483000
 
@@ -99,28 +100,26 @@ class CompressionScheduler:
     def _schedule_seq_evictions(
         self,
         seq: Sequence,
-        compression_rate: Optional[float] = None,
-        max_cache_tokens: Optional[int] = None,
+        target_compression_rate: float,
+        max_cache_tokens: int,
+        protected_window_size: int,
     ) -> Tuple[int, int]:
         """Return the number of this sequence's blocks to be freed during
         the next compression iteration.
         """
-        if compression_rate is None:
-            compression_rate = self.config.target_compression_rate
-        if max_cache_tokens is None:
+        # Round up to nearest block to avoid freeing blocks with KVs below max.
+        if max_cache_tokens > 0:
             max_cache_tokens = (
-                self.config.max_cache_tokens + self.block_size - 1
+                max_cache_tokens + self.block_size - 1
             ) // self.block_size * self.block_size
 
-        if compression_rate < 1.0 and max_cache_tokens > 0:
+        if target_compression_rate < 1.0 and max_cache_tokens > 0:
             raise RuntimeError("both compression_rate and max_cache_tokens "
                                "specified during compression")
 
         total_kv_heads = self.config.num_layers * self.config.num_kv_heads
 
-        max_cache_kv = (
-            self.config.protected_window_size * total_kv_heads
-        )
+        max_cache_kv = protected_window_size * total_kv_heads
         evict_kv_count = max(
             0,
             self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
@@ -137,7 +136,7 @@ class CompressionScheduler:
             # Need to round up to next full block as remaining tokens in block cannot be
             # evicted without evicting any protected tokens in the block as well.
             protected_tokens = (
-                (self.config.protected_window_size + self.block_size - 1) // self.block_size
+                (protected_window_size + self.block_size - 1) // self.block_size
                 * self.block_size
             )
             compressible_token_count = (seq.data.get_len() - protected_tokens)
@@ -152,7 +151,7 @@ class CompressionScheduler:
             # Target count of KVs in compressible range that will yield the
             # desired compression rate
             target_kv_count = (
-                math.ceil(compressible_kv_count * compression_rate) + protected_kv
+                math.ceil(compressible_kv_count * target_compression_rate) + protected_kv
             )
 
             evict_kv_count = max(0, compressed_kv_count - target_kv_count)
@@ -166,7 +165,7 @@ class CompressionScheduler:
 
         assert evict_block_count <= max(
             self.block_manager.get_sequence_block_count(seq)
-            - (self.config.protected_window_size + self.block_size - 1) // self.block_size * self.config.num_kv_heads * self.config.num_layers,
+            - (protected_window_size + self.block_size - 1) // self.block_size * total_kv_heads,
             0,
         )
 
@@ -174,7 +173,7 @@ class CompressionScheduler:
         return evict_kv_count, evict_block_count
     
     @BENCHMARKER.wrap()
-    def _schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
+    def _schedule_compression(self, seqs: List[Sequence], sampling_params: List[SamplingParams]) -> Optional[CompressionOutputs]:
         # Benchmark - 1
         # BENCHMARKER.start_range("_schedule_compression - 1")
         print(f"(seq_idx, iters_since_compression){[(self.block_manager.batch_slot_mapping[seq.seq_id], self._iters_since_compression.get(seq.seq_id)) for seq in seqs]}")
@@ -183,13 +182,19 @@ class CompressionScheduler:
         # evict.
         total_kv_count = 0
         seqs_to_compress: List[Sequence] = []
+        protected_window_sizes: List[int] = []
         evicted_blocks_per_seq = []
-        for _, _, seq in sorted(
-            [(self._iters_since_compression.get(s.seq_id, 0), s.seq_id, s) for s in seqs],
+        for _, _, seq, sample_params in sorted(
+            [(self._iters_since_compression.get(s.seq_id, 0), s.seq_id, s, sp) for s, sp in zip(seqs, sampling_params)],
             reverse=True,
         ):
             # If sequence is not long enough for compression, skip.
-            _, evicted_block_count = self._schedule_seq_evictions(seq)
+            _, evicted_block_count = self._schedule_seq_evictions(
+                seq,
+                target_compression_rate=sample_params.target_compression_rate,
+                max_cache_tokens=sample_params.max_cache_tokens,
+                protected_window_size=sample_params.protected_window_size,
+            )
             if evicted_block_count == 0:
                 continue
 
@@ -199,6 +204,7 @@ class CompressionScheduler:
                 break
 
             seqs_to_compress.append(seq)
+            protected_window_sizes.append(sample_params.protected_window_size)
             evicted_blocks_per_seq.append(evicted_block_count)
             self._iters_since_compression[seq] = 0
 
@@ -215,8 +221,8 @@ class CompressionScheduler:
             self.compression_metrics.checkpoint()
 
         # Sort sequences by batch_slot_index index
-        seqs_to_compress, evicted_blocks_per_seq = zip(*sorted(
-            zip(seqs_to_compress, evicted_blocks_per_seq),
+        seqs_to_compress, evicted_blocks_per_seq, protected_window_sizes = zip(*sorted(
+            zip(seqs_to_compress, evicted_blocks_per_seq, protected_window_sizes),
             key=lambda x: self.block_manager.get_slot_index(x[0]),
         ))
         seqs_to_compress = list(seqs_to_compress)
@@ -301,6 +307,11 @@ class CompressionScheduler:
         # total_kv_count = (last_token_positions[i] + 1 )* self.config.num_layers * self.config.num_kv_heads
         # assert out_of_range_seq_kvs.sum() >= min(protected_kv_count, total_kv_count), f"{out_of_range_seq_kvs.sum()=} {protected_kv_count=} {total_kv_count=}"
 
+        protected_window_sizes = torch.tensor(
+            protected_window_sizes,
+            dtype=torch.int,
+            device=self.device,
+        )
         schedule_cache_evictions(
             self.evicted_head_indices,
             self.evicted_logical_indices,
@@ -316,8 +327,8 @@ class CompressionScheduler:
             hanging_token_count,
             sort_output.token_positions,
             last_token_positions,
+            protected_window_sizes,
             self.block_size,
-            self.config.protected_window_size,
             self.config.max_kv_per_compression,
             MAX_INT,
             True,
@@ -482,17 +493,13 @@ class CompressionScheduler:
     def increment_new_tokens(self, new_token_count: int) -> None:
         self.new_tokens += new_token_count
 
-    def schedule_compression(self, seqs: List[Sequence]) -> Optional[CompressionOutputs]:
+    def schedule_compression(self, seqs: List[Sequence], sampling_params: List[SamplingParams]) -> Optional[CompressionOutputs]:
         """Returns number of KV evictions per sequence"""
-        if (self.config.target_compression_rate == 1.0 and
-            self.config.max_cache_tokens <= 0):
-            # No compression
-            return
         self.iteration_count += 1
         if (self.iteration_count >= self.config.compression_interval
             or (self.config.new_token_limit > -1 and
                 self.new_tokens > self.config.new_token_limit)):
             self.iteration_count = 0
             self.new_tokens = 0
-            return self._schedule_compression(seqs)
+            return self._schedule_compression(seqs, sampling_params)
 

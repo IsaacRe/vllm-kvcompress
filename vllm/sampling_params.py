@@ -129,6 +129,10 @@ class SamplingParams:
         spaces_between_special_tokens: bool = True,
         logits_processors: Optional[List[LogitsProcessor]] = None,
         truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None,
+        protected_window_size: int = 100,
+        target_compression_rate: float = 1.0,
+        max_cache_tokens: int = -1,
+        metric_collection_buffer_size: int = 10,
     ) -> None:
         self.n = n
         self.best_of = best_of if best_of is not None else n
@@ -173,6 +177,12 @@ class SamplingParams:
             self.output_text_buffer_length = max(len(s) for s in self.stop) - 1
         else:
             self.output_text_buffer_length = 0
+
+        # KV-Compress parameters
+        self.protected_window_size = protected_window_size
+        self.target_compression_rate = target_compression_rate
+        self.max_cache_tokens = max_cache_tokens
+        self.metric_collection_buffer_size = metric_collection_buffer_size
 
         self._verify_args()
         if self.use_beam_search:
@@ -240,6 +250,21 @@ class SamplingParams:
             raise ValueError(
                 "stop strings are only supported when detokenize is True. "
                 "Set detokenize=True to use stop.")
+        if (self.max_cache_tokens > 0 and self.target_compression_rate < 1.0):
+            raise ValueError("only one of target_compression_rate and "
+                             "max_cache_tokens may be specified")
+        if (self.target_compression_rate <= 0.0
+            or self.target_compression_rate > 1.0):
+            raise ValueError("target_compression_rate must be in (0, 1]")
+        if self.metric_collection_buffer_size > self.protected_window_size:
+            raise ValueError(
+                "metric_collection_buffer_size cannot be greater than "
+                "protected_window_size")
+        if (self.max_cache_tokens > 0
+            and self.protected_window_size > self.max_cache_tokens):
+            raise ValueError("max_cache_tokens must be greater than "
+                             "protected_window_size if it is specified")
+
 
     def _verify_beam_search(self) -> None:
         if self.best_of == 1:

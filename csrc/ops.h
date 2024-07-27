@@ -29,11 +29,11 @@ void kvcompress_paged_attention_v1(
   torch::Tensor& context_lens,
   torch::Tensor& kv_position,
   torch::Tensor& last_position,
+  torch::Tensor& kv_metric_buffer_len,
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype,
-  int kv_metric_buffer_len,
   float kv_scale);
 
 void kvcompress_t2_paged_attention_v1(
@@ -87,11 +87,11 @@ void kvcompress_paged_attention_v2(
   torch::Tensor& context_lens,
   torch::Tensor& kv_position,
   torch::Tensor& last_position,
+  torch::Tensor& kv_metric_buffer_len,
   int block_size,
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype,
-  int kv_metric_buffer_len,
   float kv_scale);
 
 void kvcompress_t2_paged_attention_v2(

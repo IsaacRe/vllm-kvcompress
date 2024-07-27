@@ -92,7 +92,7 @@ class AttentionMetadata(Generic[T]):
     kv_metrics: Optional[CompressionMetrics] = None
     # Minimum distance between a key and query for the query's attention to
     # the key to be aggregated into the key's metric.
-    kv_metric_buffer_len: int = 0
+    kv_metric_buffer_len: Optional[torch.Tensor] = None
     # Used to determine whether to aggregate metrics for each KV during decoding
     token_positions: Optional[torch.Tensor] = None
 

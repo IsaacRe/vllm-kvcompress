@@ -1057,11 +1057,12 @@ class Scheduler:
         """
         # Assume all sequence groups have a single sequence when using
         # KV-Compress.
-        seqs = list(map(lambda sg: sg.get_seqs()[0], self.running))
+        seqs = [sg.get_seqs()[0] for sg in self.running]
+        sampling_params = [sg.sampling_params for sg in self.running]
         print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
 
         if seqs and (kvc_output := 
-                     self.kvcompress_scheduler.schedule_compression(seqs)):
+                     self.kvcompress_scheduler.schedule_compression(seqs, sampling_params)):
             # Return physical cache moves to be executed by cache engine
             return kvc_output.cache_moves
 

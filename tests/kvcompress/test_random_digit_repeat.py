@@ -95,11 +95,11 @@ def test_parity_with_simulated_compression(
         dtype=dtype,
         enforce_eager=True,
         enable_kvcompress=True,
-        max_cache_tokens=checkpoint_cfg.max_cache_tokens,
+        # max_cache_tokens=checkpoint_cfg.max_cache_tokens,
         # target_compression_rate=0.1,
         block_size=16,
-        protected_window_size=checkpoint_cfg.protected_window_size,
-        metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
+        # protected_window_size=checkpoint_cfg.protected_window_size,
+        # metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
         even_layer_evict=False, #True,
         control_layers=[], #checkpoint_cfg.control_layers,
         save_checkpoint_dir='./checkpoint',
@@ -136,7 +136,11 @@ def test_parity_with_simulated_compression(
                                                 max_tokens,
                                                 topk_ll,
                                                 prompt_token_ids=input_token_ids,
-                                                reference_token_ids=deepcopy(reference_token_ids))
+                                                reference_token_ids=deepcopy(reference_token_ids),
+                                                max_cache_tokens=checkpoint_cfg.max_cache_tokens,
+                                                # target_compression_rate=0.1,
+                                                protected_window_size=checkpoint_cfg.protected_window_size,
+                                                metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size)
     del vllm_model
     print(f"TOTAL TOKENS = {sum([len(i) + len(r) for i, r in zip(input_token_ids, reference_token_ids)])}")
 

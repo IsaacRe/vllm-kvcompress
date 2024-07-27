@@ -39,10 +39,10 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   const int* __restrict__ hanging_token_count,      // [num_seqs, num_layers, num_kv_heads]  number of new generated tokens for each sequence modulo block_size
   const int* __restrict__ kv_position,              // [total_blocks, BLOCK_SIZE] token position for each KV by physical token index
   const int* __restrict__ last_position,            // [num_seqs]  position of last token for each sequence
+  const int* __restrict__ protected_window_size,    // [num_seqs]
   const int num_layers,
   const int num_kv_heads,
   const int total_blocks,     // Total number of blocks across all layers, seqs, heads
-  const int protected_window_size,
   const bool evict_evenly_per_layer,
   const int num_control_layers,
   const int* __restrict__ control_layer_indices) {
@@ -59,7 +59,7 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
     }
   }
 
-  const int max_evictable_position = last_position[seq_idx] - protected_window_size;
+  const int max_evictable_position = last_position[seq_idx] - protected_window_size[seq_idx];
 
   const int output_seq_stride = num_layers * num_kv_heads;
 
@@ -407,10 +407,10 @@ __global__ void execute_cache_moves_kernel(
     hanging_token_count_ptr, \
     kv_position_ptr, \
     last_position_ptr, \
+    protected_window_size_ptr, \
     num_layers, \
     num_kv_heads, \
     total_blocks, \
-    protected_window_size, \
     evict_evenly_per_layer, \
     num_control_layers, \
     control_layer_indices_ptr); \
@@ -459,8 +459,8 @@ void schedule_cache_evictions(
   torch::Tensor& hanging_token_count,       // [num_seqs, num_layers, num_kv_heads]
   torch::Tensor& kv_position,               // [total_blocks, BLOCK_SIZE]
   torch::Tensor& last_position,             // [num_seqs]
+  torch::Tensor& protected_window_size,     // [num_seqs]
   const int block_size,
-  const int protected_window_size,
   const bool evict_evenly_per_layer,
   const c10::optional<torch::Tensor>& control_layers,
   const int max_evicted_kv,
@@ -493,6 +493,7 @@ void schedule_cache_evictions(
   int* hanging_token_count_ptr = reinterpret_cast<int*>(hanging_token_count.data_ptr());
   int* kv_position_ptr = reinterpret_cast<int*>(kv_position.data_ptr());
   int* last_position_ptr = reinterpret_cast<int*>(last_position.data_ptr());
+  int* protected_window_size_ptr = reinterpret_cast<int*>(protected_window_size.data_ptr());
   
   // If evicting evenly across layers, launch a seperate thread per layer
   const int num_layer_threads = evict_evenly_per_layer ? num_layers : 1;
