@@ -313,6 +313,11 @@ class CacheConfig:
         self.num_gpu_blocks_override = num_gpu_blocks_override
         self.cache_dtype = cache_dtype
         self.sliding_window = sliding_window
+        if enable_kvcompress:
+            logger.warning("Model has sliding window configured, but "
+                           "it will be disabled due to incompatibility with "
+                           "KV-Compress.")
+            self.sliding_window = None
         self.enable_prefix_caching = enable_prefix_caching
         self.enable_kvcompress = enable_kvcompress
         self._verify_args()

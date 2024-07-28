@@ -8,12 +8,14 @@ from vllm.debug import RandomDigitCheckpointConfig
 
 MODELS = [
     # "NousResearch/Llama-2-7b-hf",
-    "NousResearch/Hermes-2-Theta-Llama-3-8B",
+    # "NousResearch/Hermes-2-Theta-Llama-3-8B",
+    "mistralai/Mistral-7B-Instruct-v0.2",
 ]
 
 MODEL_KV_HEAD_BIAS = {
     "NousResearch/Llama-2-7b-hf": "./kv_head_bias.npz",
     "NousResearch/Hermes-2-Theta-Llama-3-8B": "./kv_head_bias_llama3.npz",
+    "mistralai/Mistral-7B-Instruct-v0.2": "./kv_head_bias_mistral.npz",
 }
 
 
@@ -81,7 +83,7 @@ def test_parity_with_simulated_compression(
     """
     checkpoint_cfg = RandomDigitCheckpointConfig(
         model_name=model,
-        max_cache_tokens=100,
+        max_cache_tokens=128,
         protected_window_size=50,
         metric_collection_buffer_size=10,
         num_digits=num_digits,
@@ -113,9 +115,9 @@ def test_parity_with_simulated_compression(
 
     tokenizer = AutoTokenizer.from_pretrained(model)
     input_token_ids, reference_token_ids = tokenizer_dependent_random_digit_generator(
-        tokenizer, num_digits, random_seed, n_seqs=1, repeat_len=10)
+        tokenizer, num_digits, random_seed, n_seqs=100, repeat_len=10)
     
-    if "Llama-2" in model:
+    if "Llama-2" in model or "Mistral" in model:
         # Llama-2 tokenizer adds an empty "" token before digits
         reference_token_ids = [ref_tokens[1:] for ref_tokens in reference_token_ids]
 
