@@ -2,6 +2,8 @@ from argparse import ArgumentParser
 from datasets import load_dataset
 from vllm import LLM, SamplingParams
 import json
+from tqdm.auto import tqdm
+import os
 
 from util import load_tokenizer, seed_everything, build_chat, post_process, MODELS
 
@@ -12,11 +14,12 @@ parser.add_argument('--dataset', type=str, default='hotpotqa')
 parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
 parser.add_argument('--split', type=str, default='test')
 parser.add_argument('--device', type=str, default='cuda:0')
-parser.add_argument('--max-cache-tokens', type=int, default=4096)
+parser.add_argument('--max-cache-tokens', type=int, default=-1)
+parser.add_argument('--max-kv-per-compression', type=int, default=50_000_000)
 parser.add_argument('--protected-window-size', type=int, default=50)
 parser.add_argument('--metric-collection-buffer-size', type=int, default=10)
 parser.add_argument('--prefill-metric-collection-window-size', type=int, default=32)
-parser.add_argument('--max-model-len', type=int, default=4096)
+parser.add_argument('--max-model-len', type=int, default=None)
 
 
 def main(args):
@@ -44,6 +47,7 @@ def main(args):
         disable_log_stats=True,
         max_model_len=args.max_model_len,
         prefill_metric_collection_window_size=args.prefill_metric_collection_window_size,
+        max_kv_per_compression=args.max_kv_per_compression,
     )
     max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
                      model.llm_engine.model_config.max_model_len)
@@ -57,9 +61,9 @@ def main(args):
     inputs = []
     prompts = []
     final_prompts = []
-    answers = []
-    for json_obj in dset.take(10):
-        answers.append(json_obj["answers"])
+    json_objs = []
+    for json_obj in dset:
+        json_objs.append(json_obj)
         prompt = prompt_format.format(**json_obj)
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
@@ -87,15 +91,21 @@ def main(args):
         protected_window_size=args.protected_window_size,
         metric_collection_buffer_size=args.metric_collection_buffer_size,
     )
-    outputs = model.generate(prompt_token_ids=inputs,
-                             sampling_params=sampling_params)
-    for p, fp, output, answer in zip(prompts, final_prompts, outputs, answers):
-        response = post_process(output.outputs[0].text, args.model)
-        print('...' + fp[-200:])
-        print(f'({len(inputs[0])} tokens)')
-        print(response)
-        print(answer)
-        print('\n====================================\n')
+    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}"
+    out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    with open(out_path, "w+", encoding="utf-8") as f:
+        for input_ids, fp, json_obj in zip(tqdm(inputs), final_prompts, json_objs):
+            output = model.generate(prompt_token_ids=[input_ids],
+                                    sampling_params=sampling_params)
+            response = post_process(output[0].outputs[0].text, args.model)
+            print('...' + fp[-200:])
+            print(f'({len(input_ids)} tokens)')
+            print(response)
+            print(json_obj["answers"])
+            print('\n====================================\n')
+            json.dump({"pred": response, "answers": json_obj["answers"], "all_classes": json_obj["all_classes"], "length": json_obj["length"]}, f, ensure_ascii=False)
+            f.write('\n')
         # for out in output.outputs:
         #     print(out)
 

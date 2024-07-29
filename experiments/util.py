@@ -19,38 +19,32 @@ MODEL_REVISIONS = {
 # This is the customized building prompt for chat models
 def build_chat(tokenizer, prompt, model_name):
     if "chatglm3" in model_name:
-        print('chatglm3')
         prompt = tokenizer.build_chat_input(prompt)
     elif "chatglm" in model_name:
-        print('chatglm')
         prompt = tokenizer.build_prompt(prompt)
     elif "longchat" in model_name or "vicuna" in model_name:
-        print('longchat')
         from fastchat.model import get_conversation_template
         conv = get_conversation_template("vicuna")
         conv.append_message(conv.roles[0], prompt)
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
     elif "llama2"  in model_name or "llama-2" in model_name or "lwm" in model_name:
-        print('llama2', model_name)
         prompt = f"[INST]{prompt}[/INST]"
     elif "xgen" in model_name:
-        print('xgen')
         header = (
             "A chat between a curious human and an artificial intelligence assistant. "
             "The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"
         )
         prompt = header + f" ### Human: {prompt}\n###"
     elif "internlm" in model_name:
-        print('internlm')
         prompt = f"<|User|>:{prompt}<eoh>\n<|Bot|>:"
     elif "mistral" in model_name or "mixtral" in model_name:
-        print('mistral')
-        from fastchat.model import get_conversation_template
-        conv = get_conversation_template("mistral")
-        conv.append_message(conv.roles[0], prompt)
-        conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
+        # from fastchat.model import get_conversation_template
+        # conv = get_conversation_template("mistral")
+        # conv.append_message(conv.roles[0], prompt)
+        # conv.append_message(conv.roles[1], None)
+        # prompt = conv.get_prompt()
+        pass
     return prompt
 
 def post_process(response, model_name):
