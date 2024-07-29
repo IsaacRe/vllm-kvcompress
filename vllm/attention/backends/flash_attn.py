@@ -281,13 +281,27 @@ class FlashAttentionImpl(AttentionImpl):
                     # Interleave for MQA workaround.
                     key = self.repeat_kv(key, self.num_queries_per_kv)
                     value = self.repeat_kv(value, self.num_queries_per_kv)
-                out, kv_metric_out = _naive_kvc_attention(
+                out = flash_attn_varlen_func(
+                    q=query,
+                    k=key,
+                    v=value,
+                    cu_seqlens_q=prefill_meta.seq_start_loc,
+                    cu_seqlens_k=prefill_meta.seq_start_loc,
+                    max_seqlen_q=prefill_meta.max_prompt_len,
+                    max_seqlen_k=prefill_meta.max_prompt_len,
+                    softmax_scale=self.scale,
+                    causal=True,
+                    window_size=self.sliding_window,
+                    alibi_slopes=self.alibi_slopes,
+                )
+                _, kv_metric_out = _naive_kvc_attention(
                     query,
                     key,
                     value,
                     prefill_meta.prompt_lens,
                     self.scale,
                     kv_metric_buffer_len,
+                    n_observed=32,
                 )
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
@@ -404,8 +418,9 @@ def _naive_kvc_attention(
     prompt_lens: List[int],
     scale: float,
     kv_metric_buffer_len: torch.Tensor,
+    n_observed: int = 32,
 ) -> torch.Tensor:
-    output = torch.empty_like(query)
+    # output = torch.empty_like(query)
     seq_len, num_heads, _ = key.shape
     kv_metric_output = torch.empty(
         (seq_len, num_heads),
@@ -415,19 +430,20 @@ def _naive_kvc_attention(
     start = 0
     for i, prompt_len in enumerate(prompt_lens):
         end = start + prompt_len
-        out, kv_metrics = _naive_kvc_masked_attention(
-            query[start:end],
+        start_trunc = end - min(prompt_len, n_observed)
+        _, kv_metrics = _naive_kvc_masked_attention(
+            query[start_trunc:end],
             key[start:end],
             value[start:end],
             scale,
             kv_metric_buffer_len[i],
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
-        output[start:end].copy_(out)
+        # output[start:end].copy_(out)
         kv_metric_output[start:end].copy_(kv_metrics.T)
         start += prompt_len
 
-    return output, kv_metric_output
+    return None, kv_metric_output
 
 
 def _naive_kvc_masked_attention(
@@ -437,18 +453,20 @@ def _naive_kvc_masked_attention(
     scale: float,
     kv_metric_buffer_len: torch.Tensor,
 ) -> torch.Tensor:
-    seq_len, num_heads, head_dim = query.shape
-    ones = torch.ones(seq_len,
+    n_observed, num_heads, head_dim = query.shape
+    seq_len, num_heads, head_dim = key.shape
+    n_truncated = seq_len - n_observed
+    ones = torch.ones(n_observed,
                       seq_len,
                       dtype=query.dtype,
                       device=query.device)
-    attn_mask = torch.triu(ones, diagonal=1)
+    attn_mask = torch.triu(ones, diagonal=n_truncated + 1)
     attn_mask = attn_mask * torch.finfo(query.dtype).min
     attn_weights = scale * torch.einsum("qhd,khd->hqk", query, key).float()
     attn_weights = attn_weights + attn_mask.float()
     attn_weights = torch.softmax(attn_weights, dim=-1)
-    out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
-    kv_metric_mask = torch.tril(ones, diagonal=-kv_metric_buffer_len)
+    # out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
+    kv_metric_mask = torch.tril(ones, diagonal=n_truncated - kv_metric_buffer_len)
     # sum L2 of attention over queries
     kv_metrics = (attn_weights ** 2 * kv_metric_mask).sum(dim=-2)
-    return out, kv_metrics
+    return None, kv_metrics
