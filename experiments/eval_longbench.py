@@ -15,6 +15,7 @@ parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--max-cache-tokens', type=int, default=4096)
 parser.add_argument('--protected-window-size', type=int, default=50)
 parser.add_argument('--metric-collection-buffer-size', type=int, default=10)
+parser.add_argument('--prefill-metric-collection-window-size', type=int, default=32)
 parser.add_argument('--max-model-len', type=int, default=4096)
 
 
@@ -42,6 +43,7 @@ def main(args):
         tensor_parallel_size=1,
         disable_log_stats=True,
         max_model_len=args.max_model_len,
+        prefill_metric_collection_window_size=args.prefill_metric_collection_window_size,
     )
     max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
                      model.llm_engine.model_config.max_model_len)

@@ -95,6 +95,8 @@ class AttentionMetadata(Generic[T]):
     kv_metric_buffer_len: Optional[torch.Tensor] = None
     # Used to determine whether to aggregate metrics for each KV during decoding
     token_positions: Optional[torch.Tensor] = None
+    # Last N prefill queries used to initialize KV metrics
+    prefill_kv_metric_window_size: int = 32
 
     def __post_init__(self):
         # If layer-specific metadata is required during attention, layer_index

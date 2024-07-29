@@ -85,6 +85,7 @@ class EngineArgs:
     max_kv_per_compression: int = 5_000_000
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 0
+    prefill_metric_collection_window_size: int = 32
     kv_head_bias_path: str = ""
     kv_head_bias_weight: int = 1.0
     random_evict: bool = False
@@ -528,6 +529,13 @@ class EngineArgs:
                             'value of N. Should be <= '
                             'protected_window_size.')
 
+        parser.add_argument('--prefill-metric-collection-window-size',
+                            type=int,
+                            default=32,
+                            help='We initialize KV metrics with aggregate '
+                            'attention for each key over the last N prompt '
+                            'queries. Defines N.')
+
         parser.add_argument('--kv-head-bias-path',
                             type=str,
                             default='',
@@ -690,6 +698,7 @@ class EngineArgs:
                 max_kv_per_compression=self.max_kv_per_compression,
                 protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
+                prefill_metric_collection_window_size=self.prefill_metric_collection_window_size,
                 kv_head_bias_path=self.kv_head_bias_path,
                 kv_head_bias_weight=self.kv_head_bias_weight,
                 random_evict=self.random_evict,

@@ -634,6 +634,7 @@ class KVCompressConfig:
         max_kv_per_compression: int,
         protected_window_size: int,
         metric_collection_buffer_size: int,
+        prefill_metric_collection_window_size: int,
         kv_head_bias_path: str,
         kv_head_bias_weight: float,
         random_evict: bool,
@@ -652,6 +653,7 @@ class KVCompressConfig:
         self.max_kv_per_compression = max_kv_per_compression
         self.protected_window_size = protected_window_size
         self.metric_collection_buffer_size = metric_collection_buffer_size
+        self.prefill_metric_collection_window_size = prefill_metric_collection_window_size
         self.kv_head_bias_path = kv_head_bias_path
         self.kv_head_bias_weight = kv_head_bias_weight
         self.random_evict = random_evict

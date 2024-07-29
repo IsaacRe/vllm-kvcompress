@@ -201,6 +201,7 @@ class FlashAttentionImpl(AttentionImpl):
         kv_metrics = attn_metadata.kv_metrics
         kvcompress_enabled = bool(kv_metrics)
         kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
+        prefill_observed_queries = attn_metadata.prefill_kv_metric_window_size
 
         CHECKPOINTER.checkpoint('flash_attn__query', query)
         CHECKPOINTER.checkpoint('flash_attn__key', key)
@@ -301,7 +302,7 @@ class FlashAttentionImpl(AttentionImpl):
                     prefill_meta.prompt_lens,
                     self.scale,
                     kv_metric_buffer_len,
-                    n_observed=32,
+                    n_observed=prefill_observed_queries,
                 )
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
