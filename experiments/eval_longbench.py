@@ -13,17 +13,27 @@ parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
 parser.add_argument('--split', type=str, default='test')
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--max-cache-tokens', type=int, default=4096)
+parser.add_argument('--protected-window-size', type=int, default=50)
+parser.add_argument('--metric-collection-buffer-size', type=int, default=10)
 parser.add_argument('--max-model-len', type=int, default=4096)
 
 
 def main(args):
     seed_everything(42)
     model_name = MODELS[args.model]
+
+    dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
+    dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
+    prompt_format = dataset2prompt[args.dataset]
+    max_output_tokens = dataset2maxlen[args.dataset]
+    
     model = LLM(
         model_name,
         dtype="half",
         enforce_eager=True,
         enable_kvcompress=True,
+        compression_interval=max_output_tokens,  # only compress once after prefill
+        new_token_limit=max_output_tokens,  # this should trigger compression after prefill
         block_size=16,
         kv_head_bias_path=args.kv_head_bias_path,
         kv_head_bias_weight=50,
@@ -33,23 +43,21 @@ def main(args):
         disable_log_stats=True,
         max_model_len=args.max_model_len,
     )
+    max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
+                     model.llm_engine.model_config.max_model_len)
+
     tokenizer = load_tokenizer(args.model)
     dset = load_dataset('THUDM/LongBench',
                         args.dataset,
                         split=args.split,
                         streaming=True)
-    
-    dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
-    dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
-    prompt_format = dataset2prompt[args.dataset]
-    max_output_tokens = dataset2maxlen[args.dataset]
-    max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
-                     model.llm_engine.model_config.max_model_len)
 
     inputs = []
     prompts = []
     final_prompts = []
-    for json_obj in dset.take(1):
+    answers = []
+    for json_obj in dset.take(10):
+        answers.append(json_obj["answers"])
         prompt = prompt_format.format(**json_obj)
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
@@ -68,22 +76,26 @@ def main(args):
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to(args.device)
         inputs.append(input.input_ids[0].cpu().numpy().tolist())
         assert len(inputs[-1]) < max_length - max_output_tokens, f"{len(inputs[-1])=}, {max_length=}"
+        assert len(inputs[-1]) > max_output_tokens, "compression won't be triggered after prefill"
 
     sampling_params = SamplingParams(
-        # max_tokens=max_output_tokens,
+        max_tokens=max_output_tokens,
         temperature=0.0,
         max_cache_tokens=args.max_cache_tokens,
+        protected_window_size=args.protected_window_size,
+        metric_collection_buffer_size=args.metric_collection_buffer_size,
     )
     outputs = model.generate(prompt_token_ids=inputs,
                              sampling_params=sampling_params)
-    for p, fp, output in zip(prompts, final_prompts, outputs):
+    for p, fp, output, answer in zip(prompts, final_prompts, outputs, answers):
         response = post_process(output.outputs[0].text, args.model)
-        print(p)
-        print(fp)
+        print('...' + fp[-200:])
+        print(f'({len(inputs[0])} tokens)')
         print(response)
+        print(answer)
         print('\n====================================\n')
-        for out in output.outputs:
-            print(out)
+        # for out in output.outputs:
+        #     print(out)
 
 
 if __name__ == "__main__":
