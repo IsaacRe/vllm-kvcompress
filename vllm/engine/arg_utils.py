@@ -84,7 +84,7 @@ class EngineArgs:
     compression_interval: int = 1
     max_kv_per_compression: int = 5_000_000
     protected_window_size: int = 64
-    metric_collection_buffer_size: int = 32
+    metric_collection_buffer_size: int = 0
     kv_head_bias_path: str = ""
     kv_head_bias_weight: int = 1.0
     random_evict: bool = False
@@ -521,7 +521,7 @@ class EngineArgs:
 
         parser.add_argument('--metric-collection-buffer-size',
                             type=int,
-                            default=32,
+                            default=0,
                             help='Avoid collecting compression metrics '
                             'between keys and queries that are less than '
                             'N positions apart. This setting defines the '

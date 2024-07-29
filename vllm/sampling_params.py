@@ -132,7 +132,7 @@ class SamplingParams:
         protected_window_size: int = 100,
         target_compression_rate: float = 1.0,
         max_cache_tokens: int = -1,
-        metric_collection_buffer_size: int = 10,
+        metric_collection_buffer_size: int = 0,
     ) -> None:
         self.n = n
         self.best_of = best_of if best_of is not None else n

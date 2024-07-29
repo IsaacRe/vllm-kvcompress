@@ -83,7 +83,7 @@ def test_parity_with_simulated_compression(
     """
     checkpoint_cfg = RandomDigitCheckpointConfig(
         model_name=model,
-        max_cache_tokens=128,
+        max_cache_tokens=100,
         protected_window_size=50,
         metric_collection_buffer_size=10,
         num_digits=num_digits,
@@ -135,14 +135,15 @@ def test_parity_with_simulated_compression(
 
     topk_ll = 0
     vllm_outputs = vllm_model.generate_greedy_logprobs(
-                                                max_tokens,
-                                                topk_ll,
-                                                prompt_token_ids=input_token_ids,
-                                                reference_token_ids=deepcopy(reference_token_ids),
-                                                max_cache_tokens=checkpoint_cfg.max_cache_tokens,
-                                                # target_compression_rate=0.1,
-                                                protected_window_size=checkpoint_cfg.protected_window_size,
-                                                metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size)
+        max_tokens,
+        topk_ll,
+        prompt_token_ids=input_token_ids,
+        reference_token_ids=deepcopy(reference_token_ids),
+        max_cache_tokens=checkpoint_cfg.max_cache_tokens,
+        # target_compression_rate=0.1,
+        protected_window_size=checkpoint_cfg.protected_window_size,
+        metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
+    )
     del vllm_model
     print(f"TOTAL TOKENS = {sum([len(i) + len(r) for i, r in zip(input_token_ids, reference_token_ids)])}")
 
