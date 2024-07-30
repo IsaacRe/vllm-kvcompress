@@ -10,6 +10,7 @@ from util import load_tokenizer, seed_everything, build_chat, post_process, MODE
 parser = ArgumentParser()
 parser.add_argument('--model', type=str, default='mistral')
 parser.add_argument('--kv-head-bias-path', type=str, default='../kv_head_bias_mistral.npz')
+parser.add_argument('--kv-head-bias-weight', type=int, default=50)
 parser.add_argument('--dataset', type=str, default='hotpotqa')
 parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
 parser.add_argument('--split', type=str, default='test')
@@ -40,7 +41,7 @@ def main(args):
         new_token_limit=max_output_tokens,  # this should trigger compression after prefill
         block_size=16,
         kv_head_bias_path=args.kv_head_bias_path,
-        kv_head_bias_weight=50,
+        kv_head_bias_weight=args.kv_head_bias_weight,
         trust_remote_code=True,
         enable_chunked_prefill=False,
         tensor_parallel_size=1,
@@ -91,7 +92,7 @@ def main(args):
         protected_window_size=args.protected_window_size,
         metric_collection_buffer_size=args.metric_collection_buffer_size,
     )
-    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}"
+    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_b{args.kv_head_bias_weight}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
