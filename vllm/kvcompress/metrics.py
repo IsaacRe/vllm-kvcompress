@@ -430,11 +430,11 @@ class CompressionMetrics:
         #     assert non_evictable.sum() >= min(50, seq_pos_) * self.num_layers * self.num_layers, f"{non_evictable.sum()=} {seq_pos_ * self.num_layers * self.num_layers=}"
 
         # Normalize KV metrics by the number of queries seen for each KV
-        current_positions = all_seq_positions[
-            masked_seq_indices.type(torch.int64)
-        ]
-        masked_query_count = current_positions[:,None] - masked_token_position
-        masked_metrics /= masked_query_count.view(-1)
+        # current_positions = all_seq_positions[
+        #     masked_seq_indices.type(torch.int64)
+        # ]
+        # masked_query_count = current_positions[:,None] - masked_token_position
+        # masked_metrics /= masked_query_count.view(-1)
 
         # Get bias for KVs being compressed based on their position bin
         bias = self.kv_metric_head_bias.get_bias_for_position(
