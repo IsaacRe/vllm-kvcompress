@@ -83,8 +83,8 @@ def test_parity_with_simulated_compression(
     """
     checkpoint_cfg = RandomDigitCheckpointConfig(
         model_name=model,
-        max_cache_tokens=100,
-        protected_window_size=50,
+        max_cache_tokens=64,
+        protected_window_size=32,
         metric_collection_buffer_size=10,
         num_digits=num_digits,
         control_layers=[0, 1],
@@ -104,9 +104,11 @@ def test_parity_with_simulated_compression(
         # metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
         even_layer_evict=False, #True,
         control_layers=[], #checkpoint_cfg.control_layers,
-        save_checkpoint_dir='./checkpoint',
+        # save_checkpoint_dir='./checkpoint',
         kv_head_bias_path=MODEL_KV_HEAD_BIAS[model],
-        kv_head_bias_weight=50,
+        kv_head_bias_weight=50000,
+        new_token_limit=100,
+        compression_interval=1000,
     )
     checkpointer.set_config(checkpoint_cfg)
 
@@ -116,7 +118,7 @@ def test_parity_with_simulated_compression(
     tokenizer = AutoTokenizer.from_pretrained(model)
     input_token_ids, reference_token_ids = tokenizer_dependent_random_digit_generator(
         tokenizer, num_digits, random_seed, n_seqs=100, repeat_len=10)
-    
+
     if "Llama-2" in model or "Mistral" in model:
         # Llama-2 tokenizer adds an empty "" token before digits
         reference_token_ids = [ref_tokens[1:] for ref_tokens in reference_token_ids]
@@ -173,7 +175,7 @@ def test_parity_with_simulated_compression(
         # assert reference_completion == vllm_output, (
         #     f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
     assert False
-        
+
 
 @pytest.mark.parametrize("random_seed", [1])
 @pytest.mark.parametrize("num_digits", [100])
