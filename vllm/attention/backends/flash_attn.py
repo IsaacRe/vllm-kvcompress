@@ -109,11 +109,11 @@ class FlashAttentionMetadata(AttentionMetadataPerStage,
 class FlashAttentionImpl(AttentionImpl):
     """
     If the input tensors contain prompt tokens, the layout is as follows:
-    |<--------------- num_prefill_tokens ----------------->|	
+    |<--------------- num_prefill_tokens ----------------->|
     |<--prefill_0-->|<--prefill_1-->|...|<--prefill_N-1--->|
 
-    Otherwise, the layout is as follows:	
-    |<----------------- num_decode_tokens ------------------>|	
+    Otherwise, the layout is as follows:
+    |<----------------- num_decode_tokens ------------------>|
     |<--decode_0-->|..........|<--decode_M-1-->|<--padding-->|
 
     Generation tokens can contain padding when cuda-graph is used.
@@ -234,7 +234,7 @@ class FlashAttentionImpl(AttentionImpl):
                                                   kv_metric_head_bias,
                                                   attn_metadata.kv_cache_dtype,
                                                   kv_scale)
-                
+
                 CHECKPOINTER.checkpoint('flash_attn__kv_metrics', kv_metrics.metrics)
 
                 if kv_metrics.random:
@@ -249,7 +249,7 @@ class FlashAttentionImpl(AttentionImpl):
                                                     attn_metadata.slot_mapping,
                                                     attn_metadata.kv_cache_dtype,
                                                     kv_scale)
-                
+
             CHECKPOINTER.checkpoint('flash_attn__key_cache', key_cache)
             CHECKPOINTER.checkpoint('flash_attn__value_cache', value_cache)
 
@@ -469,7 +469,7 @@ def _naive_kvc_masked_attention(
     # out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
     kv_metric_mask = torch.tril(ones, diagonal=n_truncated - kv_metric_buffer_len)
     # sum L2 of attention over queries
-    kv_metrics = (attn_weights * kv_metric_mask).sum(dim=-2)
+    kv_metrics = (attn_weights ** 2 * kv_metric_mask).sum(dim=-2)
     kv_metrics = F.max_pool1d(
         kv_metrics,
         kernel_size=7,
