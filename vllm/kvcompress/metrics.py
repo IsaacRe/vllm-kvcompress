@@ -46,7 +46,7 @@ class KVHeadBias:
         self.bias = self.bias.to(device)
         self.position_bins = self.position_bins.to(device)
         return self
-    
+
     def get_bias_for_position(
         self,
         positions: torch.Tensor,
@@ -123,6 +123,7 @@ class CompressionMetrics:
         device: str = "cuda:0",
         random: bool = False,
         even_layer_evict: bool = False,
+        metric_aggregation: str = "L2",
     ) -> None:
         self.block_size = block_size
         self.num_layers = num_layers
@@ -132,8 +133,9 @@ class CompressionMetrics:
 
         # Random eviction baseline for testing purposes
         self.random = random
-        
+
         self.even_layer_evict = even_layer_evict
+        self.metric_aggregation = metric_aggregation
 
         # Bias when aggregating metrics for each KV head.
         # Recorded metric for each KV will be the actual metric
@@ -292,7 +294,7 @@ class CompressionMetrics:
         # alloc_mask = self.seq_index_by_block >= 0
         # print(f"INSERTING METADATA: {alloc_mask.sum()} total allocated blocks")
         # assert not (new_mask & alloc_mask).any(), "slot already allocated"
-        
+
         self.seq_index_by_block[metadata.physical_blocks] = metadata.seq_indices
         self.logical_block_num_by_block[metadata.physical_blocks] = (
             metadata.logical_blocks.type(torch.int))
@@ -315,7 +317,7 @@ class CompressionMetrics:
         # All allocated blocks (with seq idx >= 0) should have valid setting
         # for head index
         allocated_mask = self.seq_index_by_block >= 0
-        assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()        
+        assert (self.head_index_by_block[allocated_mask] < self.num_kv_heads).all()
 
     def validate_metadata_even_layer_evict(self) -> None:
         if self.even_layer_evict:
@@ -373,8 +375,10 @@ class CompressionMetrics:
         """
         if self.random:
             return  # keep random metrics when doing random eviction
+        temp_metrics = (self.temp_metrics ** 2 if self.metric_aggregation == "L2"
+                        else self.temp_metrics)
 
-        self.metrics += (self.temp_metrics ** 2).sum(dim=-1)
+        self.metrics += temp_metrics.sum(dim=-1)
 
     @BENCHMARKER.wrap()
     def sort_seq_metrics(self, seq_indices: List[int], seq_positions: List[int], checkpoint: bool = True) -> SortedMetricOutputs:
@@ -494,7 +498,7 @@ class CompressionMetrics:
             logical_block_num_by_block=masked_logical_block_nums.contiguous(),
             token_positions=masked_token_position.contiguous(),
         )
-    
+
     def checkpoint(self) -> None:
         # Save metrics and metadata
         CHECKPOINTER.checkpoint('metrics__metrics', self.metrics)

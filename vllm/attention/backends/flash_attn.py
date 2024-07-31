@@ -201,6 +201,7 @@ class FlashAttentionImpl(AttentionImpl):
         kv_metrics = attn_metadata.kv_metrics
         kvcompress_enabled = bool(kv_metrics)
         kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
+        kv_metric_use_l2 = attn_metadata.kv_metric_use_l2
         prefill_observed_queries = attn_metadata.prefill_kv_metric_window_size
 
         CHECKPOINTER.checkpoint('flash_attn__query', query)
@@ -303,6 +304,7 @@ class FlashAttentionImpl(AttentionImpl):
                     self.scale,
                     kv_metric_buffer_len,
                     n_observed=prefill_observed_queries,
+                    use_l2=kv_metric_use_l2,
                 )
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
@@ -420,6 +422,7 @@ def _naive_kvc_attention(
     scale: float,
     kv_metric_buffer_len: torch.Tensor,
     n_observed: int = 32,
+    use_l2: bool = True,
 ) -> torch.Tensor:
     # output = torch.empty_like(query)
     seq_len, num_heads, _ = key.shape
@@ -438,6 +441,7 @@ def _naive_kvc_attention(
             value[start:end],
             scale,
             kv_metric_buffer_len[i],
+            use_l2,
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
         # output[start:end].copy_(out)
@@ -453,6 +457,7 @@ def _naive_kvc_masked_attention(
     value: torch.Tensor,
     scale: float,
     kv_metric_buffer_len: torch.Tensor,
+    use_l2: bool,
 ) -> torch.Tensor:
     n_observed, num_heads, head_dim = query.shape
     seq_len, num_heads, head_dim = key.shape
@@ -466,10 +471,12 @@ def _naive_kvc_masked_attention(
     attn_weights = scale * torch.einsum("qhd,khd->hqk", query, key).float()
     attn_weights = attn_weights + attn_mask.float()
     attn_weights = torch.softmax(attn_weights, dim=-1)
+    if use_l2:
+        attn_weights = attn_weights ** 2
     # out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
     kv_metric_mask = torch.tril(ones, diagonal=n_truncated - kv_metric_buffer_len)
     # sum L2 of attention over queries
-    kv_metrics = (attn_weights ** 2 * kv_metric_mask).sum(dim=-2)
+    kv_metrics = (attn_weights * kv_metric_mask).sum(dim=-2)
     kv_metrics = F.max_pool1d(
         kv_metrics,
         kernel_size=7,

@@ -175,10 +175,11 @@ class LLMEngine:
                     kv_head_bias_weight=self.kvcompress_config.kv_head_bias_weight,
                     random=self.kvcompress_config.random_evict,
                     even_layer_evict=self.kvcompress_config.even_layer_evict,
+                    metric_aggregation=self.kvcompress_config.metric_aggregation,
                 )
             )
             self.kvcompress_state = kvcompress_shared_state
-            
+
         self.model_executor = executor_class(
             model_config=model_config,
             cache_config=cache_config,
@@ -620,7 +621,7 @@ class LLMEngine:
         """
         if self.kvcompress_config:
             cache_moves = self.scheduler.schedule_kvcompress()
-            
+
             if cache_moves:
                 BENCHMARKER.start_range("execute_cache_moves")
                 self.model_executor.execute_cache_moves(cache_moves,

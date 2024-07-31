@@ -248,7 +248,7 @@ class ModelRunner:
             if self.kvcompress_config else
             [_PAD_SLOT_ID] * prompt_len
         )
-    
+
     @BENCHMARKER.wrap()
     def _prepare_prompt(
         self,
@@ -393,7 +393,7 @@ class ModelRunner:
                     if i < start_idx:
                         slot_mapping.extend(
                             self._get_pad_slot_mapping(prompt_len=1))
-                        continue 
+                        continue
                     else:
                         block_number = block_table[i // self.block_size]
                         block_offset = i % self.block_size
@@ -412,7 +412,7 @@ class ModelRunner:
         max_prompt_len = max(prompt_lens)
         assert max_subquery_len > 0
 
-        # NOTE: with KV-Compress during prefill we compute context length the 
+        # NOTE: with KV-Compress during prefill we compute context length the
         # same as usual since the sequence has not yet been compressed
         context_lens_tensor = torch.tensor(context_lens,
                                            dtype=torch.int,
@@ -832,7 +832,7 @@ class ModelRunner:
                 slot_mapping = torch.tensor(slot_mapping,
                                             dtype=torch.long,
                                             device=self.device)
-            
+
             if kv_metric_buffer_len:
                 kv_metric_buffer_len = torch.tensor(kv_metric_buffer_len,
                                                     dtype=torch.int,
@@ -939,6 +939,7 @@ class ModelRunner:
             kv_metrics=kvc_state.kv_metrics if kvc_state else None,
             kv_metric_buffer_len=kv_metric_buffer_len,
             prefill_kv_metric_window_size=self.kvcompress_config.prefill_metric_collection_window_size,
+            kv_metric_use_l2=self.kvcompress_config.metric_aggregation == 'L2',
             token_positions=input_positions.type(torch.int),
         )
 

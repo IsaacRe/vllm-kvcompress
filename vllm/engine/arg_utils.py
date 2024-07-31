@@ -86,6 +86,7 @@ class EngineArgs:
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 0
     prefill_metric_collection_window_size: int = 32
+    metric_aggregation: str = "L2"
     kv_head_bias_path: str = ""
     kv_head_bias_weight: int = 1.0
     random_evict: bool = False
@@ -536,13 +537,20 @@ class EngineArgs:
                             'attention for each key over the last N prompt '
                             'queries. Defines N.')
 
+        parser.add_argument('--metric-aggregation',
+                            type=str,
+                            choices=['L1', 'L2'],
+                            default='L2',
+                            help='How to aggregate attention to obtain '
+                            'eviction metric per KV.')
+
         parser.add_argument('--kv-head-bias-path',
                             type=str,
                             default='',
                             help='Path to the tensor containing bias '
                             'for each KV head of the model. Can be a '
                             'URL, local path or huggingface repo/path.')
-        
+
         parser.add_argument('--kv-head-bias-weight',
                             type=float,
                             default=1.0,
@@ -557,7 +565,7 @@ class EngineArgs:
                             action='store_true',
                             help='Whether to evict the same number of KVs '
                             'per layer.')
-        
+
         parser.add_argument('--control-layers',
                             nargs='*',
                             type=int,
@@ -565,7 +573,7 @@ class EngineArgs:
                             'KV cache compression will be avoided. '
                             'Can only be specified when --even-layer-evict '
                             'is also set.')
-        
+
         parser.add_argument('--new-token-limit',
                             type=int,
                             default=-1,
@@ -576,7 +584,7 @@ class EngineArgs:
         parser.add_argument('--save-checkpoint-dir',
                             type=str,
                             default='')
-        
+
         parser.add_argument('--load-checkpoint-dir',
                             type=str,
                             default='')
@@ -699,6 +707,7 @@ class EngineArgs:
                 protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 prefill_metric_collection_window_size=self.prefill_metric_collection_window_size,
+                metric_aggregation=self.metric_aggregation,
                 kv_head_bias_path=self.kv_head_bias_path,
                 kv_head_bias_weight=self.kv_head_bias_weight,
                 random_evict=self.random_evict,

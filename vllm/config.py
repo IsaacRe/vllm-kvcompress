@@ -272,7 +272,7 @@ class ModelConfig:
         # parallel size so each GPU has at least one KV head.
         return max(1,
                    total_num_kv_heads // parallel_config.tensor_parallel_size)
-    
+
     def get_num_queries_per_kv(self) -> int:
         """Returns the number of query heads per KV head."""
         return self.hf_text_config.num_attention_heads // self.get_total_num_kv_heads()
@@ -585,19 +585,19 @@ class CheckpointConfig:
 
 class KVCompressConfig:
     """Configuration for KV-Compress
-    
+
     Since all KVs for a particular sequence need to be compressed at the
     same time, a set of sequences will be selected each iteration
     so that the total KV count between them remains under the configured
     max_kv_per_compression. The need for limiting the number of KVs during
     compression is due to the reliance on running torch.sort over the metrics
     for all KVs implicated in the compression. Runtime for torch.sort begins
-    scaling linearly with array length for large arrays, so to keep the 
+    scaling linearly with array length for large arrays, so to keep the
     compression latency minimal, the number of KVs per iteration
     needs to be kept small (< ~100,000,000). Additionally, the memory
     overhead for torch.sort for large tensors is ~8x the footprint
     of the input array, so we keep it small to leave more space for
-    KV cache. 
+    KV cache.
 
     Args:
         target_compression_rate: The target compression rate for each
@@ -635,6 +635,7 @@ class KVCompressConfig:
         protected_window_size: int,
         metric_collection_buffer_size: int,
         prefill_metric_collection_window_size: int,
+        metric_aggregation: str,
         kv_head_bias_path: str,
         kv_head_bias_weight: float,
         random_evict: bool,
@@ -654,13 +655,14 @@ class KVCompressConfig:
         self.protected_window_size = protected_window_size
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.prefill_metric_collection_window_size = prefill_metric_collection_window_size
+        self.metric_aggregation = metric_aggregation
         self.kv_head_bias_path = kv_head_bias_path
         self.kv_head_bias_weight = kv_head_bias_weight
         self.random_evict = random_evict
         self.even_layer_evict = even_layer_evict
         self.control_layers = control_layers
         self.new_token_limit = new_token_limit
-        
+
         self._verify_args()
 
     def _verify_args(self) -> None:
@@ -671,19 +673,19 @@ class KVCompressConfig:
         if (self.target_compression_rate <= 0.0
             or self.target_compression_rate > 1.0):
             raise ValueError("target_compression_rate must be in (0, 1]")
-        
+
         if self.compression_interval < 1:
             raise ValueError("compression_interval must be >= 1")
 
         if self.num_layers <= 0 or self.num_kv_heads <= 0:
             raise ValueError(
                 "num_layers and num_kv_heads should both be > 0")
-        
+
         if self.metric_collection_buffer_size > self.protected_window_size:
             raise ValueError(
                 "metric_collection_buffer_size cannot be greater than "
                 "protected_window_size")
-        
+
         if (self.max_cache_tokens > 0
             and self.protected_window_size > self.max_cache_tokens):
             raise ValueError("max_cache_tokens must be greater than "
@@ -692,17 +694,20 @@ class KVCompressConfig:
         if self.random_evict and self.even_layer_evict:
             raise ValueError("cannot specify both random_evict and "
                              "even_layer_evict")
-        
+
         if self.control_layers and min(self.control_layers) < 0:
             raise ValueError("control_layers cannot include indices < 0")
-        
+
         if self.control_layers and max(self.control_layers) >= self.num_layers:
             raise ValueError("control_layers cannot include indices "
                              f"> maximum layer index (={self.num_layers})")
-        
+
         if self.control_layers and not self.even_layer_evict:
             raise ValueError("control_layers can only be scpecified "
                              "when setting even_layer_evict")
+
+        if self.metric_aggregation not in ["L1", "L2"]:
+            raise ValueError("invalid kv-metric aggregation")
 
     def get_cache_block_size(
         self,
@@ -724,7 +729,7 @@ class KVCompressConfig:
         per_block_overhead += 1 * int_size  # logical block index (for scheduling)
         per_block_overhead += 1 * long_size  # block index (for allocation)
         per_block_overhead += 1 * bool_size  # free block mask (for allocation)
-        
+
         # Overhead per KV
         per_kv_overhead = 1 * int_size  # sequence index
         per_kv_overhead += 1 * float_size  # metrics tensor
@@ -735,7 +740,7 @@ class KVCompressConfig:
         block_size = (
             key_cache_block + value_cache_block +
             per_block_overhead + block_size * per_kv_overhead)
-        
+
         return block_size
 
 
