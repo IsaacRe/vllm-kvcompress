@@ -86,7 +86,7 @@ template<int BLOCK_SIZE> __global__ void schedule_cache_evictions_kernel(
   }
 
   // printf("seq %d evictions: %d\n", seq_idx, blocks_to_evict);
-  
+
   /*
   The unsorted metrics array is structured as [num_seqs (ragged), num_layers (ragged), num_heads (ragged), num_blocks, BLOCK_SIZE]
   so we can use index / BLOCK_SIZE to get the block index in the unsorted array,
@@ -186,6 +186,27 @@ template<int BLOCK_SIZE> __global__ void truncate_cache_evictions_kernel(
   }
 }
 
+template<int BLOCK_SIZE> __global__ void count_block_evictions_kernel(
+  int* __restrict__ evicted_block_count,            // [num_seqs, num_layers, num_kv_heads]
+  const int* __restrict__ evicted_logical_indices,  // [max_evicted_kv]
+  const int* __restrict__ evicted_kv_offsets,       // [num_seqs, num_layers, num_kv_heads] (offset into evicted_kv_indices for each head)
+  const int total_heads,
+  const int total_kvs,
+  const int null_value) {
+  const int seq_layer_head_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int start_offset = evicted_kv_offsets[seq_layer_head_idx];
+  const int end_offset = (seq_layer_head_idx + 1 >= total_heads) ? total_kvs : evicted_kv_offsets[seq_layer_head_idx + 1];
+  int evicted_blocks = 0;
+  for (int i = start_offset; i < end_offset; i += BLOCK_SIZE) {
+    if (evicted_logical_indices[i] != null_value) {
+      evicted_blocks++;
+    } else {
+      break;
+    }
+  }
+  evicted_block_count[seq_layer_head_idx] = evicted_blocks;
+}
+
 template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel(
   int* __restrict__ cache_moves_idx,               // [max_evicted_kv, 2]
   int* __restrict__ cache_moves_count,             // [num_seqs, num_layers, num_kv_heads]
@@ -206,7 +227,7 @@ template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel
     seq_idx * num_layers * num_kv_heads +
     layer_idx * num_kv_heads +
     head_idx;
-  const int layer_seq_head_idx = 
+  const int layer_seq_head_idx =
     layer_idx * num_seqs * num_kv_heads +
     seq_idx * num_kv_heads +
     head_idx;
@@ -494,7 +515,7 @@ void schedule_cache_evictions(
   int* kv_position_ptr = reinterpret_cast<int*>(kv_position.data_ptr());
   int* last_position_ptr = reinterpret_cast<int*>(last_position.data_ptr());
   int* protected_window_size_ptr = reinterpret_cast<int*>(protected_window_size.data_ptr());
-  
+
   // If evicting evenly across layers, launch a seperate thread per layer
   const int num_layer_threads = evict_evenly_per_layer ? num_layers : 1;
 
@@ -561,6 +582,57 @@ void truncate_cache_evictions(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   TRUNCATE_CACHE_EVICTIONS_KERNEL(block_size)
+}
+
+#define COUNT_BLOCK_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE) \
+  kvcompress::count_block_evictions_kernel<BLOCK_SIZE><<<grid,block,0,stream>>>( \
+    evicted_block_count_ptr, \
+    evicted_logical_indices_ptr, \
+    evicted_kv_offsets_ptr, \
+    total_heads, \
+    total_kvs, \
+    null_value);
+
+#define COUNT_BLOCK_EVICTIONS_KERNEL(BLOCK_SIZE) \
+  switch (BLOCK_SIZE) { \
+    case 1: \
+      COUNT_BLOCK_EVICTIONS_KERNEL_BLOCK_SIZE(1) \
+      break; \
+    case 2: \
+      COUNT_BLOCK_EVICTIONS_KERNEL_BLOCK_SIZE(2) \
+      break; \
+    case 4: \
+      COUNT_BLOCK_EVICTIONS_KERNEL_BLOCK_SIZE(4) \
+      break; \
+    case 16: \
+      COUNT_BLOCK_EVICTIONS_KERNEL_BLOCK_SIZE(16) \
+      break; \
+    default: \
+      TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
+  }
+
+void count_block_evictions(
+  torch::Tensor& evicted_block_count,
+  torch::Tensor& evicted_logical_indices,
+  torch::Tensor& evicted_kv_offsets,
+  const int block_size,
+  const int null_value) {
+  const int num_seqs = evicted_block_count.size(0);
+  const int num_layers = evicted_block_count.size(1);
+  const int num_kv_heads = evicted_block_count.size(2);
+  const int total_heads = evicted_block_count.numel();
+  const int total_kvs = evicted_logical_indices.numel();
+  int* evicted_block_count_ptr = reinterpret_cast<int*>(evicted_block_count.data_ptr());
+  int* evicted_logical_indices_ptr = reinterpret_cast<int*>(evicted_logical_indices.data_ptr());
+  int* evicted_kv_offsets_ptr = reinterpret_cast<int*>(evicted_kv_offsets.data_ptr());
+
+  const int num_blocks = num_seqs * num_layers;
+  dim3 grid(num_blocks);
+  dim3 block(num_kv_heads);
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(evicted_logical_indices));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  COUNT_BLOCK_EVICTIONS_KERNEL(block_size)
 }
 
 #define T1_SCHEDULE_MOVES_KERNEL_BLOCK_SIZE(BLOCK_SIZE) \

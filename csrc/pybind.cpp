@@ -87,7 +87,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   ops.def("marlin_gemm", &marlin_gemm, "Marlin Optimized Quantized GEMM for GPTQ");
   ops.def("awq_dequantize", &awq_dequantize, "Dequantization for AWQ");
 #endif
- 
+
   ops.def("gptq_gemm", &gptq_gemm, "Quantized GEMM for GPTQ");
   ops.def("gptq_shuffle", &gptq_shuffle, "Post processing for GPTQ");
   ops.def("squeezellm_gemm", &squeezellm_gemm, "Quantized GEMM for SqueezeLLM");
@@ -130,6 +130,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "truncate_cache_evictions",
     &truncate_cache_evictions,
     "Truncate set of KV evictions per head to be evenly divisible by block size");
+  kvc_ops.def(
+    "count_block_evictions",
+    &count_block_evictions,
+    "Count block evictions.");
   kvc_ops.def(
     "schedule_t1_cache_moves",
     &schedule_t1_cache_moves,

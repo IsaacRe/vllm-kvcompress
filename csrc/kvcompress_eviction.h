@@ -36,6 +36,13 @@ void truncate_cache_evictions(
   const int max_evicted_kv,
   const int null_eviction_index);
 
+void count_block_evictions(
+  torch::Tensor& evicted_block_count,
+  torch::Tensor& evicted_logical_indices,
+  torch::Tensor& evicted_kv_offsets,
+  const int block_size,
+  const int null_value);
+
 void schedule_t1_cache_moves(
   torch::Tensor& cache_moves_idx,           // [max_evicted_kv, 2]
   torch::Tensor& cache_moves_count,         // [num_seqs, num_layers, num_kv_heads]

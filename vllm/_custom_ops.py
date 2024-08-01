@@ -441,7 +441,7 @@ def ref_schedule_cache_evictions(
                     # print(f'({i}, {layer_idx}, {head_idx}): {start_offset=}, {end_offset=}, {alloc_kv_count[i, layer_idx, head_idx]=}')
                     out_evicted_logical_indices[start_offset:end_offset] = null_eviction_index
                     out_evicted_kv_indices[start_offset:end_offset] = head_idx + num_kv_heads * (layer_idx + num_layers * i)
-    
+
     print(f'evicted_count:\n{out_evicted_kv_count}')
     for i in range(num_seqs):
         for l in range(num_layers):
@@ -475,7 +475,7 @@ def schedule_cache_evictions(
     null_eviction_index: int,
     truncate: bool,
     evict_evenly_per_layer: bool = False,
-    control_layers: Optional[torch.Tensor] = None,    
+    control_layers: Optional[torch.Tensor] = None,
 ) -> None:
     if evict_evenly_per_layer and block_size > 1:
         raise RuntimeError(f"cannot evict evenly across layers when block_size > 1 (got {block_size=})")
@@ -541,6 +541,22 @@ def validate_evictions(evicted_kv_indices, evicted_kv_count, max_int):
     assert not (selected_mask & ~valid_mask).any()
 
 
+def count_block_evictions(
+    evicted_block_count: torch.Tensor,
+    evicted_logical_indices: torch.Tensor,
+    evicted_kv_offsets: torch.Tensor,
+    block_size: int,
+    null_value: int,
+):
+    kvc_ops.count_block_evictions(
+        evicted_block_count,
+        evicted_logical_indices,
+        evicted_kv_offsets,
+        block_size,
+        null_value,
+    )
+
+
 def ref_schedule_t1_cache_moves(
     out_cache_moves_idx: torch.Tensor,
     out_cache_moves_count: torch.Tensor,
@@ -570,15 +586,15 @@ def ref_schedule_t1_cache_moves(
 
                     if src_idx <= dst_idx:
                         break
-                    
+
                     # print(f'seq: {i}, k: {k}, layer: {layer_idx}, kv_head: {j}, dst: {dst_idx}, src: {src_idx}, end_src: {end_src_idx}')
                     if src_idx <= end_src_idx:
                         evict_count += 1
                         continue
-                    
+
                     src_block_num = block_tables[layer_idx, i, j, src_idx // block_size]
                     dst_block_num = block_tables[layer_idx, i, j, dst_idx // block_size]
-                    
+
                     physical_src_idx = src_block_num * block_size + src_idx % block_size
                     physical_dst_idx = dst_block_num * block_size + dst_idx % block_size
                     # print(f'moving: {physical_src_idx}({src_idx}) -> {physical_dst_idx}({dst_idx})')
@@ -586,7 +602,7 @@ def ref_schedule_t1_cache_moves(
                     out_cache_moves_idx[start_head_offset + move_count, 0] = physical_dst_idx
                     out_cache_moves_idx[start_head_offset + move_count, 1] = physical_src_idx
                     move_count += 1
-                
+
                 out_cache_moves_count[i,layer_idx,j] = move_count
 
 
