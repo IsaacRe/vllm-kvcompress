@@ -272,7 +272,7 @@ class CompressionScheduler:
 
         v2 = False
         ####### V1
-        if True:
+        if False:
             v2 = False
             BENCHMARKER.start_range("schedule_evictions_v1")
             # Sort compression metrics
@@ -487,7 +487,7 @@ class CompressionScheduler:
                 hanging_token_count,
                 evicted_kv_offsets,
                 protected_window_sizes,
-                debug=debug_dict,
+                # debug=debug_dict,
             )
             BENCHMARKER.end_range("schedule_evictions_v2")
 

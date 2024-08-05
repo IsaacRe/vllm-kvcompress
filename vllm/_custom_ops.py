@@ -580,7 +580,7 @@ def ref_count_block_evictions(
                     assert (evicted_logical_indices != debug_logical_indices).any()
         assert evicted_block_count[s].sum() == evicted_blocks_per_seq[s]
 
-    if debug_counts:
+    if debug_counts is not None:
         print(torch.where(debug_counts != evicted_block_count))
 
 
@@ -594,35 +594,37 @@ def count_block_evictions(
     evicted_blocks_per_seq: Optional[torch.Tensor] = None,
 ):
     # evicted_block_count_kernel = evicted_block_count.clone()
+    # evicted_logical_indices_kernel = evicted_logical_indices.contiguous().clone()
     # assert evicted_block_count.dtype == torch.int
     # assert evicted_logical_indices.dtype == torch.int
     # assert evicted_kv_offsets.dtype == torch.int
-    # kvc_ops.count_block_evictions(
-    #     evicted_block_count,
-    #     evicted_logical_indices.contiguous(),
-    #     evicted_kv_offsets.contiguous(),
-    #     hanging_token_count.contiguous(),
-    #     block_size,
-    #     null_value,
-    # )
-    yo = evicted_logical_indices.clone()
-    ref_count_block_evictions(
+    kvc_ops.count_block_evictions(
         evicted_block_count,
-        evicted_logical_indices,
-        evicted_kv_offsets,
-        hanging_token_count,
+        evicted_logical_indices.contiguous(),
+        evicted_kv_offsets.contiguous(),
+        hanging_token_count.contiguous(),
         block_size,
         null_value,
-        evicted_blocks_per_seq,
-        # debug_counts=evicted_block_count_kernel,
-        debug_logical_indices=yo,
     )
+    # yo = evicted_logical_indices.clone()
+    # ref_count_block_evictions(
+    #     evicted_block_count,
+    #     evicted_logical_indices,
+    #     evicted_kv_offsets,
+    #     hanging_token_count,
+    #     block_size,
+    #     null_value,
+    #     evicted_blocks_per_seq,
+    #     # debug_counts=evicted_block_count_kernel,
+    #     debug_logical_indices=yo,
+    # )
+    # assert (evicted_block_count_kernel == evicted_block_count).all()
+    # assert (evicted_logical_indices_kernel == evicted_logical_indices).all()
     # print((evicted_block_count == evicted_block_count_kernel.transpose(0, 1).flatten().view(evicted_block_count.shape)).all())
     # print((evicted_block_count == evicted_block_count_kernel.transpose(1, 2).flatten().view(evicted_block_count.shape)).all())
     # print((evicted_block_count == evicted_block_count_kernel.transpose(0, 2).flatten().view(evicted_block_count.shape)).all())
     # print(f"HII: {evicted_block_count - evicted_block_count_kernel=}")
     # print((evicted_block_count == evicted_block_count_kernel).sum(), evicted_block_count.numel())
-    # assert (evicted_block_count == evicted_block_count_kernel).all()
 
 
 def ref_schedule_t1_cache_moves(

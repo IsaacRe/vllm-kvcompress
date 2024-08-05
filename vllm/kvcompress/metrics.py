@@ -449,11 +449,11 @@ class CompressionMetrics:
 
         # 0. Set values of masked_metrics for keys that cannot be evicted
         # (due to being out of bounds or within the protected window) to inf
-        assert masked_seq_indices.max() < all_seq_positions.size(0)
+        # assert masked_seq_indices.max() < all_seq_positions.size(0)
         all_max_in_range = (all_seq_positions - all_num_protected).gather(
             dim=0, index=masked_seq_indices.type(torch.long)
         )
-        assert masked_seq_indices.max() < all_seq_batch_slots.size(0)
+        # assert masked_seq_indices.max() < all_seq_batch_slots.size(0)
         masked_batch_slot_indices = all_seq_batch_slots.gather(
             dim=0, index=masked_seq_indices.type(torch.long)
         )
@@ -462,11 +462,11 @@ class CompressionMetrics:
             + masked_layer_indices * self.num_kv_heads
             + masked_head_indices
         ).type(torch.long)
-        debug_unique_logical_block_nums = masked_logical_block_nums[masked_seq_layer_head_idx == 0]
-        assert debug_unique_logical_block_nums.size(0) == debug_unique_logical_block_nums.unique().size(0)
-        debug_unique_logical_indices = masked_logical_block_indices[masked_seq_layer_head_idx == 0].flatten()
-        assert debug_unique_logical_indices.size(0) == debug_unique_logical_indices.unique().size(0)
-        assert masked_seq_layer_head_idx.max() < context_lens.numel(), (masked_seq_layer_head_idx.max(), context_lens.numel())
+        # debug_unique_logical_block_nums = masked_logical_block_nums[masked_seq_layer_head_idx == 0]
+        # assert debug_unique_logical_block_nums.size(0) == debug_unique_logical_block_nums.unique().size(0)
+        # debug_unique_logical_indices = masked_logical_block_indices[masked_seq_layer_head_idx == 0].flatten()
+        # assert debug_unique_logical_indices.size(0) == debug_unique_logical_indices.unique().size(0)
+        # assert masked_seq_layer_head_idx.max() < context_lens.numel(), (masked_seq_layer_head_idx.max(), context_lens.numel())
         all_seq_context_lens = (
             context_lens.transpose(0, 1)
                         .flatten()
@@ -485,7 +485,7 @@ class CompressionMetrics:
         # by sequence, layer, head, metric value
         # masked_metrics -> sorted_masked_metrics
         sorted_masked_metrics, sorted_indices = masked_metrics.sort()
-        assert masked_seq_layer_head_idx.size(0) * self.block_size > sorted_indices.max()
+        # assert masked_seq_layer_head_idx.size(0) * self.block_size > sorted_indices.max()
         sorted_masked_seq_layer_head_idx, head_sorted_indices = (
             masked_seq_layer_head_idx.repeat_interleave(self.block_size)
                                       .gather(dim=0, index=sorted_indices)
@@ -506,7 +506,7 @@ class CompressionMetrics:
         # sequence, head and layer of each block in sorted_masked_metrics
         # Sequence, layer, head indices per block ordered by (sequence, layer, head, KV metric value)
         sorted_masked_seq_layer_head_idx_blocks = sorted_masked_seq_layer_head_idx.view(-1, self.block_size)[:,0]  # [ masked_blocks ]
-        assert hanging_token_count.numel() > sorted_masked_seq_layer_head_idx_blocks.max()
+        # assert hanging_token_count.numel() > sorted_masked_seq_layer_head_idx_blocks.max()
         sorted_hanging_tokens_blocks = (  # [ masked_blocks ]
             hanging_token_count.flatten()
                           .gather(dim=0, index=sorted_masked_seq_layer_head_idx_blocks.type(torch.long))
@@ -515,12 +515,12 @@ class CompressionMetrics:
         # 2.b. Create sorted_masked_metric_blocks
         # Block metric per block ordered by (sequence, layer, head, block metric value)
         reshape_sorted_masked_metrics = sorted_masked_metrics.view(-1, self.block_size)  # [ masked_blocks, block_size ]
-        assert reshape_sorted_masked_metrics.size(-1) > (sorted_hanging_tokens_blocks - 1).max()
+        # assert reshape_sorted_masked_metrics.size(-1) > (sorted_hanging_tokens_blocks - 1).max()
         sorted_masked_metric_blocks = reshape_sorted_masked_metrics.gather(
             dim=-1, index=(sorted_hanging_tokens_blocks[:,None] - 1).type(torch.long)
         ).squeeze(-1)
         # Empty blocks should not contain evictable KVs
-        assert not ((sorted_hanging_tokens_blocks < 1) & (sorted_masked_metric_blocks < float('inf'))).any()
+        # assert not ((sorted_hanging_tokens_blocks < 1) & (sorted_masked_metric_blocks < float('inf'))).any()
 
 
         # 3. Select blocks to evict from sorted_masked_metric_blocks
@@ -531,7 +531,7 @@ class CompressionMetrics:
         # sorted_masked_metric_blocks -> seq_sorted_masked_metric_blocks
         _, metric_sorted_indices_blocks = sorted_masked_metric_blocks.sort()
         sorted_indices_blocks = sorted_indices.view(-1, self.block_size)[:,0] // self.block_size
-        assert sorted_indices_blocks.max() < masked_seq_indices.size(0), (sorted_indices_blocks.max(),  masked_seq_indices.size(0))
+        # assert sorted_indices_blocks.max() < masked_seq_indices.size(0), (sorted_indices_blocks.max(),  masked_seq_indices.size(0))
         # works because the KVs in each block represented by an element of sorted_indices_blocks will
         # have been part of the same sequence, layer and head (even though they are not necessarily
         # contiguous in the original ordering)
@@ -549,14 +549,14 @@ class CompressionMetrics:
         sorted_masked_logical_indices = (
             masked_logical_block_indices.flatten()[sorted_indices].view(-1, self.block_size)
         )
-        print("TESTING NON MAX_INT INDICES")
-        for slh_idx in range(len(seq_indices) * 8 * 32):
-            masked_sort_indices = sorted_masked_logical_indices[sorted_masked_seq_layer_head_idx_blocks == slh_idx].view(-1)
-            ref_masked_sort_indices = debug['logical_indices_1'][debug['head_indices_1'] == slh_idx]
-            assert (ref_masked_sort_indices[masked_sort_indices.size(0):] == MAX_INT).all()
-            ref_masked_sort_indices = ref_masked_sort_indices[:masked_sort_indices.size(0)]
-            evicted_mask = ref_masked_sort_indices != MAX_INT
-            assert (ref_masked_sort_indices[evicted_mask] == masked_sort_indices[evicted_mask]).all(), f'{ref_masked_sort_indices=}\n{masked_sort_indices=}'
+        # print("TESTING NON MAX_INT INDICES")
+        # for slh_idx in range(len(seq_indices) * 8 * 32):
+        #     masked_sort_indices = sorted_masked_logical_indices[sorted_masked_seq_layer_head_idx_blocks == slh_idx].view(-1)
+        #     ref_masked_sort_indices = debug['logical_indices_1'][debug['head_indices_1'] == slh_idx]
+        #     assert (ref_masked_sort_indices[masked_sort_indices.size(0):] == MAX_INT).all()
+        #     ref_masked_sort_indices = ref_masked_sort_indices[:masked_sort_indices.size(0)]
+        #     evicted_mask = ref_masked_sort_indices != MAX_INT
+        #     assert (ref_masked_sort_indices[evicted_mask] == masked_sort_indices[evicted_mask]).all(), f'{ref_masked_sort_indices=}\n{masked_sort_indices=}'
         seq_sorted_masked_logical_indices = sorted_masked_logical_indices[seq_sorted_indices_blocks,:]
 
         # 3.d. Iterate over sequences and slice from each sequence's start to end offset
@@ -565,61 +565,62 @@ class CompressionMetrics:
             (context_lens + self.block_size - 1) // self.block_size
         ).sum(dim=0).sum(dim=-1)
         offset = 0
-        # debug
-        seq_sorted_seq_layer_head_idx = sorted_masked_seq_layer_head_idx_blocks[seq_sorted_indices_blocks]
-        debug_seq_block_count = debug['block_count'].sum(dim=-1).sum(dim=-1)
-        #
+        # # debug
+        # seq_sorted_seq_layer_head_idx = sorted_masked_seq_layer_head_idx_blocks[seq_sorted_indices_blocks]
+        # debug_seq_block_count = debug['block_count'].sum(dim=-1).sum(dim=-1)
+        # #
         for i, blocks_to_evict in enumerate(evicted_blocks_per_seq):
             end_offset = offset + total_blocks_per_seq[i]
             unevicted_offset = offset + blocks_to_evict
-            assert debug_seq_block_count[i] == blocks_to_evict
-            for l in range(32):
-                for h in range(8):
-                    slh_idx = i * 32 * 8 + l * 8 + h
-                    block_count = (seq_sorted_seq_layer_head_idx[offset:unevicted_offset] == slh_idx).sum()
-                    assert block_count == debug['block_count'].view(-1)[slh_idx], f'{block_count=}, {debug["block_count"].view(-1)[slh_idx]=}, {debug["kv_count"].view(-1)[slh_idx]=}, {hanging_token_count[i,l,h]=}'
+            # assert debug_seq_block_count[i] == blocks_to_evict
+            # for l in range(32):
+            #     for h in range(8):
+            #         slh_idx = i * 32 * 8 + l * 8 + h
+            #         block_count = (seq_sorted_seq_layer_head_idx[offset:unevicted_offset] == slh_idx).sum()
+            #         assert block_count == debug['block_count'].view(-1)[slh_idx], f'{block_count=}, {debug["block_count"].view(-1)[slh_idx]=}, {debug["kv_count"].view(-1)[slh_idx]=}, {hanging_token_count[i,l,h]=}'
             seq_sorted_masked_logical_indices[unevicted_offset:end_offset] = MAX_INT
             offset = end_offset
 
-        # debug
-        sorted_masked_seq_indices = (
-            masked_seq_indices.repeat_interleave(self.block_size)[sorted_indices].view(-1, self.block_size)
-        )
-        seq_sorted_masked_seq_indices = sorted_masked_seq_indices[seq_sorted_indices_blocks,:]
-        for i, (seq_idx, blocks_to_evict) in enumerate(zip(seq_indices, evicted_blocks_per_seq)):
-            seq_mask = seq_sorted_masked_seq_indices == seq_idx
-            assert seq_mask.sum() == ((context_lens[:,i] + self.block_size - 1) // self.block_size * self.block_size).sum(), (seq_mask.sum(), context_lens[:,i].sum())
-            evicted_kv_count_ = (
-                (seq_sorted_masked_logical_indices[seq_sorted_masked_seq_indices == seq_idx] != MAX_INT).sum()
-            )
-            evicted_block_count_ = evicted_kv_count_ // self.block_size
-            assert blocks_to_evict == evicted_block_count_, (i, seq_idx, blocks_to_evict, evicted_block_count_)
-            assert debug_seq_block_count[i] == evicted_block_count_
+        # # debug
+        # sorted_masked_seq_indices = (
+        #     masked_seq_indices.repeat_interleave(self.block_size)[sorted_indices].view(-1, self.block_size)
+        # )
+        # seq_sorted_masked_seq_indices = sorted_masked_seq_indices[seq_sorted_indices_blocks,:]
+        # for i, (seq_idx, blocks_to_evict) in enumerate(zip(seq_indices, evicted_blocks_per_seq)):
+        #     seq_mask = seq_sorted_masked_seq_indices == seq_idx
+        #     assert seq_mask.sum() == ((context_lens[:,i] + self.block_size - 1) // self.block_size * self.block_size).sum(), (seq_mask.sum(), context_lens[:,i].sum())
+        #     evicted_kv_count_ = (
+        #         (seq_sorted_masked_logical_indices[seq_sorted_masked_seq_indices == seq_idx] != MAX_INT).sum()
+        #     )
+        #     evicted_block_count_ = evicted_kv_count_ // self.block_size
+        #     assert blocks_to_evict == evicted_block_count_, (i, seq_idx, blocks_to_evict, evicted_block_count_)
+        #     assert debug_seq_block_count[i] == evicted_block_count_
 
-        # continue debug
-        print("TESTING BLOCK COUNT BEFORE")
-        for slh_idx in range(len(seq_indices) * 8 * 32):
-            masked_sort_indices = seq_sorted_masked_logical_indices[seq_sorted_seq_layer_head_idx == slh_idx].view(-1)
-            head_block_evictions = (masked_sort_indices != MAX_INT).sum() // self.block_size
-            ref_head_block_evictions = debug['block_count'].view(-1)[slh_idx]
-            assert head_block_evictions == ref_head_block_evictions, f'{head_block_evictions=}, {ref_head_block_evictions=}'
+        # # continue debug
+        # print("TESTING BLOCK COUNT BEFORE")
+        # for slh_idx in range(len(seq_indices) * 8 * 32):
+        #     masked_sort_indices = seq_sorted_masked_logical_indices[seq_sorted_seq_layer_head_idx == slh_idx].view(-1)
+        #     head_block_evictions = (masked_sort_indices != MAX_INT).sum() // self.block_size
+        #     ref_head_block_evictions = debug['block_count'].view(-1)[slh_idx]
+        #     assert head_block_evictions == ref_head_block_evictions, f'{head_block_evictions=}, {ref_head_block_evictions=}'
 
         # 3.e. Remap non-evicted blocks into sorted_masked_logical_indices
         sorted_masked_logical_indices[seq_sorted_indices_blocks,:] = seq_sorted_masked_logical_indices
         sorted_masked_logical_indices = sorted_masked_logical_indices.flatten()
 
-        print("TESTING BLOCK COUNT AFTER")
-        for slh_idx in range(len(seq_indices) * 8 * 32):
-            masked_sort_indices = sorted_masked_logical_indices.view(-1, self.block_size)[sorted_masked_seq_layer_head_idx_blocks == slh_idx].view(-1)
-            head_block_evictions = (masked_sort_indices != MAX_INT).sum() // self.block_size
-            ref_head_block_evictions = debug['block_count'].view(-1)[slh_idx]
-            assert head_block_evictions == ref_head_block_evictions, f'{head_block_evictions=}, {ref_head_block_evictions=}'
+        # print("TESTING BLOCK COUNT AFTER")
+        # for slh_idx in range(len(seq_indices) * 8 * 32):
+        #     masked_sort_indices = sorted_masked_logical_indices.view(-1, self.block_size)[sorted_masked_seq_layer_head_idx_blocks == slh_idx].view(-1)
+        #     head_block_evictions = (masked_sort_indices != MAX_INT).sum() // self.block_size
+        #     ref_head_block_evictions = debug['block_count'].view(-1)[slh_idx]
+        #     assert head_block_evictions == ref_head_block_evictions, f'{head_block_evictions=}, {ref_head_block_evictions=}'
 
         # TODO ensure sorted_masked_logical_indices respected evicted_kv_offsets
         # TODO ensure that contiguous KVs in sorted_masked_logical_indices are also contiguous in
         # seq_sorted_masked_logical_indices
 
-        # Count headwise block evictions
+        # Count headwise block evictions. Kernel will also set logical indices for
+        # any non-evicted KVs to MAX INT.
         # torch.empty_like on non-contiguous tensor yields a new non-contiguous tensor?
         evicted_block_count = torch.empty_like(evicted_kv_offsets)
         count_block_evictions(
@@ -632,7 +633,7 @@ class CompressionMetrics:
             evicted_blocks_per_seq,
         )
 
-        assert (debug['block_count'] == evicted_block_count).all()
+        # assert (debug['block_count'] == evicted_block_count).all()
 
         # print(evicted_blocks_per_seq.shape, evicted_block_count.sum(dim=-1).sum(dim=-1).shape)
         # assert (evicted_block_count.sum(dim=-1).sum(dim=-1) == torch.tensor(evicted_blocks_per_seq)).all()
@@ -642,7 +643,7 @@ class CompressionMetrics:
             0,
         )
 
-        assert (debug['kv_count'] == evicted_kv_count).all()
+        # assert (debug['kv_count'] == evicted_kv_count).all()
 
         # 4. Sort sorted_masked_logical_indices by logical index
 
@@ -654,55 +655,41 @@ class CompressionMetrics:
         #     kv_count = debug['kv_count'].view(-1)[slh_idx]
         #     assert (logical_indices[:kv_count] == ref_logical_indices[:kv_count]).all(), f'{logical_indices[:kv_count]=}, {ref_logical_indices[:kv_count]=}'
 
-
-        # 4.a. Set any non-evicted KVs to MAX INT
-        # assert evicted_kv_count.numel() > sorted_masked_seq_layer_head_idx.max()
-        # sorted_masked_evicted_kv_count = (
-        #     evicted_kv_count.flatten()
-        #                     .gather(
-        #                         dim=0,
-        #                         index=sorted_masked_seq_layer_head_idx,
-        #                     )
-        # )
-        # sorted_masked_logical_indices[
-        #     sorted_masked_logical_indices >= sorted_masked_evicted_kv_count
-        # ] = MAX_INT
-
-        print("TEST BLOCK COUNT AGAIN")
-        for slh_idx in range(len(seq_indices) * 8 * 32):
-            masked_sort_indices = sorted_masked_logical_indices.view(-1, self.block_size)[sorted_masked_seq_layer_head_idx_blocks == slh_idx].view(-1)
-            head_block_evictions = (masked_sort_indices != MAX_INT).view(-1, self.block_size).any(dim=-1).sum()
-            ref_head_block_evictions = debug['block_count'].view(-1)[slh_idx]
-            assert head_block_evictions == ref_head_block_evictions, f'{slh_idx=}, {head_block_evictions=}, {ref_head_block_evictions=}'
+        # print("TEST BLOCK COUNT AGAIN")
+        # for slh_idx in range(len(seq_indices) * 8 * 32):
+        #     masked_sort_indices = sorted_masked_logical_indices.view(-1, self.block_size)[sorted_masked_seq_layer_head_idx_blocks == slh_idx].view(-1)
+        #     head_block_evictions = (masked_sort_indices != MAX_INT).view(-1, self.block_size).any(dim=-1).sum()
+        #     ref_head_block_evictions = debug['block_count'].view(-1)[slh_idx]
+        #     assert head_block_evictions == ref_head_block_evictions, f'{slh_idx=}, {head_block_evictions=}, {ref_head_block_evictions=}'
 
         # 4.b. Sort
-        print(f"{sorted_masked_logical_indices.shape=}")
+        # print(f"{sorted_masked_logical_indices.shape=}")
         logical_idx_sorted_masked_logical_indices, logical_idx_sorted_indices = (
             sorted_masked_logical_indices.sort()
         )
-        print(f"{logical_idx_sorted_indices.shape=}")
-        print(f"{sorted_masked_seq_layer_head_idx.shape=}")
+        # print(f"{logical_idx_sorted_indices.shape=}")
+        # print(f"{sorted_masked_seq_layer_head_idx.shape=}")
         head_sorted_seq_layer_head_idx, head_sorted_indices = (
             sorted_masked_seq_layer_head_idx[logical_idx_sorted_indices].sort(stable=True)
         )
-        print(f"{head_sorted_indices.shape=}")
-        print(f"{logical_idx_sorted_masked_logical_indices.shape=}")
+        # print(f"{head_sorted_indices.shape=}")
+        # print(f"{logical_idx_sorted_masked_logical_indices.shape=}")
         head_sorted_masked_logical_indices = (
             logical_idx_sorted_masked_logical_indices[head_sorted_indices]
         )
-        print(f"{head_sorted_masked_logical_indices.shape=}")
+        # print(f"{head_sorted_masked_logical_indices.shape=}")
 
-        assert (context_lens.transpose(0, 1) > evicted_kv_count).all()
+        # assert (context_lens.transpose(0, 1) > evicted_kv_count).all()
 
-        for slh_idx in range(len(seq_indices) * 8 * 32):
-            # print(debug['kv_count'].view(-1)[slh_idx])
-            logical_indices = head_sorted_masked_logical_indices[head_sorted_seq_layer_head_idx == slh_idx]
-            ref_logical_indices = debug['logical_indices_final'][debug['seq_layer_head_indices_final'] == slh_idx]
-            kv_count = debug['kv_count'].view(-1)[slh_idx]
-            assert (logical_indices[:kv_count] == ref_logical_indices[:kv_count]).all(), f'{slh_idx=}, {logical_indices[:kv_count+16]=}, {ref_logical_indices[:kv_count+16]=}'
+        # for slh_idx in range(len(seq_indices) * 8 * 32):
+        #     # print(debug['kv_count'].view(-1)[slh_idx])
+        #     logical_indices = head_sorted_masked_logical_indices[head_sorted_seq_layer_head_idx == slh_idx]
+        #     ref_logical_indices = debug['logical_indices_final'][debug['seq_layer_head_indices_final'] == slh_idx]
+        #     kv_count = debug['kv_count'].view(-1)[slh_idx]
+        #     assert (logical_indices[:kv_count] == ref_logical_indices[:kv_count]).all(), f'{slh_idx=}, {logical_indices[:kv_count+16]=}, {ref_logical_indices[:kv_count+16]=}'
 
-        print(torch.where((debug['logical_indices_final'][:head_sorted_masked_logical_indices.size(0)] != head_sorted_masked_logical_indices)))
-        assert (debug['logical_indices_final'][:head_sorted_masked_logical_indices.size(0)] == head_sorted_masked_logical_indices).all()
+        # print(torch.where((debug['logical_indices_final'][:head_sorted_masked_logical_indices.size(0)] != head_sorted_masked_logical_indices)))
+        # assert (debug['logical_indices_final'][:head_sorted_masked_logical_indices.size(0)] == head_sorted_masked_logical_indices).all()
 
         return head_sorted_masked_logical_indices, evicted_kv_count, evicted_block_count
 
