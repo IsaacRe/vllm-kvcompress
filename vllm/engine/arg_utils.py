@@ -87,6 +87,7 @@ class EngineArgs:
     metric_collection_buffer_size: int = 0
     prefill_metric_collection_window_size: int = 32
     metric_aggregation: str = "L2"
+    record_decoding_metrics: bool = True
     kv_head_bias_path: str = ""
     kv_head_bias_weight: int = 1.0
     random_evict: bool = False
@@ -544,6 +545,13 @@ class EngineArgs:
                             help='How to aggregate attention to obtain '
                             'eviction metric per KV.')
 
+        parser.add_argument('--only-prefill-metrics',
+                            action='store_false',
+                            dest='record_decoding_metrics',
+                            help='Whether to only collect KV metrics '
+                            'during prefill phase to reduce latency '
+                            'in paged-attention kernel.')
+
         parser.add_argument('--kv-head-bias-path',
                             type=str,
                             default='',
@@ -708,6 +716,7 @@ class EngineArgs:
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 prefill_metric_collection_window_size=self.prefill_metric_collection_window_size,
                 metric_aggregation=self.metric_aggregation,
+                record_decoding_metrics=self.record_decoding_metrics,
                 kv_head_bias_path=self.kv_head_bias_path,
                 kv_head_bias_weight=self.kv_head_bias_weight,
                 random_evict=self.random_evict,

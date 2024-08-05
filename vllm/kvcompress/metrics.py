@@ -127,6 +127,7 @@ class CompressionMetrics:
         random: bool = False,
         even_layer_evict: bool = False,
         metric_aggregation: str = "L2",
+        record_decoding_metrics: bool = True,
     ) -> None:
         self.block_size = block_size
         self.num_layers = num_layers
@@ -138,7 +139,10 @@ class CompressionMetrics:
         self.random = random
 
         self.even_layer_evict = even_layer_evict
+        # Type of aggregation to use over recevied attention per KV
         self.metric_aggregation = metric_aggregation
+        # Whether to continue recording KV attention during decoding
+        self.record_decoding_metrics = record_decoding_metrics
 
         # Bias when aggregating metrics for each KV head.
         # Recorded metric for each KV will be the actual metric
@@ -376,7 +380,7 @@ class CompressionMetrics:
         simple heuristic from the paper: Total squared attention.
         Then update the running KV metrics with this aggregation.
         """
-        if self.random:
+        if self.random or not self.record_decoding_metrics:
             return  # keep random metrics when doing random eviction
         temp_metrics = (self.temp_metrics ** 2 if self.metric_aggregation == "L2"
                         else self.temp_metrics)

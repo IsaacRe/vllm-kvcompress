@@ -34,7 +34,8 @@ void kvcompress_paged_attention_v1(
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype,
-  float kv_scale);
+  float kv_scale,
+  bool record_kv_metrics);
 
 void kvcompress_t2_paged_attention_v1(
   torch::Tensor& out,
@@ -92,7 +93,8 @@ void kvcompress_paged_attention_v2(
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes,
   const std::string& kv_cache_dtype,
-  float kv_scale);
+  float kv_scale,
+  bool record_kv_metrics);
 
 void kvcompress_t2_paged_attention_v2(
   torch::Tensor& out,
@@ -197,12 +199,12 @@ torch::Tensor awq_dequantize(
     int thy);
 
 torch::Tensor marlin_gemm(
-    torch::Tensor& a, 
+    torch::Tensor& a,
     torch::Tensor& b_q_weight,
-    torch::Tensor& b_scales, 
+    torch::Tensor& b_scales,
     torch::Tensor& workspace,
-    int64_t size_m, 
-    int64_t size_n, 
+    int64_t size_m,
+    int64_t size_n,
     int64_t size_k);
 #endif
 

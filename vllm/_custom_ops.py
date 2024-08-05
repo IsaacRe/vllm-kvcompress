@@ -102,6 +102,7 @@ def paged_attention_kvc_v1(
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
     kv_scale: float,
+    record_kv_metrics: bool,
 ) -> None:
     vllm_ops.kvcompress_paged_attention_v1(out, kv_metric_out, query, key_cache,
                                            value_cache, num_kv_heads, scale,
@@ -109,7 +110,8 @@ def paged_attention_kvc_v1(
                                            kv_position, last_position,
                                            kv_metric_buffer_len, block_size,
                                            max_context_len, alibi_slopes,
-                                           kv_cache_dtype, kv_scale)
+                                           kv_cache_dtype, kv_scale,
+                                           record_kv_metrics)
 
 
 @BENCHMARKER.wrap()
@@ -135,6 +137,7 @@ def paged_attention_kvc_v2(
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
     kv_scale: float,
+    record_kv_metrics: bool,
 ) -> None:
     vllm_ops.kvcompress_paged_attention_v2(out, kv_metric_out, exp_sum,
                                            max_logits, tmp_out,
@@ -145,7 +148,7 @@ def paged_attention_kvc_v2(
                                            last_position, kv_metric_buffer_len,
                                            block_size, max_context_len,
                                            alibi_slopes, kv_cache_dtype,
-                                           kv_scale)
+                                           kv_scale, record_kv_metrics)
 
 
 # pos encoding ops

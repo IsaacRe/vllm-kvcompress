@@ -245,7 +245,7 @@ class KVCAttention(PagedAttention):
         value_cache = kv_cache[1]
         value_cache = value_cache.view(num_blocks, head_size, -1)
         return key_cache, value_cache
-    
+
     @staticmethod
     def write_to_paged_cache(
         key: torch.Tensor,
@@ -288,6 +288,7 @@ class KVCAttention(PagedAttention):
         kv_scale: float,
         kv_metric_out: torch.Tensor,
         tmp_kv_metric_out: torch.Tensor,
+        record_kv_metrics: bool,
     ) -> torch.Tensor:
         output = torch.empty_like(query)
 
@@ -324,6 +325,7 @@ class KVCAttention(PagedAttention):
                 alibi_slopes,
                 kv_cache_dtype,
                 kv_scale,
+                record_kv_metrics,
             )
         else:
             # Run PagedAttention V2.
@@ -361,5 +363,6 @@ class KVCAttention(PagedAttention):
                 alibi_slopes,
                 kv_cache_dtype,
                 kv_scale,
+                record_kv_metrics,
             )
         return output

@@ -176,6 +176,7 @@ class LLMEngine:
                     random=self.kvcompress_config.random_evict,
                     even_layer_evict=self.kvcompress_config.even_layer_evict,
                     metric_aggregation=self.kvcompress_config.metric_aggregation,
+                    record_decoding_metrics=self.kvcompress_config.record_decoding_metrics,
                 )
             )
             self.kvcompress_state = kvcompress_shared_state

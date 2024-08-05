@@ -90,6 +90,7 @@ def run_vllm(
     max_num_kv_per_compression: int = 5_000_000,
     new_token_limit: int = -1,
     max_cache_tokens: int = -1,
+    record_decoding_metrics: bool = True,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -119,6 +120,7 @@ def run_vllm(
         max_kv_per_compression=max_num_kv_per_compression,
         new_token_limit=new_token_limit,
         max_cache_tokens=max_cache_tokens,
+        record_decoding_metrics=record_decoding_metrics,
     )
 
     # Add the requests to the engine.
@@ -258,7 +260,8 @@ def main(args: argparse.Namespace):
             args.download_dir, args.max_batch_size, args.enable_kvc,
             args.kvc_rate, args.protected_window_size, args.kv_head_bias_path,
             args.kvc_interval, args.max_num_kv_per_compression,
-            args.new_token_limit, args.max_cache_tokens)
+            args.new_token_limit, args.max_cache_tokens,
+            args.record_decoding_metrics)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -458,6 +461,12 @@ if __name__ == "__main__":
         type=int,
         default=-1,
         help='Number of tokens to compress to',
+    )
+    parser.add_argument(
+        '--only-prefill-metrics',
+        action='store_false',
+        dest='record_decoding_metrics',
+        help='Disable KV metric collection during decoding',
     )
     args = parser.parse_args()
     if args.tokenizer is None:

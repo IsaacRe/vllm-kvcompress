@@ -636,6 +636,7 @@ class KVCompressConfig:
         metric_collection_buffer_size: int,
         prefill_metric_collection_window_size: int,
         metric_aggregation: str,
+        record_decoding_metrics: bool,
         kv_head_bias_path: str,
         kv_head_bias_weight: float,
         random_evict: bool,
@@ -656,6 +657,7 @@ class KVCompressConfig:
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.prefill_metric_collection_window_size = prefill_metric_collection_window_size
         self.metric_aggregation = metric_aggregation
+        self.record_decoding_metrics = record_decoding_metrics
         self.kv_head_bias_path = kv_head_bias_path
         self.kv_head_bias_weight = kv_head_bias_weight
         self.random_evict = random_evict
