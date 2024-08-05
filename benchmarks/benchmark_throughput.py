@@ -130,7 +130,11 @@ def run_vllm(
             use_beam_search=use_beam_search,
             ignore_eos=True,
             max_tokens=output_len,
+            max_cache_tokens=max_cache_tokens,
+            target_compression_rate=kvc_rate,
+            protected_window_size=protected_window_size,
         )
+        assert sampling_params.stop_token_ids == [], sampling_params.stop_token_ids
         # FIXME(woosuk): Do not use internal method.
         llm._add_request(
             prompt=prompt,
@@ -140,8 +144,11 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
-    llm._run_engine(use_tqdm=True)
+    outputs = llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
+    for output in outputs:
+        assert len(output.outputs[0].token_ids) == output_len, (
+            f"{len(output.outputs[0].token_ids)=}, {output_len=}")
     return end - start
 
 
@@ -263,7 +270,7 @@ def main(args: argparse.Namespace):
                                args.output_len)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
-    
+
     if args.benchmark_input_only:
         total_num_tokens = sum(prompt_len
                                for _, prompt_len, _ in requests)
