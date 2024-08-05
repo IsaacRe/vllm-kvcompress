@@ -188,8 +188,9 @@ template<int BLOCK_SIZE> __global__ void truncate_cache_evictions_kernel(
 
 template<int BLOCK_SIZE> __global__ void count_block_evictions_kernel(
   int* __restrict__ evicted_block_count,            // [num_seqs, num_layers, num_kv_heads]
-  const int* __restrict__ evicted_logical_indices,  // [max_evicted_kv]
+  int* __restrict__ evicted_logical_indices,        // [max_evicted_kv]
   const int* __restrict__ evicted_kv_offsets,       // [num_seqs, num_layers, num_kv_heads] (offset into evicted_kv_indices for each head)
+  const int* __restrict__ hanging_token_count,      // [num_seqs, num_layers, num_kv_heads]
   const int total_heads,
   const int total_kvs,
   const int null_value) {
@@ -197,6 +198,7 @@ template<int BLOCK_SIZE> __global__ void count_block_evictions_kernel(
   const int start_offset = evicted_kv_offsets[seq_layer_head_idx];
   const int end_offset = (seq_layer_head_idx + 1 >= total_heads) ? total_kvs : evicted_kv_offsets[seq_layer_head_idx + 1];
   int evicted_blocks = 0;
+  // Count evicted blocks
   for (int i = start_offset; i < end_offset; i += BLOCK_SIZE) {
     if (evicted_logical_indices[i] != null_value) {
       evicted_blocks++;
@@ -205,6 +207,14 @@ template<int BLOCK_SIZE> __global__ void count_block_evictions_kernel(
     }
   }
   evicted_block_count[seq_layer_head_idx] = evicted_blocks;
+  // Set logical indices for empty KV slots in last evicted block to `null_value`
+  const int last_block_end = start_offset + evicted_blocks * BLOCK_SIZE;
+  for (
+    int i = last_block_end - BLOCK_SIZE + hanging_token_count[seq_layer_head_idx];
+    i < last_block_end;
+    ++i) {
+    evicted_logical_indices[i] = null_value;
+  }
 }
 
 template<int BLOCK_SIZE> __global__ void single_tier_schedule_cache_moves_kernel(
@@ -589,6 +599,7 @@ void truncate_cache_evictions(
     evicted_block_count_ptr, \
     evicted_logical_indices_ptr, \
     evicted_kv_offsets_ptr, \
+    hanging_token_count_ptr, \
     total_heads, \
     total_kvs, \
     null_value);
@@ -615,6 +626,7 @@ void count_block_evictions(
   torch::Tensor& evicted_block_count,
   torch::Tensor& evicted_logical_indices,
   torch::Tensor& evicted_kv_offsets,
+  torch::Tensor& hanging_token_count,
   const int block_size,
   const int null_value) {
   const int num_seqs = evicted_block_count.size(0);
@@ -625,6 +637,7 @@ void count_block_evictions(
   int* evicted_block_count_ptr = reinterpret_cast<int*>(evicted_block_count.data_ptr());
   int* evicted_logical_indices_ptr = reinterpret_cast<int*>(evicted_logical_indices.data_ptr());
   int* evicted_kv_offsets_ptr = reinterpret_cast<int*>(evicted_kv_offsets.data_ptr());
+  int* hanging_token_count_ptr = reinterpret_cast<int*>(hanging_token_count.data_ptr());
 
   const int num_blocks = num_seqs * num_layers;
   dim3 grid(num_blocks);

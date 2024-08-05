@@ -211,6 +211,8 @@ class CompressionScheduler:
         if not seqs_to_compress:
             return
 
+        print("ACTUALLY COMPRESSING")
+
         # Benchmark - 2
         # BENCHMARKER.end_range("_schedule_compression - 1")
         # BENCHMARKER.start_range("_schedule_compression - 2")
@@ -268,23 +270,11 @@ class CompressionScheduler:
         ).reshape(*context_lens.transpose(0, 1).shape).type(torch.int)
 
 
-        ####### V2
-        if True:
-            self.evicted_logical_indices, evicted_kv_count, evicted_block_count = self.compression_metrics.schedule_evictions(
-                slot_indices,
-                last_token_positions,
-                evicted_blocks_per_seq,
-                context_lens,
-                hanging_token_count,
-                evicted_kv_offsets,
-                protected_window_sizes,
-            )
-
-        #######
-
+        v2 = False
         ####### V1
-        if False:
-
+        if True:
+            v2 = False
+            BENCHMARKER.start_range("schedule_evictions_v1")
             # Sort compression metrics
             # Should not have begun handling requests
             # init_mem = torch.cuda.max_memory_allocated(
@@ -362,6 +352,10 @@ class CompressionScheduler:
                 self.control_layers,
             )
 
+            debug_dict = {}
+            debug_dict['logical_indices_1'] = self.evicted_logical_indices.clone()
+            debug_dict['head_indices_1'] = self.evicted_head_indices.clone()
+
             # for i in range(last_token_positions.shape[0] - 1):
             #     last_evictable_position = last_token_positions[i] - self.config.protected_window_size
             #     start_offset = sort_output.seq_block_offsets[i]
@@ -412,6 +406,8 @@ class CompressionScheduler:
             self.total_evicted += evicted_kv_count.sum().item()
             print(f"TOTAL EVICTED:\nKVs: {self.total_evicted}\nTokens: {self.total_evicted / self.config.num_kv_heads / self.config.num_layers}")
             evicted_block_count = (evicted_kv_count + self.block_size - 1) // self.block_size
+            # assert (evicted_block_count_ == evicted_block_count).all()
+            # assert (evicted_kv_count == evicted_kv_count_).all()
             # protected_blocks = (self.config.protected_window_size + self.block_size - 1) // self.block_size
             # assert (context_lens.transpose(0, 1) >= torch.minimum(context_lens.transpose(0, 1), torch.tensor(self.config.protected_window_size))).all()
             # num_blocks = (context_lens.transpose(0, 1) + self.block_size - 1) // self.block_size
@@ -465,12 +461,39 @@ class CompressionScheduler:
             # Sort evicted indices
             logical_index_sort = self.evicted_logical_indices.sort(dim=0).indices
 
-            seq_layer_head_logical_index_sort = logical_index_sort[
-                self.evicted_head_indices[logical_index_sort].sort(dim=0, stable=True).indices
-            ]
+            seq_layer_head_indices_sort, indices = self.evicted_head_indices[logical_index_sort].sort(dim=0, stable=True)
+
+            seq_layer_head_logical_index_sort = logical_index_sort[indices]
             self.evicted_logical_indices[:] = self.evicted_logical_indices[seq_layer_head_logical_index_sort]
 
+            debug_dict['block_count'] = evicted_block_count
+            debug_dict['kv_count'] = evicted_kv_count
+            debug_dict['seq_layer_head_indices_final'] = seq_layer_head_indices_sort
+            debug_dict['logical_indices_final'] = self.evicted_logical_indices
+            # assert (self.evicted_logical_indices[:evicted_logical_indices.shape[0]] == evicted_logical_indices).all()
+
             CHECKPOINTER.checkpoint('schedule_compression__evicted_logical_indices_sorted', self.evicted_logical_indices)
+            BENCHMARKER.end_range("schedule_evictions_v1")
+
+        ####### V2
+        if True:
+            v2 = True
+            BENCHMARKER.start_range("schedule_evictions_v2")
+            evicted_logical_indices, evicted_kv_count, evicted_block_count = self.compression_metrics.schedule_evictions(
+                slot_indices,
+                last_token_positions,
+                evicted_blocks_per_seq,
+                context_lens,
+                hanging_token_count,
+                evicted_kv_offsets,
+                protected_window_sizes,
+                debug=debug_dict,
+            )
+            BENCHMARKER.end_range("schedule_evictions_v2")
+
+        #######
+
+        ######
 
         # Schedule cache moves
         cache_moves_count = torch.empty(
@@ -481,7 +504,7 @@ class CompressionScheduler:
         schedule_cache_moves(
             self.cache_move_indices,
             cache_moves_count,
-            self.evicted_logical_indices,
+            evicted_logical_indices if v2 else self.evicted_logical_indices,
             evicted_kv_count,
             evicted_kv_offsets,
             block_tables,

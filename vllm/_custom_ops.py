@@ -541,20 +541,88 @@ def validate_evictions(evicted_kv_indices, evicted_kv_count, max_int):
     assert not (selected_mask & ~valid_mask).any()
 
 
+def ref_count_block_evictions(
+    evicted_block_count: torch.Tensor,
+    evicted_logical_indices: torch.Tensor,
+    evicted_kv_offsets: torch.Tensor,
+    hanging_token_count: torch.Tensor,
+    block_size: int,
+    null_value: int,
+    evicted_blocks_per_seq: Optional[torch.Tensor] = None,
+    debug_counts: Optional[torch.Tensor] = None,
+    debug_logical_indices = None,
+):
+    end_total = evicted_logical_indices.size(0)
+    for s in range(evicted_kv_offsets.size(0)):
+        end_s = evicted_kv_offsets[s+1,0,0] if s+1 < evicted_kv_offsets.size(0) else end_total
+        for l in range(evicted_kv_offsets.size(1)):
+            end_l = evicted_kv_offsets[s,l+1,0] if l+1 < evicted_kv_offsets.size(1) else end_s
+            for h in range(evicted_kv_offsets.size(2)):
+                start = evicted_kv_offsets[s,l,h]
+                end = evicted_kv_offsets[s,l,h+1] if h+1 < evicted_kv_offsets.size(2) else end_l
+                curr_slice = evicted_logical_indices[start:end]
+                assert ((curr_slice.view(-1, block_size) == null_value).any(dim=-1) == (curr_slice.view(-1, block_size) == null_value).all(dim=-1)).all()
+                assert (curr_slice[:(curr_slice != null_value).sum()] != null_value).all()
+                evicted_kvs = (curr_slice != null_value).sum()
+                evicted_block_count[s,l,h] = (
+                    evicted_kvs // block_size
+                )
+
+                if s == l == h == 0:
+                    print(f'hiiiii: {hanging_token_count[s,l,h]=}, {end=}, {end-block_size+hanging_token_count[s,l,h]=}')
+                    print(evicted_logical_indices[end-block_size+hanging_token_count[s,l,h]:end])
+                # set logical indices for empty KV slots in last evicted block to null_value
+                end_evict = start + evicted_kvs
+                evicted_logical_indices[end_evict-block_size+hanging_token_count[s,l,h]:end_evict] = null_value
+
+                if s == l == h == 0 and block_size - hanging_token_count[s,l,h] > 0:
+                    print(f'heyo {(debug_logical_indices != evicted_logical_indices).any()=}\n{evicted_logical_indices[min(end-block_size*2,0):end]}')
+                    assert (evicted_logical_indices != debug_logical_indices).any()
+        assert evicted_block_count[s].sum() == evicted_blocks_per_seq[s]
+
+    if debug_counts:
+        print(torch.where(debug_counts != evicted_block_count))
+
+
 def count_block_evictions(
     evicted_block_count: torch.Tensor,
     evicted_logical_indices: torch.Tensor,
     evicted_kv_offsets: torch.Tensor,
+    hanging_token_count: torch.Tensor,
     block_size: int,
     null_value: int,
+    evicted_blocks_per_seq: Optional[torch.Tensor] = None,
 ):
-    kvc_ops.count_block_evictions(
+    # evicted_block_count_kernel = evicted_block_count.clone()
+    # assert evicted_block_count.dtype == torch.int
+    # assert evicted_logical_indices.dtype == torch.int
+    # assert evicted_kv_offsets.dtype == torch.int
+    # kvc_ops.count_block_evictions(
+    #     evicted_block_count,
+    #     evicted_logical_indices.contiguous(),
+    #     evicted_kv_offsets.contiguous(),
+    #     hanging_token_count.contiguous(),
+    #     block_size,
+    #     null_value,
+    # )
+    yo = evicted_logical_indices.clone()
+    ref_count_block_evictions(
         evicted_block_count,
         evicted_logical_indices,
         evicted_kv_offsets,
+        hanging_token_count,
         block_size,
         null_value,
+        evicted_blocks_per_seq,
+        # debug_counts=evicted_block_count_kernel,
+        debug_logical_indices=yo,
     )
+    # print((evicted_block_count == evicted_block_count_kernel.transpose(0, 1).flatten().view(evicted_block_count.shape)).all())
+    # print((evicted_block_count == evicted_block_count_kernel.transpose(1, 2).flatten().view(evicted_block_count.shape)).all())
+    # print((evicted_block_count == evicted_block_count_kernel.transpose(0, 2).flatten().view(evicted_block_count.shape)).all())
+    # print(f"HII: {evicted_block_count - evicted_block_count_kernel=}")
+    # print((evicted_block_count == evicted_block_count_kernel).sum(), evicted_block_count.numel())
+    # assert (evicted_block_count == evicted_block_count_kernel).all()
 
 
 def ref_schedule_t1_cache_moves(
@@ -724,3 +792,4 @@ def execute_cache_moves(
     # print(f"{torch.where(kv_pos != kv_position)[1].unique()}")
     # assert ((kv_position == kv_pos).flatten()[evicted_kv_offsets[0,0,0]:evicted_kv_offsets[0,0,1]]).all()
     # assert (kv_position == kv_pos).all(), f"{evicted_kv_offsets=}\n{torch.where(kv_pos != kv_position)}"
+

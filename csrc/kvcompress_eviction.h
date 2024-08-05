@@ -40,6 +40,7 @@ void count_block_evictions(
   torch::Tensor& evicted_block_count,
   torch::Tensor& evicted_logical_indices,
   torch::Tensor& evicted_kv_offsets,
+  torch::Tensor& hanging_token_count,
   const int block_size,
   const int null_value);
 
