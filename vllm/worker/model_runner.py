@@ -938,8 +938,11 @@ class ModelRunner:
             kv_cache_dtype=self.kv_cache_dtype,
             kv_metrics=kvc_state.kv_metrics if kvc_state else None,
             kv_metric_buffer_len=kv_metric_buffer_len,
-            prefill_kv_metric_window_size=self.kvcompress_config.prefill_metric_collection_window_size,
-            kv_metric_use_l2=self.kvcompress_config.metric_aggregation == 'L2',
+            prefill_kv_metric_window_size=(
+                self.kvcompress_config.prefill_metric_collection_window_size
+                if self.kvcompress_config else None),
+            kv_metric_use_l2=(self.kvcompress_config.metric_aggregation == 'L2'
+                              if self.kvcompress_config else None),
             token_positions=input_positions.type(torch.int),
         )
 
