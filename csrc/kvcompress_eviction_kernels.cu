@@ -208,12 +208,14 @@ template<int BLOCK_SIZE> __global__ void count_block_evictions_kernel(
   }
   evicted_block_count[seq_layer_head_idx] = evicted_blocks;
   // Set logical indices for empty KV slots in last evicted block to `null_value`
-  const int last_block_end = start_offset + evicted_blocks * BLOCK_SIZE;
-  for (
-    int i = last_block_end - BLOCK_SIZE + hanging_token_count[seq_layer_head_idx];
-    i < last_block_end;
-    ++i) {
-    evicted_logical_indices[i] = null_value;
+  if (evicted_blocks > 0) {
+    const int last_block_end = start_offset + evicted_blocks * BLOCK_SIZE;
+    for (
+      int i = last_block_end - BLOCK_SIZE + hanging_token_count[seq_layer_head_idx];
+      i < last_block_end;
+      ++i) {
+      evicted_logical_indices[i] = null_value;
+    }
   }
 }
 
