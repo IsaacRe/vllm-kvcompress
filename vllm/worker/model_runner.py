@@ -941,8 +941,10 @@ class ModelRunner:
             prefill_kv_metric_window_size=(
                 self.kvcompress_config.prefill_metric_collection_window_size
                 if self.kvcompress_config else None),
-            kv_metric_use_l2=(self.kvcompress_config.metric_aggregation == 'L2'
+            kv_metric_use_l2=(self.kvcompress_config.kv_metric_use_l2
                               if self.kvcompress_config else None),
+            kv_metric_use_average=(self.kvcompress_config.kv_metric_use_average
+                                   if self.kvcompress_config else None),
             token_positions=input_positions.type(torch.int),
         )
 

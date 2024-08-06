@@ -21,6 +21,8 @@ parser.add_argument('--protected-window-size', type=int, default=50)
 parser.add_argument('--metric-collection-buffer-size', type=int, default=10)
 parser.add_argument('--prefill-metric-collection-window-size', type=int, default=32)
 parser.add_argument('--max-model-len', type=int, default=None)
+parser.add_argument('--metric-aggregation', choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
+                    default='L2-sum')
 
 
 def main(args):
@@ -31,7 +33,7 @@ def main(args):
     dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
     prompt_format = dataset2prompt[args.dataset]
     max_output_tokens = dataset2maxlen[args.dataset]
-    
+
     model = LLM(
         model_name,
         dtype="half",
@@ -49,6 +51,7 @@ def main(args):
         max_model_len=args.max_model_len,
         prefill_metric_collection_window_size=args.prefill_metric_collection_window_size,
         max_kv_per_compression=args.max_kv_per_compression,
+        metric_aggregation=args.metric_aggregation,
     )
     max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
                      model.llm_engine.model_config.max_model_len)

@@ -126,7 +126,8 @@ class CompressionMetrics:
         device: str = "cuda:0",
         random: bool = False,
         even_layer_evict: bool = False,
-        metric_aggregation: str = "L2",
+        use_l2: bool = True,
+        use_average: bool = False,
         record_decoding_metrics: bool = True,
     ) -> None:
         self.block_size = block_size
@@ -140,7 +141,8 @@ class CompressionMetrics:
 
         self.even_layer_evict = even_layer_evict
         # Type of aggregation to use over recevied attention per KV
-        self.metric_aggregation = metric_aggregation
+        self.use_l2 = use_l2
+        self.use_average = use_average
         # Whether to continue recording KV attention during decoding
         self.record_decoding_metrics = record_decoding_metrics
 
@@ -382,7 +384,7 @@ class CompressionMetrics:
         """
         if self.random or not self.record_decoding_metrics:
             return  # keep random metrics when doing random eviction
-        temp_metrics = (self.temp_metrics ** 2 if self.metric_aggregation == "L2"
+        temp_metrics = (self.temp_metrics ** 2 if self.use_l2
                         else self.temp_metrics)
 
         self.metrics += temp_metrics.sum(dim=-1)
@@ -437,12 +439,13 @@ class CompressionMetrics:
             + torch.arange(self.block_size, device=self.device, dtype=torch.int)[None]
         )
 
-        # Normalize KV metrics by the number of queries seen for each KV
-        # current_positions = all_seq_positions[
-        #     masked_seq_indices.type(torch.int64)
-        # ]
-        # masked_query_count = current_positions[:,None] - masked_token_position
-        # masked_metrics /= masked_query_count.view(-1)
+        if self.use_average:
+            # Normalize KV metrics by the number of queries seen for each KV
+            current_positions = all_seq_positions[
+                masked_seq_indices.type(torch.int64)
+            ]
+            masked_query_count = current_positions[:,None] - masked_token_position
+            masked_metrics /= masked_query_count.view(-1)
 
         bias = self.kv_metric_head_bias.get_bias_for_position(
             masked_token_position, masked_layer_indices, masked_head_indices

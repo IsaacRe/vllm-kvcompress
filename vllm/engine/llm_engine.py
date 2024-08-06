@@ -175,7 +175,8 @@ class LLMEngine:
                     kv_head_bias_weight=self.kvcompress_config.kv_head_bias_weight,
                     random=self.kvcompress_config.random_evict,
                     even_layer_evict=self.kvcompress_config.even_layer_evict,
-                    metric_aggregation=self.kvcompress_config.metric_aggregation,
+                    use_l2=self.kvcompress_config.kv_metric_use_l2,
+                    use_average=self.kvcompress_config.kv_metric_use_average,
                     record_decoding_metrics=self.kvcompress_config.record_decoding_metrics,
                 )
             )

@@ -86,7 +86,7 @@ class EngineArgs:
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 0
     prefill_metric_collection_window_size: int = 32
-    metric_aggregation: str = "L2"
+    metric_aggregation: str = "L2-sum"
     record_decoding_metrics: bool = True
     kv_head_bias_path: str = ""
     kv_head_bias_weight: int = 1.0
@@ -540,10 +540,10 @@ class EngineArgs:
 
         parser.add_argument('--metric-aggregation',
                             type=str,
-                            choices=['L1', 'L2'],
-                            default='L2',
-                            help='How to aggregate attention to obtain '
-                            'eviction metric per KV.')
+                            choices=['L1-sum', 'L2-sum', 'L1-avg', 'L2-avg'],
+                            default='L2-sum',
+                            help='How to aggregate attention over queries '
+                            'to obtain eviction metric per KV.')
 
         parser.add_argument('--only-prefill-metrics',
                             action='store_false',

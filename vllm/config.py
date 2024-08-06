@@ -657,6 +657,9 @@ class KVCompressConfig:
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.prefill_metric_collection_window_size = prefill_metric_collection_window_size
         self.metric_aggregation = metric_aggregation
+        l2_or_l1, avg_or_sum = metric_aggregation.split("-")
+        self.kv_metric_use_l2 = l2_or_l1 == "L2"
+        self.kv_metric_use_average = avg_or_sum == "avg"
         self.record_decoding_metrics = record_decoding_metrics
         self.kv_head_bias_path = kv_head_bias_path
         self.kv_head_bias_weight = kv_head_bias_weight
@@ -708,7 +711,7 @@ class KVCompressConfig:
             raise ValueError("control_layers can only be scpecified "
                              "when setting even_layer_evict")
 
-        if self.metric_aggregation not in ["L1", "L2"]:
+        if self.metric_aggregation not in ["L1-sum", "L2-sum", "L1-avg", "L2-avg"]:
             raise ValueError("invalid kv-metric aggregation")
 
     def get_cache_block_size(
@@ -1267,6 +1270,8 @@ def _get_and_verify_max_len(
 
     rope_scaling = getattr(hf_config, "rope_scaling", None)
     if rope_scaling is not None:
+        if rope_scaling.get("rope_type") == "llama3":
+            rope_scaling["type"] = "yarn"
         assert "factor" in rope_scaling
         scaling_factor = rope_scaling["factor"]
         if rope_scaling["type"] == "yarn":

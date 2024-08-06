@@ -202,6 +202,7 @@ class FlashAttentionImpl(AttentionImpl):
         kvcompress_enabled = bool(kv_metrics)
         kv_metric_buffer_len = attn_metadata.kv_metric_buffer_len
         kv_metric_use_l2 = attn_metadata.kv_metric_use_l2
+        kv_metric_use_average = attn_metadata.kv_metric_use_average
         prefill_observed_queries = attn_metadata.prefill_kv_metric_window_size
 
         CHECKPOINTER.checkpoint('flash_attn__query', query)
@@ -305,6 +306,7 @@ class FlashAttentionImpl(AttentionImpl):
                     kv_metric_buffer_len,
                     n_observed=prefill_observed_queries,
                     use_l2=kv_metric_use_l2,
+                    use_average=kv_metric_use_average,
                 )
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
@@ -424,6 +426,7 @@ def _naive_kvc_attention(
     kv_metric_buffer_len: torch.Tensor,
     n_observed: int = 32,
     use_l2: bool = True,
+    use_average: bool = False,
 ) -> torch.Tensor:
     # output = torch.empty_like(query)
     seq_len, num_heads, _ = key.shape
@@ -443,6 +446,7 @@ def _naive_kvc_attention(
             scale,
             kv_metric_buffer_len[i],
             use_l2,
+            use_average,
         )
         # TODO(woosuk): Unnecessary copy. Optimize.
         # output[start:end].copy_(out)
@@ -459,6 +463,7 @@ def _naive_kvc_masked_attention(
     scale: float,
     kv_metric_buffer_len: torch.Tensor,
     use_l2: bool,
+    use_average: bool,
 ) -> torch.Tensor:
     n_observed, num_heads, head_dim = query.shape
     seq_len, num_heads, head_dim = key.shape
@@ -478,6 +483,15 @@ def _naive_kvc_masked_attention(
     kv_metric_mask = torch.tril(ones, diagonal=n_truncated - kv_metric_buffer_len)
     # sum L2 of attention over queries
     kv_metrics = (attn_weights * kv_metric_mask).sum(dim=-2)
+    if use_average:
+        # Need to rescale KV metrics by token position
+        # since we will be normalizing by token position later
+        kv_metrics *= (
+            torch.arange(1, kv_metrics.size(-1) + 1,
+                         device=kv_metrics.device,
+                         dtype=torch.float)[None]
+            / n_observed
+        )
     kv_metrics = F.max_pool1d(
         kv_metrics,
         kernel_size=7,

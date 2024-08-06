@@ -97,8 +97,10 @@ class AttentionMetadata(Generic[T]):
     token_positions: Optional[torch.Tensor] = None
     # Last N prefill queries used to initialize KV metrics
     prefill_kv_metric_window_size: int = 32
-    # If true, evict based on L2 norm of total attention
+    # If true, evict based on L2 norm of attention
     kv_metric_use_l2: bool = True
+    # If true, evict based on norm of average attention
+    kv_metric_use_average: bool = False
 
     def __post_init__(self):
         # If layer-specific metadata is required during attention, layer_index

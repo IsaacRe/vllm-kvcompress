@@ -91,6 +91,7 @@ def run_vllm(
     new_token_limit: int = -1,
     max_cache_tokens: int = -1,
     record_decoding_metrics: bool = True,
+    metric_aggregation: str = "L2-sum",
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -121,6 +122,7 @@ def run_vllm(
         new_token_limit=new_token_limit,
         max_cache_tokens=max_cache_tokens,
         record_decoding_metrics=record_decoding_metrics,
+        metric_aggregation=metric_aggregation,
     )
 
     # Add the requests to the engine.
@@ -261,7 +263,7 @@ def main(args: argparse.Namespace):
             args.kvc_rate, args.protected_window_size, args.kv_head_bias_path,
             args.kvc_interval, args.max_num_kv_per_compression,
             args.new_token_limit, args.max_cache_tokens,
-            args.record_decoding_metrics)
+            args.record_decoding_metrics, args.metric_aggregation)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -467,6 +469,12 @@ if __name__ == "__main__":
         action='store_false',
         dest='record_decoding_metrics',
         help='Disable KV metric collection during decoding',
+    )
+    parser.add_argument(
+        '--metric-aggregation',
+        choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
+        default='L2-sum',
+        help='Aggregation used for KV metrics',
     )
     args = parser.parse_args()
     if args.tokenizer is None:
