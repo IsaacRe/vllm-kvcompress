@@ -162,10 +162,11 @@ class Worker(WorkerBase):
         assert peak_memory > 0, (
             "Error in memory profiling. This happens when the GPU memory was "
             "not properly cleaned up before initializing the vLLM instance.")
-        
+
         # peak_metric_sort_mem = kv_metrics.profile_sort()
 
         peak_memory += 2e9  # save 2GB vRAM for compression overhead
+        peak_memory += 4.5e9  # save 4GB vRAM for full metric collection overhead
 
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(
@@ -279,7 +280,7 @@ class Worker(WorkerBase):
         # Worker only supports single-step execution. Wrap the output in a list
         # to conform to interface.
         return [output]
-    
+
     def execute_cache_moves(
         self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics
     ) -> None:
