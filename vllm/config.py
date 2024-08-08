@@ -636,6 +636,7 @@ class KVCompressConfig:
         metric_collection_buffer_size: int,
         prefill_metric_collection_window_size: int,
         metric_aggregation: str,
+        maxpool_metrics: bool,
         record_decoding_metrics: bool,
         kv_head_bias_path: str,
         kv_head_bias_weight: float,
@@ -660,6 +661,7 @@ class KVCompressConfig:
         l2_or_l1, avg_or_sum = metric_aggregation.split("-")
         self.kv_metric_use_l2 = l2_or_l1 == "L2"
         self.kv_metric_use_average = avg_or_sum == "avg"
+        self.kv_metric_use_maxpool = maxpool_metrics
         self.record_decoding_metrics = record_decoding_metrics
         self.kv_head_bias_path = kv_head_bias_path
         self.kv_head_bias_weight = kv_head_bias_weight

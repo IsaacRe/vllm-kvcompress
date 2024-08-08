@@ -101,6 +101,8 @@ class AttentionMetadata(Generic[T]):
     kv_metric_use_l2: bool = True
     # If true, evict based on norm of average attention
     kv_metric_use_average: bool = False
+    # If true, use maxpool over KV metrics along sequence dimension
+    kv_metric_use_maxpool: bool = True
 
     def __post_init__(self):
         # If layer-specific metadata is required during attention, layer_index

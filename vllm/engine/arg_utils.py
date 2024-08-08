@@ -87,6 +87,7 @@ class EngineArgs:
     metric_collection_buffer_size: int = 0
     prefill_metric_collection_window_size: int = 32
     metric_aggregation: str = "L2-sum"
+    maxpool_metrics: bool = True
     record_decoding_metrics: bool = True
     kv_head_bias_path: str = ""
     kv_head_bias_weight: int = 1.0
@@ -545,6 +546,12 @@ class EngineArgs:
                             help='How to aggregate attention over queries '
                             'to obtain eviction metric per KV.')
 
+        parser.add_argument('--no-maxpool-metrics',
+                            action='store_false',
+                            dest='maxpool_metrics',
+                            help='Whether to apply max pooling over sequence '
+                            'dimension of KV metrics used for eviction.')
+
         parser.add_argument('--only-prefill-metrics',
                             action='store_false',
                             dest='record_decoding_metrics',
@@ -716,6 +723,7 @@ class EngineArgs:
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 prefill_metric_collection_window_size=self.prefill_metric_collection_window_size,
                 metric_aggregation=self.metric_aggregation,
+                maxpool_metrics=self.maxpool_metrics,
                 record_decoding_metrics=self.record_decoding_metrics,
                 kv_head_bias_path=self.kv_head_bias_path,
                 kv_head_bias_weight=self.kv_head_bias_weight,

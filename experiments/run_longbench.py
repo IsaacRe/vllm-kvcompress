@@ -23,7 +23,7 @@ parser.add_argument('--prefill-metric-collection-window-size', type=int, default
 parser.add_argument('--max-model-len', type=int, default=None)
 parser.add_argument('--metric-aggregation', choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
                     default='L2-sum')
-
+parser.add_argument('--no-maxpool-metrics', action='store_false', dest='maxpool_metrics')
 
 def main(args):
     seed_everything(42)
@@ -52,6 +52,7 @@ def main(args):
         prefill_metric_collection_window_size=args.prefill_metric_collection_window_size,
         max_kv_per_compression=args.max_kv_per_compression,
         metric_aggregation=args.metric_aggregation,
+        maxpool_metrics=args.maxpool_metrics,
     )
     max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
                      model.llm_engine.model_config.max_model_len)
