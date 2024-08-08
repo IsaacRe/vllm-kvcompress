@@ -92,7 +92,10 @@ if __name__ == '__main__':
         dataset, compression = experiment.split('-')
         with open(f"{path}{filename}", "r", encoding="utf-8") as f:
             for line in f:
-                data = json.loads(line)
+                try:
+                    data = json.loads(line)
+                except:
+                    continue
                 predictions.append(data["pred"])
                 answers.append(data["answers"])
                 all_classes = data["all_classes"]

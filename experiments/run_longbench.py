@@ -66,15 +66,16 @@ def main(args):
     prompts = []
     final_prompts = []
     json_objs = []
-    for json_obj in dset:
+    print("Loading data...")
+    for json_obj in tqdm(dset):
         json_objs.append(json_obj)
         prompt = prompt_format.format(**json_obj)
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
         if "chatglm3" in args.model:
             tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt", add_special_tokens=False).input_ids[0]
-        if len(tokenized_prompt) > max_length:
-            half = int(max_length/2)
+        if len(tokenized_prompt) > max_length - max_output_tokens:
+            half = int((max_length - max_output_tokens - 1)/2)
             prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
         prompts.append(prompt)
         if args.dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]: # chat models are better off without build prompts on these tasks
@@ -85,7 +86,7 @@ def main(args):
         else:
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to(args.device)
         inputs.append(input.input_ids[0].cpu().numpy().tolist())
-        assert len(inputs[-1]) < max_length - max_output_tokens, f"{len(inputs[-1])=}, {max_length=}"
+        assert len(inputs[-1]) <= max_length - max_output_tokens, f"{len(inputs[-1])=}, {max_length - max_output_tokens=}"
         assert len(inputs[-1]) > max_output_tokens, "compression won't be triggered after prefill"
 
     sampling_params = SamplingParams(
@@ -95,7 +96,7 @@ def main(args):
         protected_window_size=args.protected_window_size,
         metric_collection_buffer_size=args.metric_collection_buffer_size,
     )
-    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_b{args.kv_head_bias_weight}"
+    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
