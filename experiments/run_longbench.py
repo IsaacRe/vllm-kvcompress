@@ -20,6 +20,7 @@ parser.add_argument('--max-kv-per-compression', type=int, default=50_000_000)
 parser.add_argument('--protected-window-size', type=int, default=50)
 parser.add_argument('--metric-collection-buffer-size', type=int, default=10)
 parser.add_argument('--prefill-metric-collection-window-size', type=int, default=32)
+parser.add_argument('--prefill-metric-collection-block-size', type=int, default=4000)
 parser.add_argument('--max-model-len', type=int, default=None)
 parser.add_argument('--metric-aggregation', choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
                     default='L2-sum')
@@ -50,6 +51,7 @@ def main(args):
         disable_log_stats=True,
         max_model_len=args.max_model_len,
         prefill_metric_collection_window_size=args.prefill_metric_collection_window_size,
+        prefill_metric_collection_block_size=args.prefill_metric_collection_block_size,
         max_kv_per_compression=args.max_kv_per_compression,
         metric_aggregation=args.metric_aggregation,
         maxpool_metrics=args.maxpool_metrics,

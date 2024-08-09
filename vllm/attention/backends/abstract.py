@@ -97,6 +97,8 @@ class AttentionMetadata(Generic[T]):
     token_positions: Optional[torch.Tensor] = None
     # Last N prefill queries used to initialize KV metrics
     prefill_kv_metric_window_size: int = 32
+    # Max number of queries to collect KV metrics for at a time
+    prefill_kv_metric_block_size: int = 4096
     # If true, evict based on L2 norm of attention
     kv_metric_use_l2: bool = True
     # If true, evict based on norm of average attention

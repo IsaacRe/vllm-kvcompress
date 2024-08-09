@@ -635,6 +635,7 @@ class KVCompressConfig:
         protected_window_size: int,
         metric_collection_buffer_size: int,
         prefill_metric_collection_window_size: int,
+        prefill_metric_collection_block_size: int,
         metric_aggregation: str,
         maxpool_metrics: bool,
         record_decoding_metrics: bool,
@@ -657,6 +658,7 @@ class KVCompressConfig:
         self.protected_window_size = protected_window_size
         self.metric_collection_buffer_size = metric_collection_buffer_size
         self.prefill_metric_collection_window_size = prefill_metric_collection_window_size
+        self.prefill_metric_collection_block_size = prefill_metric_collection_block_size
         self.metric_aggregation = metric_aggregation
         l2_or_l1, avg_or_sum = metric_aggregation.split("-")
         self.kv_metric_use_l2 = l2_or_l1 == "L2"

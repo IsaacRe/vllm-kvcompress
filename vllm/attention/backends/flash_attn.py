@@ -205,6 +205,7 @@ class FlashAttentionImpl(AttentionImpl):
         kv_metric_use_average = attn_metadata.kv_metric_use_average
         kv_metric_use_maxpool = attn_metadata.kv_metric_use_maxpool
         prefill_observed_queries = attn_metadata.prefill_kv_metric_window_size
+        prefill_max_observed_block_size = attn_metadata.prefill_kv_metric_block_size
 
         CHECKPOINTER.checkpoint('flash_attn__query', query)
         CHECKPOINTER.checkpoint('flash_attn__key', key)
@@ -306,6 +307,7 @@ class FlashAttentionImpl(AttentionImpl):
                     self.scale,
                     kv_metric_buffer_len,
                     n_observed=prefill_observed_queries,
+                    max_observed_block_size=prefill_max_observed_block_size,
                     use_l2=kv_metric_use_l2,
                     use_average=kv_metric_use_average,
                     use_maxpool=kv_metric_use_maxpool,
@@ -427,12 +429,12 @@ def _naive_kvc_attention(
     scale: float,
     kv_metric_buffer_len: torch.Tensor,
     n_observed: int = 32,
+    max_observed_block_size: int = 4096,
     use_l2: bool = True,
     use_average: bool = False,
     use_maxpool: bool = True,
 ) -> torch.Tensor:
     # output = torch.empty_like(query)
-    MAX_OBSERVED = 4000
     seq_len, num_heads, _ = key.shape
     kv_metric_output = torch.empty(
         (seq_len, num_heads),
@@ -444,9 +446,9 @@ def _naive_kvc_attention(
         end = start + prompt_len
         start_trunc = end - min(prompt_len, n_observed)
         kv_metric_output[start:end].fill_(0)
-        for l in range(start_trunc, end, MAX_OBSERVED):
+        for l in range(start_trunc, end, max_observed_block_size):
             _, kv_metrics = _naive_kvc_masked_attention(
-                query[l:l+MAX_OBSERVED],
+                query[l:l+max_observed_block_size],
                 key[start:end],
                 value[start:end],
                 scale,
@@ -490,9 +492,6 @@ def _naive_kvc_masked_attention(
         attn_weights = attn_weights ** 2
     # out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
     kv_metric_mask = torch.tril(ones, diagonal=q_offset - kv_metric_buffer_len)
-    limit_local = 32 + kv_metric_buffer_len
-    if limit_local > 0:
-        kv_metric_mask = torch.triu(kv_metric_mask, diagonal=q_offset - limit_local + 1)
     # sum L2 of attention over queries
     kv_metrics = (attn_weights * kv_metric_mask).sum(dim=-2)
     if use_average:

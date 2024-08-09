@@ -941,6 +941,9 @@ class ModelRunner:
             prefill_kv_metric_window_size=(
                 self.kvcompress_config.prefill_metric_collection_window_size
                 if self.kvcompress_config else None),
+            prefill_kv_metric_block_size=(
+                self.kvcompress_config.prefill_metric_collection_block_size
+                if self.kvcompress_config else None),
             kv_metric_use_l2=(self.kvcompress_config.kv_metric_use_l2
                               if self.kvcompress_config else None),
             kv_metric_use_average=(self.kvcompress_config.kv_metric_use_average

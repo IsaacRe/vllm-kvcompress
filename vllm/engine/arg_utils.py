@@ -86,6 +86,7 @@ class EngineArgs:
     protected_window_size: int = 64
     metric_collection_buffer_size: int = 0
     prefill_metric_collection_window_size: int = 32
+    prefill_metric_collection_block_size: int = 4096
     metric_aggregation: str = "L2-sum"
     maxpool_metrics: bool = True
     record_decoding_metrics: bool = True
@@ -539,6 +540,12 @@ class EngineArgs:
                             'attention for each key over the last N prompt '
                             'queries. Defines N.')
 
+        parser.add_argument('--prefill-metric-collection-block-size',
+                            type=int,
+                            default=4096,
+                            help='Max number of KVs to collect metrics for '
+                            'in parallel during prefill.')
+
         parser.add_argument('--metric-aggregation',
                             type=str,
                             choices=['L1-sum', 'L2-sum', 'L1-avg', 'L2-avg'],
@@ -722,6 +729,7 @@ class EngineArgs:
                 protected_window_size=self.protected_window_size,
                 metric_collection_buffer_size=self.metric_collection_buffer_size,
                 prefill_metric_collection_window_size=self.prefill_metric_collection_window_size,
+                prefill_metric_collection_block_size=self.prefill_metric_collection_block_size,
                 metric_aggregation=self.metric_aggregation,
                 maxpool_metrics=self.maxpool_metrics,
                 record_decoding_metrics=self.record_decoding_metrics,
