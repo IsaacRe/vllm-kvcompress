@@ -73,6 +73,8 @@ def scorer(dataset, predictions, answers, all_classes):
         for ground_truth in ground_truths:
             score = max(score, dataset2metric[dataset](prediction, ground_truth, all_classes=all_classes))
         total_score += score
+    if len(predictions) == 0:
+        return 0.
     return round(100 * total_score / len(predictions), 2)
 
 if __name__ == '__main__':
