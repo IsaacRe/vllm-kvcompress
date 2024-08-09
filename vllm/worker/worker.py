@@ -166,7 +166,7 @@ class Worker(WorkerBase):
         # peak_metric_sort_mem = kv_metrics.profile_sort()
 
         peak_memory += 2e9  # save 2GB vRAM for compression overhead
-        peak_memory += 4.5e9  # save 4GB vRAM for full metric collection overhead
+        peak_memory += 50e9  # save 25GB vRAM for full metric collection overhead
 
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(

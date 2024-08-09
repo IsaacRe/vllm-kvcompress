@@ -432,6 +432,7 @@ def _naive_kvc_attention(
     use_maxpool: bool = True,
 ) -> torch.Tensor:
     # output = torch.empty_like(query)
+    MAX_OBSERVED = 4000
     seq_len, num_heads, _ = key.shape
     kv_metric_output = torch.empty(
         (seq_len, num_heads),
@@ -442,19 +443,22 @@ def _naive_kvc_attention(
     for i, prompt_len in enumerate(prompt_lens):
         end = start + prompt_len
         start_trunc = end - min(prompt_len, n_observed)
-        _, kv_metrics = _naive_kvc_masked_attention(
-            query[start_trunc:end],
-            key[start:end],
-            value[start:end],
-            scale,
-            kv_metric_buffer_len[i],
-            use_l2,
-            use_average,
-            use_maxpool,
-        )
-        # TODO(woosuk): Unnecessary copy. Optimize.
-        # output[start:end].copy_(out)
-        kv_metric_output[start:end].copy_(kv_metrics.T)
+        kv_metric_output[start:end].fill_(0)
+        for l in range(start_trunc, end, MAX_OBSERVED):
+            _, kv_metrics = _naive_kvc_masked_attention(
+                query[l:l+MAX_OBSERVED],
+                key[start:end],
+                value[start:end],
+                scale,
+                kv_metric_buffer_len[i],
+                use_l2,
+                use_average,
+                use_maxpool,
+                q_offset=l,
+            )
+            # TODO(woosuk): Unnecessary copy. Optimize.
+            # output[start:end].copy_(out)
+            kv_metric_output[start:end] += kv_metrics.T
         start += prompt_len
 
     return None, kv_metric_output
@@ -469,15 +473,15 @@ def _naive_kvc_masked_attention(
     use_l2: bool,
     use_average: bool,
     use_maxpool: bool,
+    q_offset: int = 0,
 ) -> torch.Tensor:
     n_observed, num_heads, head_dim = query.shape
     seq_len, num_heads, head_dim = key.shape
-    n_truncated = seq_len - n_observed
     ones = torch.ones(n_observed,
                       seq_len,
                       dtype=query.dtype,
                       device=query.device)
-    attn_mask = torch.triu(ones, diagonal=n_truncated + 1)
+    attn_mask = torch.triu(ones, diagonal=q_offset + 1)
     attn_mask = attn_mask * torch.finfo(query.dtype).min
     attn_weights = scale * torch.einsum("qhd,khd->hqk", query, key).float()
     attn_weights = attn_weights + attn_mask.float()
@@ -485,7 +489,10 @@ def _naive_kvc_masked_attention(
     if use_l2:
         attn_weights = attn_weights ** 2
     # out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
-    kv_metric_mask = torch.tril(ones, diagonal=n_truncated - kv_metric_buffer_len)
+    kv_metric_mask = torch.tril(ones, diagonal=q_offset - kv_metric_buffer_len)
+    limit_local = 32 + kv_metric_buffer_len
+    if limit_local > 0:
+        kv_metric_mask = torch.triu(kv_metric_mask, diagonal=q_offset - limit_local + 1)
     # sum L2 of attention over queries
     kv_metrics = (attn_weights * kv_metric_mask).sum(dim=-2)
     if use_average:

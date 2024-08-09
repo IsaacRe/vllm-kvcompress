@@ -523,6 +523,13 @@ class CompressionScheduler:
             for seq, freed_blocks in zip(seqs_to_compress, evicted_block_count)
         }
 
+        for seq in freed_block_count:
+            self.total_evicted_kvs[seq] = (
+                self.total_evicted_kvs.get(seq, 0) + freed_block_count[seq].sum().item() * self.block_size
+            )
+            seq_evicted_kvs = self.total_evicted_kvs[seq]
+            print(f'Seq {seq} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.config.num_kv_heads / self.config.num_layers} tokens) so far')
+
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', self.cache_move_indices)
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)
         CHECKPOINTER.checkpoint('schedule_compression__freed_block_count', evicted_block_count)

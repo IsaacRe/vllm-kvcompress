@@ -946,7 +946,7 @@ class ModelRunner:
             kv_metric_use_average=(self.kvcompress_config.kv_metric_use_average
                                    if self.kvcompress_config else None),
             kv_metric_use_maxpool=(self.kvcompress_config.kv_metric_use_maxpool
-                                   if self.kvcompress_conifg else None),
+                                   if self.kvcompress_config else None),
             token_positions=input_positions.type(torch.int),
         )
 
