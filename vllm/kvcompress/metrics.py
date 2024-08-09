@@ -266,18 +266,58 @@ class CompressionMetrics:
         )
         self.validate_metadata()
 
-    def profile_sort(self):
+    def profile_schedule_evictions(self):
         # Should not have begun handling requests
         assert self.num_blocks is None, "cannot profile after initialization"
         sort_blocks = (self.max_kv_per_sort + self.block_size - 1) // self.block_size
-        self.init_kv_metadata(sort_blocks)
-        self.seq_index_by_block[:] = 0
-        self.head_index_by_block[:] = 0
-        self.layer_index_by_block[:] = 0
-        self.logical_block_num_by_block[:] = 0
+        total_heads = self.num_layers * self.num_kv_heads
+        blocks_per_head = (sort_blocks + total_heads - 1) // total_heads
+        total_blocks = blocks_per_head * total_heads
+        self.init_kv_metadata(total_blocks)
+        self.seq_index_by_block[:total_blocks] = 0
+        self.head_index_by_block[:total_blocks] = (
+            torch.arange(self.num_kv_heads)
+                 .repeat_interleave(blocks_per_head)
+                 .repeat(self.num_layers)
+                 .to(self.device)
+        )
+        self.layer_index_by_block[:total_blocks] = (
+            torch.arange(self.num_layers)
+                 .repeat_interleave(self.num_kv_heads * blocks_per_head)
+                 .to(self.device)
+        )
+        self.logical_block_num_by_block[:total_blocks] = (
+            torch.arange(blocks_per_head)
+                 .repeat(total_heads)
+                 .to(self.device)
+        )
+        context_lens = (torch.ones((self.num_layers, 1, self.num_kv_heads),
+                                   dtype=torch.int,
+                                   device=self.device)
+                        * self.block_size * blocks_per_head)
+        hanging_token_count = torch.ones((self.num_layers, 1, self.num_kv_heads),
+                                         dtype=torch.int,
+                                         device=self.device) * self.block_size
+
+        evicted_kv_offsets = (
+            ((context_lens.transpose(0, 1) + self.block_size - 1) // self.block_size)
+            * self.block_size
+        ).flatten().cumsum(dim=0)
+        evicted_kv_offsets = torch.cat(
+            [torch.zeros_like(evicted_kv_offsets[:1]), evicted_kv_offsets[:-1]]
+        ).reshape(*context_lens.transpose(0, 1).shape).type(torch.int)
+
         init_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
-        self.sort_seq_metrics([0], [1], checkpoint=False)
+        self.schedule_evictions(
+            [0],
+            [1],
+            [total_blocks],
+            context_lens,
+            hanging_token_count,
+            evicted_kv_offsets,
+            [32],
+        )
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
         self.clear_kv_metadata()
