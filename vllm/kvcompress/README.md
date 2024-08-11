@@ -56,6 +56,7 @@ Use evicted_kv_count in _schedule_compression()
 Use stable=True during sort()
 Get eviction test passing for even_layer_evict and protected_window > 0
 Remove arguments from LLM config that are now passed in SampleParams
+Test correctness of compress_once
 
 
 ### Potential Problem Code

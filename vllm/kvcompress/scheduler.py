@@ -103,10 +103,18 @@ class CompressionScheduler:
         target_compression_rate: float,
         max_cache_tokens: int,
         protected_window_size: int,
+        compress_once: bool,
     ) -> Tuple[int, int]:
         """Return the number of this sequence's blocks to be freed during
         the next compression iteration.
         """
+        # If sequence was configured to be compressed exactly once after prefill
+        # and this compression has already occurred then return
+        if compress_once and seq.compressed:
+            return 0, 0
+
+        seq.compressed = True
+
         # Round up to nearest block to avoid freeing blocks with KVs below max.
         if max_cache_tokens > 0:
             max_cache_tokens = (
@@ -194,6 +202,7 @@ class CompressionScheduler:
                 target_compression_rate=sample_params.target_compression_rate,
                 max_cache_tokens=sample_params.max_cache_tokens,
                 protected_window_size=sample_params.protected_window_size,
+                compress_once=sample_params.compress_once,
             )
             if evicted_block_count == 0:
                 continue
@@ -210,8 +219,6 @@ class CompressionScheduler:
 
         if not seqs_to_compress:
             return
-
-        print("ACTUALLY COMPRESSING")
 
         # Benchmark - 2
         # BENCHMARKER.end_range("_schedule_compression - 1")

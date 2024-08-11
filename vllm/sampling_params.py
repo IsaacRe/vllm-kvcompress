@@ -133,6 +133,7 @@ class SamplingParams:
         target_compression_rate: float = 1.0,
         max_cache_tokens: int = -1,
         metric_collection_buffer_size: int = 0,
+        compress_once: bool = True,
     ) -> None:
         self.n = n
         self.best_of = best_of if best_of is not None else n
@@ -183,6 +184,7 @@ class SamplingParams:
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
         self.metric_collection_buffer_size = metric_collection_buffer_size
+        self.compress_once = compress_once
 
         self._verify_args()
         if self.use_beam_search:

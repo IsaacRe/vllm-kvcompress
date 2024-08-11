@@ -246,6 +246,9 @@ class Sequence:
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
 
+        # For tracking KV cache compression status
+        self.compressed = False
+
     @property
     def lora_int_id(self) -> int:
         return self.lora_request.lora_int_id if self.lora_request else 0
@@ -387,12 +390,12 @@ class SequenceGroupState:
 
 class MultiModalData:
     """Multi modal request.
-    
+
     Args:
         type: The data type.
         data: The actual data.
         The required shape and semantic meaning of it depends on the vision
-        language config of the hosted model. 
+        language config of the hosted model.
         See `VisionLanguageConfig` in `config.py`.
     """
 

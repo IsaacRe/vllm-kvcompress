@@ -137,6 +137,7 @@ def run_vllm(
             max_cache_tokens=max_cache_tokens,
             target_compression_rate=kvc_rate,
             protected_window_size=protected_window_size,
+            compress_once=True,
         )
         assert sampling_params.stop_token_ids == [], sampling_params.stop_token_ids
         # FIXME(woosuk): Do not use internal method.
