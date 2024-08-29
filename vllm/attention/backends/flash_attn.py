@@ -11,6 +11,14 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 from flash_attn import flash_attn_varlen_func
+try:
+    from flash_attn_kvc import (
+        flash_attn_varlen_func as flash_attn_kvc_varlen_func,
+        # convert_kvc_S_to_attn,
+    )
+    FLASH_KVC_ENABLED = True
+except Exception:
+    FLASH_KVC_ENABLED = False
 
 from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionMetadata,
@@ -276,42 +284,91 @@ class FlashAttentionImpl(AttentionImpl):
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
             if kvcompress_enabled:
+                BENCHMARKER.start_range("prefill_attn_kvc")
+
                 # Extract layer-dependent metadata
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
                 slot_mapping = slot_mapping[:num_prefill_tokens]
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_slot_mapping', slot_mapping)
 
-                if self.num_kv_heads != self.num_heads:
-                    # Interleave for MQA workaround.
-                    key = self.repeat_kv(key, self.num_queries_per_kv)
-                    value = self.repeat_kv(value, self.num_queries_per_kv)
-                out = flash_attn_varlen_func(
-                    q=query,
-                    k=key,
-                    v=value,
-                    cu_seqlens_q=prefill_meta.seq_start_loc,
-                    cu_seqlens_k=prefill_meta.seq_start_loc,
-                    max_seqlen_q=prefill_meta.max_prompt_len,
-                    max_seqlen_k=prefill_meta.max_prompt_len,
-                    softmax_scale=self.scale,
-                    causal=True,
-                    window_size=self.sliding_window,
-                    alibi_slopes=self.alibi_slopes,
-                )
-                _, kv_metric_out = _naive_kvc_attention(
-                    query,
-                    key,
-                    value,
-                    prefill_meta.prompt_lens,
-                    self.scale,
-                    kv_metric_buffer_len,
-                    n_observed=prefill_observed_queries,
-                    max_observed_block_size=prefill_max_observed_block_size,
-                    use_l2=kv_metric_use_l2,
-                    use_average=kv_metric_use_average,
-                    use_maxpool=kv_metric_use_maxpool,
-                )
+                if FLASH_KVC_ENABLED:
+                    assert self.alibi_slopes is None, (
+                        "use of alibi with KVC is unsupported")
+                    assert self.sliding_window == (-1, -1), (
+                        "use of sliding window with KVC is unsupported")
+                    assert prefill_observed_queries <= 64, (
+                        "query range greater than query block size is not supported")
+                    assert not kv_metric_use_average, (
+                        "use_average not supported with flash-attn-kvc")
+                    BENCHMARKER.start_range("flash_attn_kvc_varlen_func")
+                    out, sm_lse, kvc_S = flash_attn_kvc_varlen_func(
+                        q=query,
+                        k=key,
+                        v=value,
+                        cu_seqlens_q=prefill_meta.seq_start_loc,
+                        cu_seqlens_k=prefill_meta.seq_start_loc,
+                        max_seqlen_q=prefill_meta.max_prompt_len,
+                        max_seqlen_k=prefill_meta.max_prompt_len,
+                        softmax_scale=self.scale,
+                        causal=True,
+                        window_size=self.sliding_window,
+                        alibi_slopes=self.alibi_slopes,
+                        key_attn_agg_window=prefill_observed_queries,
+                    )
+                    BENCHMARKER.end_range("flash_attn_kvc_varlen_func")
+                    BENCHMARKER.start_range("convert_kvc_S_to_attn")
+                    suffix_attn = convert_kvc_S_to_attn(
+                        kvc_S,
+                        sm_lse,
+                        prefill_observed_queries,
+                        prefill_meta.seq_start_loc,
+                        self.scale,
+                        kv_metric_buffer_len,
+                    )
+                    BENCHMARKER.end_range("convert_kvc_S_to_attn")
+                    kv_metric_out = _collect_kv_prefill_metrics(
+                        suffix_attn,
+                        kv_metric_use_l2,
+                        kv_metric_use_maxpool
+                    )
+                    kv_metric_out_ = kv_metric_out
+                    out_ = out
+                else:
+                    BENCHMARKER.start_range("flash_attn_varlen_func")
+                    out = flash_attn_varlen_func(
+                        q=query,
+                        k=key,
+                        v=value,
+                        cu_seqlens_q=prefill_meta.seq_start_loc,
+                        cu_seqlens_k=prefill_meta.seq_start_loc,
+                        max_seqlen_q=prefill_meta.max_prompt_len,
+                        max_seqlen_k=prefill_meta.max_prompt_len,
+                        softmax_scale=self.scale,
+                        causal=True,
+                        window_size=self.sliding_window,
+                        alibi_slopes=self.alibi_slopes,
+                    )
+                    BENCHMARKER.end_range("flash_attn_varlen_func")
+                    BENCHMARKER.start_range("repeat_kv")
+                    if self.num_kv_heads != self.num_heads:
+                        # Interleave for MQA workaround.
+                        key = self.repeat_kv(key, self.num_queries_per_kv)
+                        value = self.repeat_kv(value, self.num_queries_per_kv)
+                    BENCHMARKER.end_range("repeat_kv")
+                    _, kv_metric_out = _naive_kvc_attention(
+                        query,
+                        key,
+                        value,
+                        prefill_meta.prompt_lens,
+                        self.scale,
+                        kv_metric_buffer_len,
+                        n_observed=prefill_observed_queries,
+                        max_observed_block_size=prefill_max_observed_block_size,
+                        use_l2=kv_metric_use_l2,
+                        use_average=kv_metric_use_average,
+                        use_maxpool=kv_metric_use_maxpool,
+                    )
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
                 CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metric_out', kv_metric_out)
@@ -325,6 +382,8 @@ class FlashAttentionImpl(AttentionImpl):
 
                 assert output[:num_prefill_tokens].shape == out.shape
                 output[:num_prefill_tokens] = out
+
+                BENCHMARKER.end_range("prefill_attn_kvc")
             elif kv_cache is None or prefill_meta.block_tables.numel() == 0:
                 # normal attention
                 # When block_tables are not filled, it means q and k are the
@@ -511,3 +570,48 @@ def _naive_kvc_masked_attention(
             stride=1,
         )
     return None, kv_metrics
+
+
+@BENCHMARKER.wrap()
+def _collect_kv_prefill_metrics(
+    suffix_attn,
+    use_l2: bool,
+    use_maxpool: bool,
+):
+    if use_l2:
+        suffix_attn = suffix_attn ** 2
+    kv_metrics = suffix_attn.sum(dim=-1)
+    if use_maxpool:
+        kv_metrics = F.max_pool1d(
+            kv_metrics.T,
+            kernel_size=7,
+            padding=7//2,
+            stride=1,
+        ).T
+    return kv_metrics
+
+
+def convert_kvc_S_to_attn(s, sm_lse, kagg_window, cu_seqlens, scale, buffer_lens):
+    assert s.dtype == sm_lse.dtype == torch.float
+    s_ = s * scale
+    start = cu_seqlens[0]
+    lse = []
+    min_val = torch.finfo(torch.float).min
+    for l, buf in zip(cu_seqlens[1:], buffer_lens):
+        curr_l = l - start
+        nq = min(kagg_window, curr_l)
+        offset = curr_l - nq
+        attn_mask = 0
+        if buf > 0:
+            ones = torch.ones_like(s_[start:l,:,-nq:])
+            attn_mask = torch.triu(ones, diagonal=offset + 1 - buf)
+            attn_mask = attn_mask * min_val
+        lse = sm_lse[:,l-nq:l]
+        s_[start:l,:,-nq:] += (attn_mask - lse[None])
+
+        start = l
+
+    s_ = s_.exp()
+    s_[s == float('-inf')] = 0
+
+    return s_
