@@ -170,11 +170,11 @@ def test_parity_with_simulated_compression(
         ppl = float("%.4f" % np.exp(sum(nll) / len(nll)))
         acc = float("%.2f" % (sum([is_correct(d, t) for d, t in zip(logprobs, ref_token_ids)]) / len(logprobs) * 100.))
         print(f"{acc=}, {ppl=}")
-        # assert ppl < 1.01
+        assert ppl < 1.3
+        assert acc > 95
         # vllm_output = output[:len(reference_completion)]
         # assert reference_completion == vllm_output, (
         #     f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
-    assert False
 
 
 @pytest.mark.parametrize("random_seed", [1])
