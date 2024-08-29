@@ -85,6 +85,7 @@ def run_vllm(
     enable_kvc: bool = False,
     kvc_rate: float = 1.0,
     protected_window_size: int = 50,
+    metric_collection_buffer_size: int = 0,
     kv_head_bias_path: str = "./kv_head_bias.npz",
     kvc_interval: int = 1,
     max_num_kv_per_compression: int = 5_000_000,
@@ -117,6 +118,7 @@ def run_vllm(
         enable_kvcompress=enable_kvc,
         target_compression_rate=kvc_rate,
         protected_window_size=protected_window_size,
+        metric_collection_buffer_size=metric_collection_buffer_size,
         kv_head_bias_path=kv_head_bias_path,
         compression_interval=kvc_interval,
         max_kv_per_compression=max_num_kv_per_compression,
@@ -262,8 +264,8 @@ def main(args: argparse.Namespace):
             args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
             args.download_dir, args.max_batch_size, args.enable_kvc,
-            args.kvc_rate, args.protected_window_size, args.kv_head_bias_path,
-            args.kvc_interval, args.max_num_kv_per_compression,
+            args.kvc_rate, args.protected_window_size, args.metric_collection_buffer_size,
+            args.kv_head_bias_path, args.kvc_interval, args.max_num_kv_per_compression,
             args.new_token_limit, args.max_cache_tokens,
             args.record_decoding_metrics, args.metric_aggregation,
             args.compress_once)
@@ -435,6 +437,12 @@ if __name__ == "__main__":
         type=int,
         default=50,
         help="Protected window size for KV cache compression",
+    )
+    parser.add_argument(
+        '--metric-collection-buffer-size',
+        type=int,
+        default=0,
+        help="Buffer length for collecting KV metric",
     )
     parser.add_argument(
         "--kv-head-bias-path",
