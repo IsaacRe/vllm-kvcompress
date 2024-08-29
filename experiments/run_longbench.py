@@ -32,6 +32,7 @@ def main(args):
 
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
     dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
+    model2maxlen = json.load(open("config/model2maxpromptlen.json", "r"))
     prompt_format = dataset2prompt[args.dataset]
     max_output_tokens = dataset2maxlen[args.dataset]
 
@@ -56,8 +57,10 @@ def main(args):
         metric_aggregation=args.metric_aggregation,
         maxpool_metrics=args.maxpool_metrics,
     )
-    max_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
-                     model.llm_engine.model_config.max_model_len)
+    # SnapKV sets max input length per model in their experiments
+    max_prompt_length = model2maxlen[args.model]
+    max_model_prompt_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
+                                  model.llm_engine.model_config.max_model_len)
 
     tokenizer = load_tokenizer(args.model)
     dset = load_dataset('THUDM/LongBench',
@@ -77,8 +80,8 @@ def main(args):
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
         if "chatglm3" in args.model:
             tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt", add_special_tokens=False).input_ids[0]
-        if len(tokenized_prompt) > max_length - max_output_tokens:
-            half = int((max_length - max_output_tokens - 1)/2)
+        if len(tokenized_prompt) > max_prompt_length:
+            half = int((max_prompt_length)/2)
             prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
         prompts.append(prompt)
         if args.dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]: # chat models are better off without build prompts on these tasks
@@ -89,17 +92,18 @@ def main(args):
         else:
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to(args.device)
         inputs.append(input.input_ids[0].cpu().numpy().tolist())
-        assert len(inputs[-1]) <= max_length - max_output_tokens, f"{len(inputs[-1])=}, {max_length - max_output_tokens=}"
+        assert len(inputs[-1]) <= max_model_prompt_length, f"{len(inputs[-1])=}, {max_prompt_length=}, {max_model_prompt_length=}"
         assert len(inputs[-1]) > max_output_tokens, "compression won't be triggered after prefill"
 
     sampling_params = SamplingParams(
         max_tokens=max_output_tokens,
+        min_tokens=1,
         temperature=0.0,
         max_cache_tokens=args.max_cache_tokens,
         protected_window_size=args.protected_window_size,
         metric_collection_buffer_size=args.metric_collection_buffer_size,
     )
-    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}_local"
+    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:

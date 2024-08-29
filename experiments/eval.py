@@ -91,7 +91,8 @@ if __name__ == '__main__':
             continue
         predictions, answers, lengths = [], [], []
         experiment = filename.split('.')[0]
-        dataset, compression = experiment.split('-')
+        *dataset, compression = experiment.split('-')
+        dataset = '-'.join(dataset)
         with open(f"{path}{filename}", "r", encoding="utf-8") as f:
             for line in f:
                 try:
