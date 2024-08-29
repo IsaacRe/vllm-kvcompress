@@ -299,7 +299,7 @@ class FlashAttentionImpl(AttentionImpl):
                         "use of sliding window with KVC is unsupported")
                     assert prefill_observed_queries <= 64, (
                         "query range greater than query block size is not supported")
-                    assert kv_metric_buffer_len == 0, (
+                    assert (kv_metric_buffer_len == 0).all(), (
                         "kv_metric_buffer_len not supported with flash-attn-kvc")
                     assert not kv_metric_use_average, (
                         "use_average not supported with flash-attn-kvc")
@@ -325,15 +325,20 @@ class FlashAttentionImpl(AttentionImpl):
                         sm_lse,
                         prefill_observed_queries,
                         prefill_meta.seq_start_loc,
-                        query.size(-1),
+                        1 / self.scale,
                     )
+                    print(suffix_attn.shape)
+                    print(suffix_attn[:min(prefill_meta.seq_start_loc[1],
+                                           prefill_max_observed_block_size),0])
                     BENCHMARKER.end_range("convert_kvc_S_to_attn")
                     kv_metric_out = _collect_kv_prefill_metrics(
                         suffix_attn,
                         kv_metric_use_l2,
                         kv_metric_use_maxpool
                     )
-                else:
+                    kv_metric_out_ = kv_metric_out
+                    out_ = out
+                if True:
                     BENCHMARKER.start_range("flash_attn_varlen_func")
                     out = flash_attn_varlen_func(
                         q=query,
@@ -368,6 +373,20 @@ class FlashAttentionImpl(AttentionImpl):
                         use_average=kv_metric_use_average,
                         use_maxpool=kv_metric_use_maxpool,
                     )
+
+                    assert FLASH_KVC_ENABLED
+
+                    # print("========== CHECKING kv_metric_out ==========")
+                    # print(kv_metric_out)
+                    # print(kv_metric_out_)
+                    # print(torch.where(kv_metric_out != kv_metric_out_))
+                    assert (kv_metric_out == kv_metric_out_).all()
+
+                    # print("========== CHECKING out ==========")
+                    # print(out)
+                    # print(out_)
+                    # print(torch.where(out != out_))
+                    assert (out != out_).all()
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
                 CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metric_out', kv_metric_out)
@@ -504,6 +523,7 @@ def _naive_kvc_attention(
         end = start + prompt_len
         start_trunc = end - min(prompt_len, n_observed)
         kv_metric_output[start:end].fill_(0)
+        debug = i == 0
         for l in range(start_trunc, end, max_observed_block_size):
             _, kv_metrics = _naive_kvc_masked_attention(
                 query[l:l+max_observed_block_size],
@@ -515,7 +535,9 @@ def _naive_kvc_attention(
                 use_average,
                 use_maxpool,
                 q_offset=l,
+                debug=debug,
             )
+            debug = False
             # TODO(woosuk): Unnecessary copy. Optimize.
             # output[start:end].copy_(out)
             kv_metric_output[start:end] += kv_metrics.T
@@ -534,6 +556,7 @@ def _naive_kvc_masked_attention(
     use_average: bool,
     use_maxpool: bool,
     q_offset: int = 0,
+    debug = False,
 ) -> torch.Tensor:
     n_observed, num_heads, head_dim = query.shape
     seq_len, num_heads, head_dim = key.shape
@@ -546,6 +569,9 @@ def _naive_kvc_masked_attention(
     attn_weights = scale * torch.einsum("qhd,khd->hqk", query, key).float()
     attn_weights = attn_weights + attn_mask.float()
     attn_weights = torch.softmax(attn_weights, dim=-1)
+    if debug:
+        print(attn_weights.shape)
+        print(attn_weights[0])
     if use_l2:
         attn_weights = attn_weights ** 2
     # out = torch.einsum("hqk,khd->qhd", attn_weights.to(value.dtype), value)
@@ -579,12 +605,12 @@ def _collect_kv_prefill_metrics(
 ):
     if use_l2:
         suffix_attn = suffix_attn ** 2
-    kv_metrics = suffix_attn.sum(dim=-1).T
+    kv_metrics = suffix_attn.sum(dim=-1)
     if use_maxpool:
         kv_metrics = F.max_pool1d(
-            kv_metrics,
+            kv_metrics.T,
             kernel_size=7,
             padding=7//2,
             stride=1,
-        )
+        ).T
     return kv_metrics
