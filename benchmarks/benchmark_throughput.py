@@ -92,6 +92,7 @@ def run_vllm(
     max_cache_tokens: int = -1,
     record_decoding_metrics: bool = True,
     metric_aggregation: str = "L2-sum",
+    compress_once: bool = False
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -137,7 +138,7 @@ def run_vllm(
             max_cache_tokens=max_cache_tokens,
             target_compression_rate=kvc_rate,
             protected_window_size=protected_window_size,
-            compress_once=True,
+            compress_once=compress_once,
         )
         assert sampling_params.stop_token_ids == [], sampling_params.stop_token_ids
         # FIXME(woosuk): Do not use internal method.
@@ -264,7 +265,8 @@ def main(args: argparse.Namespace):
             args.kvc_rate, args.protected_window_size, args.kv_head_bias_path,
             args.kvc_interval, args.max_num_kv_per_compression,
             args.new_token_limit, args.max_cache_tokens,
-            args.record_decoding_metrics, args.metric_aggregation)
+            args.record_decoding_metrics, args.metric_aggregation,
+            args.compress_once)
 
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
@@ -476,6 +478,12 @@ if __name__ == "__main__":
         choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
         default='L2-sum',
         help='Aggregation used for KV metrics',
+    )
+    parser.add_argument(
+        '--compress-once',
+        action='store_true',
+        help='Whether to compress each each sequence only '
+        'once after prefill',
     )
     args = parser.parse_args()
     if args.tokenizer is None:
