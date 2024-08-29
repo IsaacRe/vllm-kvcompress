@@ -448,7 +448,7 @@ def _naive_kvc_attention(
         kv_metric_output[start:end].fill_(0)
         for l in range(start_trunc, end, max_observed_block_size):
             _, kv_metrics = _naive_kvc_masked_attention(
-                query[l:l+max_observed_block_size],
+                query[l:min(l+max_observed_block_size, end)],
                 key[start:end],
                 value[start:end],
                 scale,
