@@ -76,7 +76,7 @@ class BlockTableView(torch.Tensor):
 
 class ParallelBlockAllocator(BlockAllocatorBase):
     """Manages free physical token blocks for a device.
-    
+
     Becuase KV-Compress uses (num_layers * num_kv_heads) times more blocks
     than the vanilla paged KV cache, I observe heavy latency in the scheduler
     (up to 80ms!) when naively iterating over allocated/freed blocks.
@@ -170,7 +170,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         # No swapping with KV-Compress so we only use a GPU allocator
         self.gpu_allocator = ParallelBlockAllocator(num_gpu_blocks)
-        
+
         # KV-Compress uses pre-allocated block tables that are shared between
         # the model executor and scheduler/block manager
         self.block_state = shared_state.block_state
@@ -196,8 +196,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # (ie no swap-in of swapped-out, compressed sequences).
         assert len(self.free_batch_slots) > 0
         # If we just filled a block, update the block count to add tokens
-        # that will be generated during the next decoding step. 
-        seq_block_count = (seq_len + self.block_size) // self.block_size
+        # that will be generated during the next decoding step.
+        seq_block_count = (seq_len + self.block_size - 1) // self.block_size
         total_blocks = self.num_layers * self.num_kv_heads * seq_block_count
         # self._validate_allocator()
         block_numbers = self.gpu_allocator.allocate(total_blocks)
@@ -402,7 +402,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                if num_free_blocks is None else num_free_blocks)
         new_block_count = self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
         return new_block_count <= num_free_gpu_blocks
-    
+
     def get_new_block_count(self, seq_group: SequenceGroup) -> int:
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
         return self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
@@ -471,9 +471,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         # Free blocks before updating context lengths
         freed_block_counts_tensor = torch.stack(removed_blocks, dim=1)
         freed_blocks, evicted_mask = batch_view.get_last_n_allocated_blocks(freed_block_counts_tensor)
-        
+
         # assert not self.gpu_allocator.free_mask[freed_blocks].any(), "returned blocks should not be free yet"
-        
+
         # freed_block_debug = None
         # if freed_blocks.numel() > 0 and freed_blocks[0] == 130:
         #     print('entered')
