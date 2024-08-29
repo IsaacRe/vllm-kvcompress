@@ -456,7 +456,7 @@ def _naive_kvc_attention(
                 use_l2,
                 use_average,
                 use_maxpool,
-                q_offset=l,
+                q_offset=l-start,
             )
             # TODO(woosuk): Unnecessary copy. Optimize.
             # output[start:end].copy_(out)
