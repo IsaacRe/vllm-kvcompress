@@ -1,5 +1,7 @@
 from typing import List, Dict, Set, Tuple, Optional
 from datetime import datetime
+from time import perf_counter
+
 
 # Summary viz config
 TOPK = 6
@@ -29,7 +31,7 @@ def _format_int(i: int) -> str:
 
 
 class TimeRange:
-    
+
     def __init__(self, unit: str = "s", name: str = None) -> None:
         assert unit in TIME_UNIT_CONVERSIONS, f"unsupported unit {unit} for TimeRange {name}"
         self.name = name
@@ -43,28 +45,29 @@ class TimeRange:
 
     def start(self) -> None:
         assert self.start_time == None, f"TimeRange {self.name} already started"
-        self.start_time = datetime.now()
+        self.start_time = perf_counter()
 
-    def end(self) -> None:
-        self.times.append((datetime.now() - self.start_time).total_seconds()
-                          * TIME_UNIT_CONVERSIONS[self.unit])
+    def end(self, time=None) -> None:
+        if time is None:
+            time = perf_counter()
+        self.times.append((time - self.start_time))
         self.start_time = None
 
     def avg(self) -> int:
         return sum(self.times) / len(self.times)
-    
+
     def max(self) -> int:
         return max(self.times)
-    
+
     def count(self) -> int:
         return len(self.times)
-    
+
     def total(self) -> int:
         return sum(self.times)
-    
+
     def topk(self, k: int) -> List[int]:
         return list(sorted(self.times, reverse=True))[:k]
-    
+
     def summarize(self, topk: int) -> str:
         text =  "  ".join(
             [(_format_int if agg == "count" else _format_float)(getattr(self, agg)()) for agg in
@@ -75,7 +78,7 @@ class TimeRange:
              list(sorted(self.times, reverse=True))[:topk]]
         )
         return text
-    
+
 
 class EnterableRange:
 
@@ -99,7 +102,7 @@ class EnterableConditional:
     def __enter__(self):
         if not self.do_benchmark:
             self.benchmarker.disabled = True
-    
+
     def __exit__(self, *_, **__):
         if self.reenable_on_exit:
             self.benchmarker.disabled = False
@@ -166,11 +169,12 @@ class Benchmarker:
             self.ranges[name].start()
 
     def end_range(self, name: str) -> None:
+        end_time = perf_counter()
         if not self.disabled:
             self._walk_out()
             name = self._contextualize_name(name)
             assert name in self.ranges, f"no TimeRange found for {name}"
-            self.ranges[name].end()
+            self.ranges[name].end(time=end_time)
 
     def _summarize_recursive(
         self,
@@ -242,7 +246,7 @@ class Benchmarker:
 
     def conditional(self, do_benchmark: bool) -> EnterableConditional:
         return EnterableConditional(self, do_benchmark)
-    
+
     def wrap(self):
         def wrapper(fn):
             fn_name = f"{fn.__module__}.{fn.__qualname__}"
