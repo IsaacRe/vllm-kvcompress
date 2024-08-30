@@ -41,8 +41,6 @@ def main(args):
         dtype="half",
         enforce_eager=True,
         enable_kvcompress=True,
-        compression_interval=max_output_tokens,  # only compress once after prefill
-        new_token_limit=max_output_tokens,  # this should trigger compression after prefill
         block_size=16,
         kv_head_bias_path=args.kv_head_bias_path,
         kv_head_bias_weight=args.kv_head_bias_weight,
@@ -93,7 +91,6 @@ def main(args):
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to(args.device)
         inputs.append(input.input_ids[0].cpu().numpy().tolist())
         assert len(inputs[-1]) <= max_model_prompt_length, f"{len(inputs[-1])=}, {max_prompt_length=}, {max_model_prompt_length=}"
-        assert len(inputs[-1]) > max_output_tokens, "compression won't be triggered after prefill"
 
     sampling_params = SamplingParams(
         max_tokens=max_output_tokens,
@@ -102,6 +99,7 @@ def main(args):
         max_cache_tokens=args.max_cache_tokens,
         protected_window_size=args.protected_window_size,
         metric_collection_buffer_size=args.metric_collection_buffer_size,
+        compress_once=True,
     )
     experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
