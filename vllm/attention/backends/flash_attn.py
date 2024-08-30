@@ -14,7 +14,6 @@ from flash_attn import flash_attn_varlen_func
 try:
     from flash_attn_kvc import (
         flash_attn_varlen_func as flash_attn_kvc_varlen_func,
-        # convert_kvc_S_to_attn,
     )
     FLASH_KVC_ENABLED = True
 except Exception:
@@ -292,7 +291,8 @@ class FlashAttentionImpl(AttentionImpl):
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_slot_mapping', slot_mapping)
 
-                if FLASH_KVC_ENABLED:
+                if attn_metadata.enable_flash_kvc and FLASH_KVC_ENABLED:
+                    BENCHMARKER.start_range("flash_kvc_prefill")
                     assert self.alibi_slopes is None, (
                         "use of alibi with KVC is unsupported")
                     assert self.sliding_window == (-1, -1), (
@@ -332,9 +332,9 @@ class FlashAttentionImpl(AttentionImpl):
                         kv_metric_use_l2,
                         kv_metric_use_maxpool
                     )
-                    kv_metric_out_ = kv_metric_out
-                    out_ = out
+                    BENCHMARKER.end_range("flash_kvc_prefill")
                 else:
+                    BENCHMARKER.start_range("naive_kvc_prefill")
                     BENCHMARKER.start_range("flash_attn_varlen_func")
                     out = flash_attn_varlen_func(
                         q=query,
@@ -369,6 +369,7 @@ class FlashAttentionImpl(AttentionImpl):
                         use_average=kv_metric_use_average,
                         use_maxpool=kv_metric_use_maxpool,
                     )
+                    BENCHMARKER.end_range("naive_kvc_prefill")
 
                 CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
                 CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metric_out', kv_metric_out)

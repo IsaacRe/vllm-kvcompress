@@ -645,6 +645,7 @@ class KVCompressConfig:
         even_layer_evict: bool,
         control_layers: List[int],
         new_token_limit: int,
+        enable_flash_kvc: bool,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
@@ -671,6 +672,7 @@ class KVCompressConfig:
         self.even_layer_evict = even_layer_evict
         self.control_layers = control_layers
         self.new_token_limit = new_token_limit
+        self.enable_flash_kvc = False
 
         self._verify_args()
 
@@ -717,6 +719,14 @@ class KVCompressConfig:
 
         if self.metric_aggregation not in ["L1-sum", "L2-sum", "L1-avg", "L2-avg"]:
             raise ValueError("invalid kv-metric aggregation")
+
+        if self.enable_flash_kvc:
+            try:
+                import flash_attn_kvc
+            except Exception as e:
+                raise ValueError(f"failed to import flash_attn_kvc: {e}\n "
+                                 "Ensure package is installed or set "
+                                 "enable_flash_kvc=False")
 
     def get_cache_block_size(
         self,

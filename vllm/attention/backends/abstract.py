@@ -105,6 +105,10 @@ class AttentionMetadata(Generic[T]):
     kv_metric_use_average: bool = False
     # If true, use maxpool over KV metrics along sequence dimension
     kv_metric_use_maxpool: bool = True
+    # Use modified flash_attn implementation that returns attention values for
+    # KV metric initialization without requiring an additional call to
+    # _naive_kvc_attention.
+    enable_flash_kvc: bool = False
 
     def __post_init__(self):
         # If layer-specific metadata is required during attention, layer_index

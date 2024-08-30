@@ -96,6 +96,7 @@ class EngineArgs:
     even_layer_evict: bool = False
     control_layers: List[int] = field(default_factory=list)
     new_token_limit: int = -1
+    enable_flash_kvc: bool = False
 
     # Checkpointing (for debugging purposes)
     save_checkpoint_dir: str = ""
@@ -602,6 +603,13 @@ class EngineArgs:
                             help='Number of new tokens to allow before '
                             'a compression iteration is forced.')
 
+        parser.add_argument('--enable-flash-kvc',
+                            action='store_true',
+                            help='Enable custom flash-attn implementation '
+                            'that returns a slice of the attention matrix '
+                            'that is used to compute initial KV metrics '
+                            'during prefill.')
+
         # Checkpointing
         parser.add_argument('--save-checkpoint-dir',
                             type=str,
@@ -739,6 +747,7 @@ class EngineArgs:
                 even_layer_evict=self.even_layer_evict,
                 control_layers=self.control_layers,
                 new_token_limit=self.new_token_limit,
+                enable_flash_kvc=self.enable_flash_kvc,
             )
         else:
             kvcompress_config = None

@@ -951,6 +951,8 @@ class ModelRunner:
             kv_metric_use_maxpool=(self.kvcompress_config.kv_metric_use_maxpool
                                    if self.kvcompress_config else None),
             token_positions=input_positions.type(torch.int),
+            enable_flash_kvc=(self.kvcompress_config.enable_flash_kvc
+                              if self.kvcompress_config else False),
         )
 
         return (input_tokens, input_positions, attn_metadata,
