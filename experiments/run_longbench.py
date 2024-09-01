@@ -20,11 +20,12 @@ parser.add_argument('--max-kv-per-compression', type=int, default=50_000_000)
 parser.add_argument('--protected-window-size', type=int, default=50)
 parser.add_argument('--metric-collection-buffer-size', type=int, default=10)
 parser.add_argument('--prefill-metric-collection-window-size', type=int, default=32)
-parser.add_argument('--prefill-metric-collection-block-size', type=int, default=4000)
+parser.add_argument('--prefill-metric-collection-block-size', type=int, default=4096)
 parser.add_argument('--max-model-len', type=int, default=None)
 parser.add_argument('--metric-aggregation', choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
                     default='L2-sum')
 parser.add_argument('--no-maxpool-metrics', action='store_false', dest='maxpool_metrics')
+parser.add_argument('--continual-compression', action='store_false', dest='compress_once')
 
 def main(args):
     seed_everything(42)
@@ -54,6 +55,7 @@ def main(args):
         max_kv_per_compression=args.max_kv_per_compression,
         metric_aggregation=args.metric_aggregation,
         maxpool_metrics=args.maxpool_metrics,
+        gpu_memory_utilization=0.4,  # configured for H100
     )
     # SnapKV sets max input length per model in their experiments
     max_prompt_length = model2maxlen[args.model]
@@ -99,9 +101,9 @@ def main(args):
         max_cache_tokens=args.max_cache_tokens,
         protected_window_size=args.protected_window_size,
         metric_collection_buffer_size=args.metric_collection_buffer_size,
-        compress_once=True,
+        compress_once=args.compress_once,
     )
-    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}"
+    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}{'_b' if args.kv_head_bias_weight > 0 else ''}{'_cc' if not args.compress_once else ''}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
