@@ -313,10 +313,12 @@ class Scheduler:
         # Latency of the last prompt step
         self.last_prompt_latency = 0.0
 
+        self.max_decoding_batch = 0
+
     @property
     def lora_enabled(self) -> bool:
         return bool(self.lora_config)
-    
+
     @property
     def kvcompress_enabled(self) -> bool:
         return bool(self.kvcompress_config)
@@ -401,7 +403,7 @@ class Scheduler:
                 chunked number of tokens are scheduled  if
                 `budget.num_batched_tokens` has not enough capacity to schedule
                 all tokens.
-    
+
         Returns:
             A tuple of remaining running queue (should be always 0) after
             scheduling and SchedulerRunningOutputs.
@@ -514,7 +516,7 @@ class Scheduler:
                 chunked number of tokens are scheduled  if
                 `budget.num_batched_tokens` has not enough capacity to schedule
                 all tokens.
-    
+
         Returns:
             A tuple of remaining running queue (should be always 0) after
             scheduling and SchedulerRunningOutputs.
@@ -831,7 +833,7 @@ class Scheduler:
 
     def _schedule_default(self) -> SchedulerOutputs:
         """Schedule queued requests.
-        
+
         The current policy is designed to optimize the throughput. First,
         it batches as many prefill requests as possible. And it schedules
         decodes. If there's a pressure on GPU memory, decode requests can
@@ -908,6 +910,7 @@ class Scheduler:
         # Update swapped requests.
         self.swapped = remaining_swapped
         self.swapped.extend(running_scheduled.swapped_out)
+        self.max_decoding_batch = max(self.max_decoding_batch, len(running_scheduled.decode_seq_groups))
         print(f"{len(self.running)}/{len(self.waiting)} (runnning/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
         # There should be no prefill from running queue because this policy
@@ -930,7 +933,7 @@ class Scheduler:
 
     def _schedule_chunked_prefill(self):
         """Schedule queued requests.
-        
+
         Chunked prefill allows to chunk prefill requests, batch them together
         with decode requests. This policy 1. schedule as many decoding requests
         as possible. 2. schedule chunked prefill requests that are not
@@ -1045,7 +1048,7 @@ class Scheduler:
 
     @BENCHMARKER.wrap()
     def schedule_kvcompress(self) -> Optional[CacheMoves]:
-        """Check whether to schedule KV cache compression this 
+        """Check whether to schedule KV cache compression this
         iteration. If compression is scheduled, the KV-Compress
         scheduler will determine which sequences to compress, and
         return a dict of freed blocks for each compressed sequence
@@ -1061,7 +1064,7 @@ class Scheduler:
         sampling_params = [sg.sampling_params for sg in self.running]
         print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
 
-        if seqs and (kvc_output := 
+        if seqs and (kvc_output :=
                      self.kvcompress_scheduler.schedule_compression(seqs, sampling_params)):
             # Return physical cache moves to be executed by cache engine
             return kvc_output.cache_moves
