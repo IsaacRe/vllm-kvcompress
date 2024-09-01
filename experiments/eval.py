@@ -104,6 +104,8 @@ if __name__ == '__main__':
                 all_classes = data["all_classes"]
                 if "length" in data:
                     lengths.append(data["length"])
+        if not predictions:
+            continue
         if args.e:
             score = scorer_e(dataset, predictions, answers, lengths, all_classes)
         else:
