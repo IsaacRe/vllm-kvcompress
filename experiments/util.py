@@ -10,9 +10,11 @@ import torch
 
 MODELS = {
     "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
+    "llama3": "meta-llama/Meta-Llama-3.1-8B-Instruct"
 }
 MODEL_REVISIONS = {
     "mistral": "b70aa86578567ba3301b21c8a27bea4e8f6d6d61",
+    "llama3": "5206a32e0bd3067aef1ce90f5528ade7d866253f",
 }
 
 
@@ -30,6 +32,9 @@ def build_chat(tokenizer, prompt, model_name):
         prompt = conv.get_prompt()
     elif "llama2"  in model_name or "llama-2" in model_name or "lwm" in model_name:
         prompt = f"[INST]{prompt}[/INST]"
+    elif "llama3" in model_name or "llama-2" in model_name or "lwm" in model_name:
+        # prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>"
+        pass
     elif "xgen" in model_name:
         header = (
             "A chat between a curious human and an artificial intelligence assistant. "
@@ -55,10 +60,10 @@ def post_process(response, model_name):
     return response
 
 @torch.inference_mode()
-def get_pred_single_gpu(data, max_length, max_gen, 
-                        prompt_format, dataset, model_name, 
-                        model2path, out_path, 
-                        compress=False, 
+def get_pred_single_gpu(data, max_length, max_gen,
+                        prompt_format, dataset, model_name,
+                        model2path, out_path,
+                        compress=False,
                         window_sizes = None,
                         max_capacity_prompts = None,
                         kernel_sizes = None,
@@ -86,7 +91,7 @@ def get_pred_single_gpu(data, max_length, max_gen,
                 model.model.layers[i].self_attn.config.kernel_size = kernel_sizes[i]
                 model.model.layers[i].self_attn.config.pooling = pooling
         ############################################################################################################
-        
+
         prompt = prompt_format.format(**json_obj)
         # truncate to fit max_length (we suggest truncate in the middle, since the left and right side may contain crucial instructions)
         tokenized_prompt = tokenizer(prompt, truncation=False, return_tensors="pt").input_ids[0]
@@ -152,6 +157,8 @@ def load_tokenizer(path):
         )
     elif "llama2" in model_name:
         tokenizer = AutoTokenizer.from_pretrained(path, revision=hf_revision)
+    elif "llama3" in model_name:
+        tokenizer = AutoTokenizer.from_pretrained(hf_repo, revision=hf_revision)
     elif "longchat" in model_name or "vicuna" in model_name:
         tokenizer = AutoTokenizer.from_pretrained(
             hf_repo,
