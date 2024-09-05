@@ -5,6 +5,7 @@ parser = ArgumentParser()
 parser.add_argument('--model', type=str, default='mistral')
 parser.add_argument('--method', type=str, default='w32_L2')
 parser.add_argument('--full', action='store_true')
+parser.add_argument('--min-cache-size', action='store_true')
 args = parser.parse_args()
 
 DATASET_NAMES = [
@@ -27,6 +28,8 @@ DATASET_NAMES = [
 ]
 
 CACHE_SIZES = [128, 256, 512, 1024]
+if args.min_cache_size:
+    CACHE_SIZES = [i - 16 for i in CACHE_SIZES]
 
 with open(f'./results/{args.model}/result.json', 'r') as f:
     results = json.load(f)
