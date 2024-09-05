@@ -114,6 +114,8 @@ def run_vllm(
         disable_async_output_proc=disable_async_output_proc,
     )
 
+    assert len(llm.llm_engine.scheduler) == 1, "Pipeline parallelism not supported"
+
     # Add the requests to the engine.
     prompts: List[str] = []
     sampling_params: List[SamplingParams] = []
@@ -132,7 +134,7 @@ def run_vllm(
     start = time.perf_counter()
     llm.generate(prompts, sampling_params, use_tqdm=True)
     end = time.perf_counter()
-    return end - start
+    return end - start, llm.llm_engine.scheduler[0].max_decoding_batch
 
 
 def run_hf(
@@ -230,7 +232,7 @@ def main(args: argparse.Namespace):
                                    args.output_len)
 
     if args.backend == "vllm":
-        elapsed_time = run_vllm(
+        elapsed_time, max_decoding_batch = run_vllm(
             requests, args.model, args.tokenizer, args.quantization,
             args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
             args.trust_remote_code, args.dtype, args.max_model_len,
@@ -253,6 +255,8 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown backend: {args.backend}")
     total_num_tokens = sum(prompt_len + output_len
                            for _, prompt_len, output_len in requests)
+
+    print(f"Max decoding batch: {max_decoding_batch}")
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
 
