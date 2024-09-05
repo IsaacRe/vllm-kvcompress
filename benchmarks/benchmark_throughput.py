@@ -254,6 +254,10 @@ def main(args: argparse.Namespace):
         requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
                                    args.output_len)
 
+    if args.compression_rate is not None:
+        block_size = 16
+        args.max_cache_tokens = max(64, ((int(args.input_len / args.compression_rate) - 1) // block_size * block_size))
+
     if args.backend == "vllm":
         elapsed_time, max_decoding_batch = run_vllm(
             requests, args.model, args.tokenizer, args.quantization,
@@ -493,6 +497,12 @@ if __name__ == "__main__":
         action='store_true',
         help='Whether to compress each each sequence only '
         'once after prefill',
+    )
+    parser.add_argument(
+        '--compression-rate',
+        type=float,
+        default=None,
+        help='Configure max_cache_tokens as a fraction of input length',
     )
     args = parser.parse_args()
     if args.tokenizer is None:

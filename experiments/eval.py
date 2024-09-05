@@ -90,7 +90,7 @@ if __name__ == '__main__':
         if not filename.endswith("jsonl"):
             continue
         predictions, answers, lengths = [], [], []
-        experiment = filename.split('.')[0]
+        experiment = filename.split('.jsonl')[0]
         *dataset, compression = experiment.split('-')
         dataset = '-'.join(dataset)
         with open(f"{path}{filename}", "r", encoding="utf-8") as f:

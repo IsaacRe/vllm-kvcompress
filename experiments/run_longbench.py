@@ -116,7 +116,8 @@ def main(args):
         metric_collection_buffer_size=args.metric_collection_buffer_size,
         compress_once=args.compress_once,
     )
-    experiment_id = f"{args.max_cache_tokens if args.max_cache_tokens > 0 else 'full'}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}{'_b' if args.kv_head_bias_weight > 0 else ''}{'_cc' if not args.compress_once else ''}"
+    cache_size_id = str(args.max_cache_tokens) if args.max_cache_tokens > 0 else (f"{args.compression_rate}x" if args.compression_rate is not None else 'full')
+    experiment_id = f"{cache_size_id}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}{'_b' if args.kv_head_bias_weight > 0 else ''}{'_cc' if not args.compress_once else ''}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
