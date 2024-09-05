@@ -148,6 +148,13 @@ class SamplingParams(
     include_stop_str_in_output: bool = False
     truncate_prompt_tokens: Optional[Annotated[int, msgspec.Meta(ge=1)]] = None
 
+    # KV-Compress config
+    protected_window_size: int = 100
+    target_compression_rate: float = 1.0
+    max_cache_tokens: int = -1
+    metric_collection_buffer_size: int = 0
+    compress_once: bool = True
+
     # The below fields are not supposed to be used as an input.
     # They are set in post_init.
     output_text_buffer_length: int = 0
@@ -182,6 +189,11 @@ class SamplingParams(
         logits_processors: Optional[List[LogitsProcessor]] = None,
         truncate_prompt_tokens: Optional[Annotated[int,
                                                    msgspec.Meta(ge=1)]] = None,
+        protected_window_size: int = 100,
+        target_compression_rate: float = 1.0,
+        max_cache_tokens: int = -1,
+        metric_collection_buffer_size: int = 0,
+        compress_once: bool = True,
     ) -> "SamplingParams":
         return SamplingParams(
             n=1 if n is None else n,
@@ -213,6 +225,11 @@ class SamplingParams(
             spaces_between_special_tokens=spaces_between_special_tokens,
             logits_processors=logits_processors,
             truncate_prompt_tokens=truncate_prompt_tokens,
+            protected_window_size=protected_window_size,
+            target_compression_rate=target_compression_rate,
+            max_cache_tokens=max_cache_tokens,
+            metric_collection_buffer_size=metric_collection_buffer_size,
+            compress_once=compress_once,
         )
 
     def __post_init__(self) -> None:
@@ -317,6 +334,21 @@ class SamplingParams(
             raise ValueError(
                 "stop strings are only supported when detokenize is True. "
                 "Set detokenize=True to use stop.")
+        if (self.max_cache_tokens > 0 and self.target_compression_rate < 1.0):
+            raise ValueError("only one of target_compression_rate and "
+                             "max_cache_tokens may be specified")
+        if (self.target_compression_rate <= 0.0
+            or self.target_compression_rate > 1.0):
+            raise ValueError("target_compression_rate must be in (0, 1]")
+        if self.metric_collection_buffer_size > self.protected_window_size:
+            raise ValueError(
+                "metric_collection_buffer_size cannot be greater than "
+                "protected_window_size")
+        if (self.max_cache_tokens > 0
+            and self.protected_window_size > self.max_cache_tokens):
+            raise ValueError("max_cache_tokens must be greater than "
+                             "protected_window_size if it is specified")
+
 
     def _verify_beam_search(self) -> None:
         if self.best_of == 1:

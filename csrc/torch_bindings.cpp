@@ -1,4 +1,6 @@
 #include "cache.h"
+#include "kvcompress_cache.h"
+#include "kvcompress_eviction.h"
 #include "cuda_utils.h"
 #include "ops.h"
 #include "core/registration.h"
@@ -46,6 +48,36 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "    int blocksparse_vert_stride, int blocksparse_block_size,"
       "    int blocksparse_head_sliding_step) -> ()");
   ops.impl("paged_attention_v2", torch::kCUDA, &paged_attention_v2);
+
+  // KV-Compress PagedAttention
+  ops.def(
+      "kvcompress_paged_attention_v1("
+      "    Tensor! out, Tensor! kv_metric_out, Tensor query,"
+      "    Tensor key_cache, Tensor value_cache,"
+      "    int num_kv_heads, float scale,"
+      "    Tensor block_tables, Tensor context_lens,"
+      "    Tensor kv_position, Tensor last_position,"
+      "    Tensor kv_metric_buffer_len, int block_size,"
+      "    int max_context_len, Tensor? alibi_slopes,"
+      "    str kv_cache_dtype, float k_scale, float v_scale,"
+      "    bool record_kv_metrics) -> ()");
+  ops.impl("kvcompress_paged_attention_v1", torch::kCUDA, &kvcompress_paged_attention_v1);
+
+  // KV-Compress PagedAttention v2
+  ops.def(
+      "kvcompress_paged_attention_v2("
+      "    Tensor! out, Tensor! kv_metric_out,"
+      "    Tensor exp_sums, Tensor max_logits,"
+      "    Tensor tmp_out, Tensor tmp_kv_metric_out,"
+      "    Tensor query, Tensor key_cache, Tensor value_cache,"
+      "    int num_kv_heads, float scale,"
+      "    Tensor block_tables, Tensor context_lens,"
+      "    Tensor kv_position, Tensor last_position,"
+      "    Tensor kv_metric_buffer_len, int block_size,"
+      "    int max_context_len, Tensor? alibi_slopes,"
+      "    str kv_cache_dtype, float k_scale, float v_scale,"
+      "    bool record_kv_metrics) -> ()");
+  ops.impl("kvcompress_paged_attention_v2", torch::kCUDA, &kvcompress_paged_attention_v2);
 
   // Activation ops
   // Activation function used in SwiGLU.
@@ -318,11 +350,71 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cache_ops), cache_ops) {
   cache_ops.impl("reshape_and_cache_flash", torch::kCUDA,
                  &reshape_and_cache_flash);
 
+  // KV-Compress. Reshape the key and value tensors and cache them.
+  cache_ops.def(
+      "kvcompress_reshape_and_cache(Tensor key, Tensor value,"
+      "                             Tensor! key_cache, Tensor! value_cache,"
+      "                             Tensor kv_metrics, Tensor slot_mapping,"
+      "                             Tensor kv_metric_head_bias,"
+      "                             str kv_cache_dtype,"
+      "                             float k_scale, float v_scale) -> ()");
+  cache_ops.impl("kvcompress_reshape_and_cache", torch::kCUDA,
+                 &kvcompress_reshape_and_cache);
+
   // Convert the key and value cache to fp8 data type.
   cache_ops.def(
       "convert_fp8(Tensor! dst_cache, Tensor src_cache, float scale, str "
       "kv_cache_dtype) -> ()");
   cache_ops.impl("convert_fp8", torch::kCUDA, &convert_fp8);
+}
+
+// KV-Compress ops
+TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _kvc_ops), kvc_ops) {
+  // Schedule cache evictions
+  kvc_ops.def(
+      "schedule_cache_evictions(Tensor! evicted_kv_indices, Tensor! evicted_logical_indices,"
+      "                           Tensor! evicted_kv_count, Tensor! remaining_kv_count,"
+      "                           Tensor evicted_kv_offsets, Tensor sorted_indices,"
+      "                           Tensor seq_block_offsets, Tensor layer_by_block,"
+      "                           Tensor head_by_block, Tensor virtual_block_num_by_block,"
+      "                           Tensor evicted_blocks_per_seq, Tensor context_lens,"
+      "                           Tensor hanging_token_count, Tensor kv_position,"
+      "                           Tensor last_position, Tensor protected_window_size,"
+      "                           int block_size, bool evict_evenly_per_layer,"
+      "                           Tensor? control_layers, int max_evicted_kv,"
+      "                           int null_eviction_index, bool truncate) -> ()");
+  kvc_ops.impl("schedule_cache_evictions", torch::kCUDA, &schedule_cache_evictions);
+
+  // Truncate cache evictions
+  kvc_ops.def(
+      "truncate_cache_evictions(Tensor! evicted_kv_indices, Tensor! evicted_logical_indices,"
+      "                           Tensor! evicted_kv_count, Tensor evicted_kv_offsets,"
+      "                           Tensor hanging_token_count, int block_size,"
+      "                           int max_evicted_kv, int null_eviction_index) -> ()");
+  kvc_ops.impl("truncate_cache_evictions", torch::kCUDA, &truncate_cache_evictions);
+
+  // Count block evictions
+  kvc_ops.def(
+      "count_block_evictions(Tensor! evicted_block_count, Tensor! evicted_logical_indices,"
+      "                        Tensor evicted_kv_offsets, Tensor hanging_token_count,"
+      "                        int block_size, int null_value) -> ()");
+  kvc_ops.impl("count_block_evictions", torch::kCUDA, &count_block_evictions);
+
+  // Schedule T1 cache moves
+  kvc_ops.def(
+      "schedule_t1_cache_moves(Tensor! cache_moves_idx, Tensor! cache_moves_count,"
+      "                         Tensor evicted_logical_indices, Tensor evicted_kv_count,"
+      "                         Tensor evicted_kv_offsets, Tensor block_tables,"
+      "                         Tensor context_lens, int block_size) -> ()");
+  kvc_ops.impl("schedule_t1_cache_moves", torch::kCUDA, &schedule_t1_cache_moves);
+
+  // Execute cache moves
+  kvc_ops.def(
+      "execute_cache_moves(Tensor! k_cache, Tensor! v_cache, Tensor! kv_metrics,"
+      "                      Tensor! kv_position, Tensor cache_moves_idx,"
+      "                      Tensor cache_moves_count, Tensor evicted_kv_offsets,"
+      "                      int blocks_per_head, int threads_per_head) -> ()");
+  kvc_ops.impl("execute_cache_moves", torch::kCUDA, &execute_cache_moves);
 }
 
 TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _cuda_utils), cuda_utils) {

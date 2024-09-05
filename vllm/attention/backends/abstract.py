@@ -4,6 +4,9 @@ from dataclasses import dataclass, fields
 from enum import Enum, auto
 from typing import (TYPE_CHECKING, Any, Dict, Generic, List, Optional, Set,
                     Tuple, Type, TypeVar)
+from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.block import BlockState
+
 
 import torch
 
@@ -102,6 +105,40 @@ class AttentionMetadata:
     # is 16, the three tokens are stored in the 3rd slot in block 2, 2nd slot
     # in block 0, and 1st slot in block 1, respectively.
     slot_mapping: torch.Tensor
+    # The kv cache's data type.
+    kv_cache_dtype: str
+    # Running metrics for KV cache compression. Must be recorded during
+    # paged attention kernel.
+    kv_metrics: Optional[CompressionMetrics] = None
+    # Minimum distance between a key and query for the query's attention to
+    # the key to be aggregated into the key's metric.
+    kv_metric_buffer_len: Optional[torch.Tensor] = None
+    # Used to determine whether to aggregate metrics for each KV during decoding
+    token_positions: Optional[torch.Tensor] = None
+    # Last N prefill queries used to initialize KV metrics
+    prefill_kv_metric_window_size: int = 32
+    # Max number of queries to collect KV metrics for at a time
+    prefill_kv_metric_block_size: int = 4096
+    # If true, evict based on L2 norm of attention
+    kv_metric_use_l2: bool = True
+    # If true, evict based on norm of average attention
+    kv_metric_use_average: bool = False
+    # If true, use maxpool over KV metrics along sequence dimension
+    kv_metric_use_maxpool: bool = True
+    # Use modified flash_attn implementation that returns attention values for
+    # KV metric initialization without requiring an additional call to
+    # _naive_kvc_attention.
+    enable_flash_kvc: bool = False
+
+    def __post_init__(self):
+        # If layer-specific metadata is required during attention, layer_index
+        # should be set before each call to the attention backend.
+        self.layer_index = None
+        if self.num_prefill_tokens > 0:
+            assert self.num_prefills > 0
+            assert self.prefill_metadata is not None
+        if self.num_decode_tokens > 0:
+            assert self.decode_metadata is not None
 
     @property
     @abstractmethod
@@ -129,6 +166,11 @@ class AttentionMetadata:
             field.name: getattr(self, field.name)
             for field in fields(self) if field.name not in skip_fields
         }
+
+    def set_layer(self, layer_index: int) -> "AttentionMetadata":
+        """Record the active layer and return."""
+        self.layer_index = layer_index
+        return self
 
 
 T = TypeVar("T", bound=AttentionMetadata)
@@ -184,7 +226,8 @@ class AttentionMetadataBuilder(ABC, Generic[T]):
 
     @abstractmethod
     def build(self, seq_lens: List[int], query_lens: List[int],
-              cuda_graph_pad_size: int, batch_size: int) -> T:
+              cuda_graph_pad_size: int, batch_size: int,
+              block_state: Optional[BlockState]) -> T:
         """Build attention metadata with on-device tensors."""
         raise NotImplementedError
 

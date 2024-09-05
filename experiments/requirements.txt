@@ -1,0 +1,6 @@
+accelerate
+datasets
+fastchat
+fuzzywuzzy
+rouge
+jieba

@@ -10,12 +10,16 @@ import vllm.envs as envs
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig,
-                         SpeculativeConfig)
+                         SpeculativeConfig, KVCompressConfig)
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce)
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
+from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.scheduler import CacheMoves
+from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.state import KVCompressState
 from vllm.model_executor import set_random_seed
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
@@ -54,6 +58,8 @@ class Worker(LocalOrDistributedWorkerBase):
         lora_config: Optional[LoRAConfig] = None,
         speculative_config: Optional[SpeculativeConfig] = None,
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
+        kvcompress_config: Optional[KVCompressConfig] = None,
+        kvc_block_tables: Optional[BlockState] = None,
         is_driver_worker: bool = False,
         model_runner_cls: Optional[Type[GPUModelRunnerBase]] = None,
         observability_config: Optional[ObservabilityConfig] = None,
@@ -70,6 +76,11 @@ class Worker(LocalOrDistributedWorkerBase):
         self.lora_config = lora_config
         self.load_config = load_config
         self.prompt_adapter_config = prompt_adapter_config
+        self.kvcompress_config = kvcompress_config
+        self.kvc_block_tables = kvc_block_tables
+        if self.kvcompress_config:
+            assert self.kvc_block_tables, ("KV-Compress is enabled but "
+                                           "no block state was passed.")
         self.is_driver_worker = is_driver_worker
         if parallel_config and is_driver_worker:
             assert rank % parallel_config.tensor_parallel_size == 0, \
@@ -104,10 +115,12 @@ class Worker(LocalOrDistributedWorkerBase):
             cache_config,
             load_config=load_config,
             lora_config=self.lora_config,
+            kvcompress_config=self.kvcompress_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
             prompt_adapter_config=prompt_adapter_config,
             observability_config=observability_config,
+            kvc_block_state=self.kvc_block_tables,
             **speculative_args,
         )
         # Uninitialized cache engine. Will be initialized by
@@ -201,7 +214,10 @@ class Worker(LocalOrDistributedWorkerBase):
             tensorizer_config=tensorizer_config, )
 
     @torch.inference_mode()
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
+    def determine_num_available_blocks(
+        self,
+        kv_metrics: Optional[CompressionMetrics] = None,
+    ) -> Tuple[int, int]:
         """Profiles the peak memory usage of the model to determine how many
         KV blocks may be allocated without OOMs.
 
@@ -234,6 +250,9 @@ class Worker(LocalOrDistributedWorkerBase):
             f" {free_gpu_memory}. This happens when the GPU memory was "
             "not properly cleaned up before initializing the vLLM instance.")
 
+        if kv_metrics:
+            peak_memory = max(peak_memory, kv_metrics.profile_schedule_evictions())
+
         cache_block_size = self.get_cache_block_size_bytes()
         num_gpu_blocks = int(
             (total_gpu_memory * self.cache_config.gpu_memory_utilization -
@@ -246,6 +265,14 @@ class Worker(LocalOrDistributedWorkerBase):
             self.model_runner.remove_all_loras()
         gc.collect()
         torch.cuda.empty_cache()
+        print_num_tokens = num_gpu_blocks * self.cache_config.block_size
+        if self.kvcompress_config:
+            print_num_tokens //= (
+                self.kvcompress_config.num_layers
+                * self.kvcompress_config.num_kv_heads
+            )
+        print(f"Finished profiling. Found space for {num_gpu_blocks} blocks "
+              f"({print_num_tokens} tokens)")
         return num_gpu_blocks, num_cpu_blocks
 
     def initialize_cache(self, num_gpu_blocks: int,
@@ -394,6 +421,11 @@ class Worker(LocalOrDistributedWorkerBase):
                                              intermediate_tensors)
         return output
 
+    def execute_cache_moves(
+        self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics
+    ) -> None:
+        self.cache_engine.execute_cache_moves(cache_moves, kv_metrics)
+
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)
 
@@ -432,7 +464,8 @@ class Worker(LocalOrDistributedWorkerBase):
         """
         return CacheEngine.get_cache_block_size(self.cache_config,
                                                 self.model_config,
-                                                self.parallel_config)
+                                                self.parallel_config,
+                                                self.kvcompress_config)
 
 
 def init_worker_distributed_environment(

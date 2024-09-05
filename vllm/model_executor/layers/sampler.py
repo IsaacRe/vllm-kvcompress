@@ -740,7 +740,7 @@ def _sample_with_torch(
 ) -> SampleReturnType:
     '''Torch-oriented _sample() implementation.
 
-    Single-step scheduling: 
+    Single-step scheduling:
     * Perform GPU-side sampling computation
     * Immediately Pythonize sampling result
 
@@ -1043,11 +1043,17 @@ def get_logprobs(
     # If beam search is enabled.
     use_beam_search = False
 
+    reference_sample_idx = 0
+    next_ref_token_ids = []
+    ref_token_seq_indices = []
+    seq_id_to_ref_seq_index = {}
+
     # Select indices to compute logprob from, ranks of token ids, and the top
     # k token ids from logprobs.
     for (seq_group, sample_result) in zip(sampling_metadata.seq_groups,
                                           sample_results):
         sampling_params = seq_group.sampling_params
+        seq_ids = seq_group.seq_ids
 
         # Update indices and tokens for prompt logprobs.
         if (seq_group.is_prompt
@@ -1075,6 +1081,25 @@ def get_logprobs(
                                            sampling_params.logprobs)
 
             use_beam_search = use_beam_search or sampling_params.use_beam_search
+
+        if seq_reference_token_ids := (
+            seq_group.seq_data[seq_ids[0]].reference_token_ids
+        ):
+            # Token ids in reference_token_ids are popped from the front
+            # so that the first element always contains the next correct
+            # next-token prediction. When passing reference tokens there
+            # should only be one sequence per sequence group.
+            curr_ref_token_idx = (
+                1 if
+                len(seq_group.seq_data[seq_ids[0]].output_token_ids)
+                > 0 else 0
+            )
+            next_ref_token_id = seq_reference_token_ids[curr_ref_token_idx]
+            sample_idx = seq_group.sample_indices[0]
+            next_ref_token_ids.append(next_ref_token_id)
+            ref_token_seq_indices.append(sample_idx)
+            seq_id_to_ref_seq_index[seq_ids[0]] = reference_sample_idx
+            reference_sample_idx += 1
 
         assert len(next_token_ids) == len(query_indices)
 
@@ -1118,6 +1143,14 @@ def get_logprobs(
         selected_logprobs = selected_logprobs.to('cpu')
         ranks = ranks.to('cpu')
 
+    # Select logprobs of reference tokens
+    if ref_token_seq_indices:
+        reference_logprobs = logprobs[[
+            torch.tensor(ref_token_seq_indices, device=logprobs.device),
+            torch.tensor(next_ref_token_ids, device=logprobs.device),
+        ]]
+        reference_logprobs = reference_logprobs.to('cpu')
+
     # Find prompt/sample logprobs.
     prompt_logprobs_per_seq_group: List[Optional[PromptLogprobs]] = []
     sample_logprobs_per_seq_group: List[SampleLogprobs] = []
@@ -1135,7 +1168,10 @@ def get_logprobs(
         (sampled_logprobs, top_logprob_idx,
          selected_logprobs_idx) = _get_sampled_logprob_if_needed(
              seq_group, sample_result, selected_logprobs, ranks, top_token_ids,
-             top_logprobs, selected_logprobs_idx, top_logprob_idx)
+             top_logprobs, selected_logprobs_idx, top_logprob_idx,
+             reference_logprobs=reference_logprobs,
+             next_ref_token_ids=next_ref_token_ids,
+             seq_id_to_ref_seq_index=seq_id_to_ref_seq_index)
         sample_logprobs_per_seq_group.append(sampled_logprobs)
 
     return prompt_logprobs_per_seq_group, sample_logprobs_per_seq_group
@@ -1210,6 +1246,9 @@ def _get_sampled_logprob_if_needed(
     top_logprobs: torch.Tensor,
     selected_logprobs_idx: int,
     top_logprob_idx: int,
+    reference_logprobs: Optional[torch.Tensor] = None,
+    next_ref_token_ids: Optional[List] = None,
+    seq_id_to_ref_seq_index: Optional[Dict] = None,
 ):
     """Compute the sample logprob if needed."""
     seq_ids = seq_group.seq_ids
@@ -1220,6 +1259,7 @@ def _get_sampled_logprob_if_needed(
 
     if seq_group.do_sample:
         assert len(next_token_ids) > 0
+        seq_ids = seq_group.seq_ids
         if num_logprobs is None and not use_beam_search:
             for next_token_id in next_token_ids:
                 # Use a dummy logprob
@@ -1232,6 +1272,13 @@ def _get_sampled_logprob_if_needed(
                 len(next_token_ids)].tolist()
             rank_items = ranks[selected_logprobs_idx:selected_logprobs_idx +
                                len(next_token_ids)].tolist()
+            if seq_ids[0] in seq_id_to_ref_seq_index:
+                seq_index = seq_id_to_ref_seq_index[seq_ids[0]]
+                # At the moment rank return is not supported for reference tokens
+                reference_logprobs_dict = {
+                    next_ref_token_ids[seq_index]:
+                    (reference_logprobs[seq_index].item(), None)
+                }
             for idx, (next_token_id, parent_id) in enumerate(
                     zip(next_token_ids, parent_seq_ids)):
                 # Get the logprob of a sampled token.
@@ -1239,6 +1286,11 @@ def _get_sampled_logprob_if_needed(
                     next_token_id:
                     (selected_logprob_items[idx], rank_items[idx])
                 }
+                if reference_logprobs_dict is not None:
+                    sampled_logprobs_dict[next_ref_token_ids[seq_index]] = (
+                        sampled_logprobs_dict.get(next_ref_token_ids[seq_index],
+                                                reference_logprobs_dict[next_ref_token_ids[seq_index]])
+                    )
                 if num_logprobs is not None and num_logprobs > 0:
                     # Get top K logprobs.
                     top_ids = top_token_ids[top_logprob_idx +

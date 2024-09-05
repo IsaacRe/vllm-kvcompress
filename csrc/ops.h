@@ -15,6 +15,44 @@ void paged_attention_v1(
     const int64_t blocksparse_vert_stride, const int64_t blocksparse_block_size,
     const int64_t blocksparse_head_sliding_step);
 
+void kvcompress_paged_attention_v1(
+  torch::Tensor& out,
+  torch::Tensor& kv_metric_out,
+  torch::Tensor& query,
+  torch::Tensor& key_cache,
+  torch::Tensor& value_cache,
+  int64_t num_kv_heads,
+  double scale,
+  torch::Tensor& block_tables,
+  torch::Tensor& context_lens,
+  torch::Tensor& kv_position,
+  torch::Tensor& last_position,
+  torch::Tensor& kv_metric_buffer_len,
+  int64_t block_size,
+  int64_t max_context_len,
+  const c10::optional<torch::Tensor>& alibi_slopes,
+  const std::string& kv_cache_dtype,
+  double k_scale,
+  double v_scale,
+  bool record_kv_metrics);
+
+// void kvcompress_t2_paged_attention_v1(
+//   torch::Tensor& out,
+//   torch::Tensor& kv_metric_out,
+//   torch::Tensor& query,
+//   torch::Tensor& key_cache,
+//   torch::Tensor& value_cache,
+//   int num_kv_heads,
+//   float scale,
+//   torch::Tensor& t1_block_tables,
+//   torch::Tensor& t2_block_tables,
+//   torch::Tensor& context_lens,
+//   int block_size,
+//   int max_context_len,
+//   const c10::optional<torch::Tensor>& alibi_slopes,
+//   const std::string& kv_cache_dtype,
+//   float kv_scale);
+
 void paged_attention_v2(
     torch::Tensor& out, torch::Tensor& exp_sums, torch::Tensor& max_logits,
     torch::Tensor& tmp_out, torch::Tensor& query, torch::Tensor& key_cache,
@@ -25,6 +63,52 @@ void paged_attention_v2(
     const int64_t tp_rank, const int64_t blocksparse_local_blocks,
     const int64_t blocksparse_vert_stride, const int64_t blocksparse_block_size,
     const int64_t blocksparse_head_sliding_step);
+
+void kvcompress_paged_attention_v2(
+  torch::Tensor& out,
+  torch::Tensor& kv_metric_out,
+  torch::Tensor& exp_sums,
+  torch::Tensor& max_logits,
+  torch::Tensor& tmp_out,
+  torch::Tensor& tmp_kv_metric_out,
+  torch::Tensor& query,
+  torch::Tensor& key_cache,
+  torch::Tensor& value_cache,
+  int64_t num_kv_heads,
+  double scale,
+  torch::Tensor& block_tables,
+  torch::Tensor& context_lens,
+  torch::Tensor& kv_position,
+  torch::Tensor& last_position,
+  torch::Tensor& kv_metric_buffer_len,
+  int64_t block_size,
+  int64_t max_context_len,
+  const c10::optional<torch::Tensor>& alibi_slopes,
+  const std::string& kv_cache_dtype,
+  double k_scale,
+  double v_scale,
+  bool record_kv_metrics);
+
+// void kvcompress_t2_paged_attention_v2(
+//   torch::Tensor& out,
+//   torch::Tensor& kv_metric_out,
+//   torch::Tensor& exp_sums,
+//   torch::Tensor& max_logits,
+//   torch::Tensor& tmp_out,
+//   torch::Tensor& tmp_kv_metric_out,
+//   torch::Tensor& query,
+//   torch::Tensor& key_cache,
+//   torch::Tensor& value_cache,
+//   int num_kv_heads,
+//   float scale,
+//   torch::Tensor& t1_block_tables,
+//   torch::Tensor& t2_block_tables,
+//   torch::Tensor& context_lens,
+//   int block_size,
+//   int max_context_len,
+//   const c10::optional<torch::Tensor>& alibi_slopes,
+//   const std::string& kv_cache_dtype,
+//   float kv_scale);
 
 void rms_norm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight,
               double epsilon);

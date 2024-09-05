@@ -265,7 +265,7 @@ class LRUCache(Generic[T]):
 
 
 class PyObjectCache:
-    """Used to cache python objects to avoid object allocations 
+    """Used to cache python objects to avoid object allocations
     across scheduler iterations.
     """
 
@@ -284,7 +284,7 @@ class PyObjectCache:
             self._obj_cache.append(self._obj_builder())
 
     def get_object(self):
-        """Returns a pre-allocated cached object. If there is not enough 
+        """Returns a pre-allocated cached object. If there is not enough
         objects, then the cache size will double.
         """
         if self._index >= len(self._obj_cache):
@@ -671,6 +671,7 @@ def create_kv_caches_with_random(
     model_dtype: Optional[Union[str, torch.dtype]] = None,
     seed: int = 0,
     device: Optional[str] = "cuda",
+    use_kvc: bool = False,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
 
     if cache_dtype == "fp8" and head_size % 16:
@@ -687,6 +688,12 @@ def create_kv_caches_with_random(
     scale = head_size**-0.5
     x = 16 // torch.tensor([], dtype=torch_dtype).element_size()
     key_cache_shape = (num_blocks, num_heads, head_size // x, block_size, x)
+    value_cache_shape = (num_blocks, num_heads, head_size, block_size)
+
+    if use_kvc:
+        key_cache_shape = (num_blocks * num_heads, head_size // x, block_size, x)
+        value_cache_shape = (num_blocks * num_heads, head_size, block_size)
+
     key_caches: List[torch.Tensor] = []
     for _ in range(num_layers):
         key_cache = torch.empty(size=key_cache_shape,
@@ -701,7 +708,6 @@ def create_kv_caches_with_random(
                 f"Does not support key cache of type {cache_dtype}")
         key_caches.append(key_cache)
 
-    value_cache_shape = (num_blocks, num_heads, head_size, block_size)
     value_caches: List[torch.Tensor] = []
     for _ in range(num_layers):
         value_cache = torch.empty(size=value_cache_shape,
@@ -1065,7 +1071,7 @@ def _cuda_device_count_stateless(
 def cuda_device_count_stateless() -> int:
     """Get number of CUDA devices, caching based on the value of
     CUDA_VISIBLE_DEVICES at the time of call.
-    
+
     This should be used instead of torch.cuda.device_count()
     unless CUDA_VISIBLE_DEVICES has already been set to the desired
     value."""
@@ -1117,10 +1123,10 @@ class FlexibleArgumentParser(argparse.ArgumentParser):
     def _pull_args_from_config(args: List[str]) -> List[str]:
         """Method to pull arguments specified in the config file
         into the command-line args variable.
-        
-        The arguments in config file will be inserted between 
+
+        The arguments in config file will be inserted between
         the argument list.
-        
+
         example:
         ```yaml
             port: 12323
@@ -1131,21 +1137,21 @@ class FlexibleArgumentParser(argparse.ArgumentParser):
             --config config.yaml -tp 2
         $: args = [
             "serve,chat,complete",
-            "facebook/opt-12B", 
-            '--config', 'config.yaml', 
+            "facebook/opt-12B",
+            '--config', 'config.yaml',
             '-tp', '2'
         ]
         $: args = [
             "serve,chat,complete",
-            "facebook/opt-12B", 
-            '--port', '12323', 
-            '--tensor-parallel-size', '4', 
+            "facebook/opt-12B",
+            '--port', '12323',
+            '--tensor-parallel-size', '4',
             '-tp', '2'
             ]
         ```
 
         Please note how the config args are inserted after the sub command.
-        this way the order of priorities is maintained when these are args 
+        this way the order of priorities is maintained when these are args
         parsed by super().
         """
         assert args.count(
@@ -1171,7 +1177,7 @@ class FlexibleArgumentParser(argparse.ArgumentParser):
 
     @staticmethod
     def _load_config_file(file_path: str) -> List[str]:
-        """Loads a yaml file and returns the key value pairs as a 
+        """Loads a yaml file and returns the key value pairs as a
         flattened list with argparse like pattern
         ```yaml
             port: 12323
@@ -1182,7 +1188,7 @@ class FlexibleArgumentParser(argparse.ArgumentParser):
                 '--port': '12323',
                 '--tensor-parallel-size': '4'
             ]
-        
+
         """
 
         extension: str = file_path.split('.')[-1]

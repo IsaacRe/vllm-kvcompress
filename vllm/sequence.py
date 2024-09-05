@@ -17,6 +17,7 @@ from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sampling_params import SamplingParams
 from vllm.spec_decode.metrics import SpecDecodeWorkerMetrics
+from vllm.kvcompress.state import KVCompressState
 
 if TYPE_CHECKING:
     from vllm.inputs import LLMInputs
@@ -130,6 +131,8 @@ class SequenceDataDelta(
     new_num_computed_tokens: int
     # Overwriting existing `stage`.
     new_stage: SequenceStage
+    # Number of reference tokens to exhaust
+    exhausted_ref_token_count: int
 
 
 class SequenceData(msgspec.Struct,
@@ -164,6 +167,9 @@ class SequenceData(msgspec.Struct,
     # It is used to get delta input. It is reset when `get_delta_and_reset`
     # is called.
     _new_appended_tokens: List[int] = msgspec.field(default_factory=list)
+
+    # Reference tokens
+    _reference_token_ids: List[int] = msgspec.field(default_factory=list)
 
     def __post_init__(self) -> None:
         assert self._prompt_token_ids.typecode == "l"
@@ -210,6 +216,14 @@ class SequenceData(msgspec.Struct,
         self._update_cached_all_tokens()
 
     @property
+    def reference_token_ids(self) -> List[int]:
+        return self._reference_token_ids
+
+    @property
+    def use_reference_token_ids(self) -> bool:
+        return bool(self._reference_token_ids)
+
+    @property
     def output_token_ids_array(self) -> array:
         """Return the prompt token ids in array type.
 
@@ -224,6 +238,11 @@ class SequenceData(msgspec.Struct,
         self._new_appended_tokens.append(token_id)
         self._cached_all_token_ids.append(token_id)
         self._cumulative_logprob += logprob
+        # pop from the reference tokens list so that next time we query its
+        # first item it will be the next token in the list. Skip if it is the
+        # first decoding iteration.
+        if self.use_reference_token_ids and len(self._output_token_ids) > 1:
+            self._reference_token_ids.pop(0)
 
     def get_len(self) -> int:
         return len(self._output_token_ids) + len(self._prompt_token_ids)
@@ -280,6 +299,11 @@ class SequenceData(msgspec.Struct,
     def get_last_token_id(self) -> int:
         if not self._output_token_ids:
             return self._prompt_token_ids[-1]
+        # If reference token ids were passed we retrieve input tokens from
+        # the list until it is exhausted, then fallback on auto-regressive
+        # input.
+        if len(self._reference_token_ids) > 0:
+            return self._reference_token_ids[0]
         return self._output_token_ids[-1]
 
     def get_prompt_token_ids(self) -> Tuple[int, ...]:
@@ -350,6 +374,7 @@ class Sequence:
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         from_decoder_prompt: bool = True,
+        reference_token_ids: Optional[List[int]] = None,
     ) -> None:
         self.seq_id = seq_id
         self.inputs = inputs
@@ -389,7 +414,8 @@ class Sequence:
                              "encoder input prompt fields?")
 
         self.data = SequenceData(
-            array(VLLM_TOKEN_ID_ARRAY_TYPE, self.prompt_token_ids))
+            array(VLLM_TOKEN_ID_ARRAY_TYPE, self.prompt_token_ids),
+            reference_token_ids=reference_token_ids)
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
 
@@ -401,6 +427,9 @@ class Sequence:
         self.read_offset = 0
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
+
+        # For tracking KV cache compression status
+        self.compressed = False
 
     @property
     def n_blocks(self) -> int:
@@ -872,7 +901,7 @@ class SequenceGroupMetadata(
         state: Internal state tied to this sequence group.
         multi_modal_data: Multi modal data.
         encoder_seq_data: Optional sequence data for encoder prompt
-                          (SequenceGroup.encoder_seq). Should be None 
+                          (SequenceGroup.encoder_seq). Should be None
                           unless you are working with an encoder/decoder
                           model.
         cross_block_table: Optional cross-attention block table associated
@@ -881,6 +910,10 @@ class SequenceGroupMetadata(
                            unless you are working with an encoder/decoder
                            model.
         prompt_adapter_request: Prompt Adapter request.
+        block_state_index: Used with KV-Compress to index into shared block
+            state/KV metrics and retrieve block tables, context length and
+            other required metadata. KV-Compress currently only supports one
+            sequence per group, so we have a single index per group.
     """
 
     request_id: str
@@ -901,6 +934,8 @@ class SequenceGroupMetadata(
     cross_block_table: Optional[List[int]] = None
     prompt_adapter_request: Optional[PromptAdapterRequest] = None
     token_chunk_size: Optional[int] = None
+    block_state_index: Optional[int] = None
+
 
     ### Stateful fields that are lazily defined. ###
     # The number of speculative tokens adopted in this request.
@@ -1225,6 +1260,8 @@ class ExecuteModelRequest(
     last_sampled_token_ids: Optional[torch.Tensor] = None
     # Async callback
     async_callback: Optional[Callable] = None
+    # KV-Compress state
+    kvc_state: Optional[KVCompressState] = None
 
     @property
     def is_first_multi_step(self) -> bool:

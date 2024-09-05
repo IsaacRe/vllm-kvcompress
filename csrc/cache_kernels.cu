@@ -64,6 +64,7 @@ void swap_blocks(torch::Tensor& src, torch::Tensor& dst,
 
 namespace vllm {
 
+// TODO modify
 // Grid: (num_layers, num_pairs)
 template <typename scalar_t>
 __global__ void copy_blocks_kernel(int64_t* key_cache_ptrs,

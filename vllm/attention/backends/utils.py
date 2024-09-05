@@ -1,6 +1,7 @@
 """Attention backend utils"""
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union
+from typing import (TYPE_CHECKING, Any, Dict, List, Type, TypeVar, Union,
+                    Optional)
 
 import numpy as np
 import torch
@@ -8,6 +9,7 @@ import torch
 from vllm.attention import (AttentionMetadata, AttentionMetadataBuilder,
                             AttentionState)
 from vllm.utils import async_tensor_h2d, make_tensor_with_pad
+from vllm.kvcompress.block import BlockState
 
 if TYPE_CHECKING:
     from vllm.worker.model_runner_base import ModelRunnerBase
@@ -190,7 +192,8 @@ class CommonMetadataBuilder(AttentionMetadataBuilder[TAttentionMetadata]):
                                  self.block_size, inter_data.block_tables)
 
     def build(self, seq_lens: List[int], query_lens: List[int],
-              cuda_graph_pad_size: int, batch_size: int):
+              cuda_graph_pad_size: int, batch_size: int,
+              block_state: Optional[BlockState]):
         """Build attention metadata with on-device tensors.
 
         Args:

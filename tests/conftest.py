@@ -18,6 +18,7 @@ from huggingface_hub import snapshot_download
 from PIL import Image
 from transformers import (AutoModelForCausalLM, AutoTokenizer, BatchEncoding,
                           BatchFeature)
+import numpy as np
 
 from vllm import LLM, SamplingParams
 from vllm.assets.image import ImageAsset
@@ -34,12 +35,17 @@ from vllm.outputs import RequestOutput
 from vllm.sequence import SampleLogprobs
 from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, cuda_device_count_stateless,
                         identity, is_cpu)
+from vllm.debug import CHECKPOINTER
 
 logger = init_logger(__name__)
 
 _TEST_DIR = os.path.dirname(__file__)
 _TEST_PROMPTS = [os.path.join(_TEST_DIR, "prompts", "example.txt")]
 _LONG_PROMPTS = [os.path.join(_TEST_DIR, "prompts", "summary.txt")]
+_RANDOM_DIGIT_PROMPT_TEMPLATE = "USER: Repeat the following string of digits:\n{}\nASSISTANT: {}"
+_RANDOM_DIGIT_STRINGS = [
+    "3445283696391145714477754187117652483539127879511650235737670797020723087965063690307283106268121379"
+]
 
 PromptImageInput = Union[List[Image.Image], List[List[Image.Image]]]
 PromptAudioInput = Union[List[Tuple[np.ndarray, int]],
@@ -139,6 +145,22 @@ def cleanup_fixture(should_do_global_cleanup_after_test: bool):
     yield
     if should_do_global_cleanup_after_test:
         cleanup()
+
+
+@pytest.fixture()
+def random_digit_prompts(repeat_len: int = 10) -> List[str]:
+    return [
+        _RANDOM_DIGIT_PROMPT_TEMPLATE.format(random_digits, random_digits[:repeat_len])
+        for random_digits in _RANDOM_DIGIT_STRINGS
+    ]
+
+
+@pytest.fixture()
+def random_digit_responses(repeat_len: int = 10) -> List[str]:
+    return [
+        random_digits[repeat_len:]
+        for random_digits in _RANDOM_DIGIT_STRINGS
+    ]
 
 
 @pytest.fixture
@@ -589,6 +611,8 @@ class VllmRunner:
         prompts: List[str],
         sampling_params: SamplingParams,
         images: Optional[PromptImageInput] = None,
+        reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[List[int]], List[str]]]:
         if images is not None:
             assert len(prompts) == len(images)
@@ -599,7 +623,9 @@ class VllmRunner:
                 inputs[i]["multi_modal_data"] = {"image": image}
 
         req_outputs = self.model.generate(inputs,
-                                          sampling_params=sampling_params)
+                                          sampling_params=sampling_params,
+                                          reference_completions=reference_completions,
+                                          reference_token_ids=reference_token_ids)
 
         outputs: List[Tuple[List[List[int]], List[str]]] = []
         for req_output in req_outputs:
@@ -630,10 +656,13 @@ class VllmRunner:
 
     def generate_w_logprobs(
         self,
-        prompts: List[str],
         sampling_params: SamplingParams,
         images: Optional[PromptImageInput] = None,
         audios: Optional[PromptAudioInput] = None,
+        prompts: Optional[List[str]] = None,
+        prompt_token_ids: Optional[List[List[int]]] = None,
+        reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str, Optional[SampleLogprobs]]]:
         assert sampling_params.logprobs is not None
 
@@ -650,7 +679,10 @@ class VllmRunner:
                 inputs[i]["multi_modal_data"] = {"audio": audio}
 
         req_outputs = self.model.generate(inputs,
-                                          sampling_params=sampling_params)
+                                          sampling_params=sampling_params,
+                                          prompt_token_ids=prompt_token_ids,
+                                          reference_completions=reference_completions,
+                                          reference_token_ids=reference_token_ids)
         return self._final_steps_generate_w_logprobs(req_outputs)
 
     def generate_encoder_decoder_w_logprobs(
@@ -672,29 +704,47 @@ class VllmRunner:
         prompts: List[str],
         max_tokens: int,
         images: Optional[List[Image.Image]] = None,
+        reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str]]:
         greedy_params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
-        outputs = self.generate(prompts, greedy_params, images=images)
+        outputs = self.generate(prompts, greedy_params, images=images,
+                                reference_completions=reference_completions,
+                                reference_token_ids=reference_token_ids,)
         return [(output_ids[0], output_str[0])
                 for output_ids, output_str in outputs]
 
     def generate_greedy_logprobs(
         self,
-        prompts: List[str],
         max_tokens: int,
         num_logprobs: int,
+        prompts: Optional[List[str]] = None,
         images: Optional[PromptImageInput] = None,
         audios: Optional[PromptAudioInput] = None,
         stop_token_ids: Optional[List[int]] = None,
+        prompt_token_ids: Optional[List[List[int]]] = None,
+        reference_completions: Optional[List[str]] = None,
+        reference_token_ids: Optional[List[List[int]]] = None,
+        protected_window_size: int = 100,
+        target_compression_rate: float = 1.0,
+        max_cache_tokens: int = -1,
+        metric_collection_buffer_size: int = 10,
     ) -> List[Tuple[List[int], str, Optional[SampleLogprobs]]]:
         greedy_logprobs_params = SamplingParams(temperature=0.0,
                                                 max_tokens=max_tokens,
                                                 logprobs=num_logprobs,
-                                                stop_token_ids=stop_token_ids)
+                                                stop_token_ids=stop_token_ids,
+                                                protected_window_size=protected_window_size,
+                                                target_compression_rate=target_compression_rate,
+                                                max_cache_tokens=max_cache_tokens,
+                                                metric_collection_buffer_size=metric_collection_buffer_size)
         outputs = self.generate_w_logprobs(prompts,
                                            greedy_logprobs_params,
                                            images=images,
-                                           audios=audios)
+                                           audios=audios,
+                                           prompt_token_ids=prompt_token_ids,
+                                           reference_completions=reference_completions,
+                                           reference_token_ids=reference_token_ids)
 
         return [(output_ids, output_str, output_logprobs)
                 for output_ids, output_str, output_logprobs in outputs]
@@ -751,6 +801,65 @@ class VllmRunner:
 @pytest.fixture(scope="session")
 def vllm_runner():
     return VllmRunner
+
+
+@pytest.fixture()
+def random_digit_generator():
+    def random_digit_gen(num_digits, random_seed, n_seqs: int = 1, repeat_len: int = 10):
+        prompts = []
+        completions = []
+        np.random.seed(random_seed)
+        for _ in range(n_seqs):
+            digits = np.random.randint(10, size=(num_digits,))
+            digits_string = ""
+            for d in digits:
+                digits_string += str(d)
+            prompts.append(
+                _RANDOM_DIGIT_PROMPT_TEMPLATE.format(
+                    digits_string, digits_string[:repeat_len]
+                )
+            )
+            completions.append(digits_string[repeat_len:])
+        return (prompts, completions)
+    return random_digit_gen
+
+
+@pytest.fixture()
+def tokenizer_dependent_random_digit_generator():
+    def random_digit_gen(tokenizer, num_tokens, random_seed, n_seqs: int = 1, repeat_len: int = 10):
+        prompts = []
+        completions = []
+        digits_per_tok_estimate = 6  # conservative estimate
+        np.random.seed(random_seed)
+        for _ in range(n_seqs):
+            digits = np.random.randint(10, size=(num_tokens * digits_per_tok_estimate,))
+            digits_string = ""
+            for d in digits:
+                digits_string += str(d)
+
+            tokens = tokenizer.encode(digits_string, add_special_tokens=False)
+            input_tokens = tokens[:num_tokens]
+            repeat_tokens = tokens[:repeat_len]
+            response_tokens = tokens[repeat_len:num_tokens]
+            assert len(tokens) >= num_tokens, "not enough tokens generated"
+            input_tokens_string = tokenizer.decode(input_tokens)
+            repeat_tokens_string = tokenizer.decode(repeat_tokens)
+            response_tokens_string = tokenizer.decode(response_tokens)
+            full_input_string = _RANDOM_DIGIT_PROMPT_TEMPLATE.format(
+                input_tokens_string, repeat_tokens_string
+            )
+            input_tokens = tokenizer.encode(full_input_string)
+            response_tokens = tokenizer.encode(response_tokens_string, add_special_tokens=False)
+
+            prompts.append(input_tokens)
+            completions.append(response_tokens)
+        return (prompts, completions)
+    return random_digit_gen
+
+
+@pytest.fixture()
+def checkpointer():
+    return CHECKPOINTER
 
 
 def get_tokenizer_pool_config(tokenizer_group_type):

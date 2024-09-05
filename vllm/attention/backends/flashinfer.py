@@ -28,6 +28,7 @@ from vllm.attention.backends.utils import (PAD_SLOT_ID, compute_slot_mapping,
 from vllm.attention.ops.paged_attn import PagedAttention
 from vllm.utils import (async_tensor_h2d, get_kv_cache_torch_dtype,
                         make_tensor_with_pad)
+from vllm.kvcompress.block import BlockState
 
 if TYPE_CHECKING:
     from vllm.worker.model_runner import ModelInputForGPUBuilder
@@ -506,7 +507,8 @@ class FlashInferMetadataBuilder(AttentionMetadataBuilder[FlashInferMetadata]):
         self.paged_kv_last_page_len.append(last_page_len)
 
     def build(self, seq_lens: List[int], query_lens: List[int],
-              cuda_graph_pad_size: int, batch_size: int):
+              cuda_graph_pad_size: int, batch_size: int,
+              block_state: Optional[BlockState]):
         """Build attention metadata with on-device tensors.
 
         Args:

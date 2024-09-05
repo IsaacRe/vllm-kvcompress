@@ -4,8 +4,11 @@ from typing import List, Optional, Set, Tuple
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig,
-                         SpeculativeConfig)
+                         SpeculativeConfig, KVCompressConfig)
 from vllm.lora.request import LoRARequest
+from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.scheduler import CacheMoves
+from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import ExecuteModelRequest
@@ -30,6 +33,8 @@ class ExecutorBase(ABC):
         device_config: DeviceConfig,
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
+        kvcompress_config: Optional[KVCompressConfig],
+        kvc_block_tables: Optional[BlockState],
         speculative_config: Optional[SpeculativeConfig],
         prompt_adapter_config: Optional[PromptAdapterConfig],
         observability_config: Optional[ObservabilityConfig],
@@ -38,6 +43,8 @@ class ExecutorBase(ABC):
         self.cache_config = cache_config
         self.lora_config = lora_config
         self.load_config = load_config
+        self.kvcompress_config = kvcompress_config
+        self.kvc_block_tables = kvc_block_tables
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.device_config = device_config
@@ -51,7 +58,10 @@ class ExecutorBase(ABC):
         pass
 
     @abstractmethod
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
+    def determine_num_available_blocks(
+        self,
+        kv_metrics: Optional[CompressionMetrics] = None,
+    ) -> Tuple[int, int]:
         """Determine the number of available blocks for the GPU KV cache and
         swappable CPU KV cache.
 
@@ -78,6 +88,10 @@ class ExecutorBase(ABC):
         self, execute_model_req: ExecuteModelRequest
     ) -> Optional[List[SamplerOutput]]:
         """Executes at least one model step on the given sequences."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
         raise NotImplementedError
 
     def stop_remote_worker_execution_loop(self) -> None:

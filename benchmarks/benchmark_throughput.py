@@ -16,6 +16,7 @@ from vllm.entrypoints.openai.api_server import (
     build_async_engine_client_from_engine_args)
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.utils import FlexibleArgumentParser, merge_async_iterators
+from vllm.benchmark import BENCHMARKER
 
 
 def sample_requests(
@@ -90,6 +91,19 @@ def run_vllm(
     download_dir: Optional[str] = None,
     load_format: str = EngineArgs.load_format,
     disable_async_output_proc: bool = False,
+    max_batch_size: Optional[int] = None,
+    enable_kvc: bool = False,
+    kvc_rate: float = 1.0,
+    protected_window_size: int = 50,
+    metric_collection_buffer_size: int = 0,
+    kv_head_bias_path: str = "./kv_head_bias.npz",
+    kvc_interval: int = 1,
+    max_num_kv_per_compression: int = 5_000_000,
+    new_token_limit: int = -1,
+    max_cache_tokens: int = -1,
+    record_decoding_metrics: bool = True,
+    metric_aggregation: str = "L2-sum",
+    compress_once: bool = False,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -115,6 +129,18 @@ def run_vllm(
         num_scheduler_steps=num_scheduler_steps,
         use_v2_block_manager=use_v2_block_manager,
         disable_async_output_proc=disable_async_output_proc,
+        max_num_seqs=max_batch_size,
+        enable_kvcompress=enable_kvc,
+        target_compression_rate=kvc_rate,
+        protected_window_size=protected_window_size,
+        metric_collection_buffer_size=metric_collection_buffer_size,
+        kv_head_bias_path=kv_head_bias_path,
+        compression_interval=kvc_interval,
+        max_kv_per_compression=max_num_kv_per_compression,
+        new_token_limit=new_token_limit,
+        max_cache_tokens=max_cache_tokens,
+        record_decoding_metrics=record_decoding_metrics,
+        metric_aggregation=metric_aggregation,
     )
 
     # Add the requests to the engine.
@@ -130,12 +156,19 @@ def run_vllm(
                 use_beam_search=use_beam_search,
                 ignore_eos=True,
                 max_tokens=output_len,
+                max_cache_tokens=max_cache_tokens,
+                target_compression_rate=kvc_rate,
+                protected_window_size=protected_window_size,
+                compress_once=compress_once,
             ))
 
     start = time.perf_counter()
     llm.generate(prompts, sampling_params, use_tqdm=True)
     end = time.perf_counter()
-    return end - start
+    # for output in outputs:
+    #     assert len(output.outputs[0].token_ids) == output_len, (
+    #         f"{len(output.outputs[0].token_ids)=}, {output_len=}")
+    return end - start, llm.llm_engine.scheduler[0].max_decoding_batch
 
 
 async def run_vllm_async(
@@ -164,7 +197,19 @@ async def run_vllm_async(
     download_dir: Optional[str] = None,
     load_format: str = EngineArgs.load_format,
     disable_async_output_proc: bool = False,
-    disable_frontend_multiprocessing: bool = False,
+    max_batch_size: Optional[int] = None,
+    enable_kvc: bool = False,
+    kvc_rate: float = 1.0,
+    protected_window_size: int = 50,
+    metric_collection_buffer_size: int = 0,
+    kv_head_bias_path: str = "./kv_head_bias.npz",
+    kvc_interval: int = 1,
+    max_num_kv_per_compression: int = 5_000_000,
+    new_token_limit: int = -1,
+    max_cache_tokens: int = -1,
+    record_decoding_metrics: bool = True,
+    metric_aggregation: str = "L2-sum",
+    compress_once: bool = False,
 ) -> float:
     from vllm import SamplingParams
     engine_args = AsyncEngineArgs(
@@ -319,6 +364,10 @@ def main(args: argparse.Namespace):
         requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
                                    args.output_len)
 
+    if args.compression_rate is not None:
+        block_size = 16
+        args.max_cache_tokens = max(64, ((int(args.input_len / args.compression_rate) - 1) // block_size * block_size))
+
     if args.backend == "vllm":
         run_args = [
             requests, args.model, args.tokenizer, args.quantization,
@@ -330,14 +379,22 @@ def main(args: argparse.Namespace):
             args.max_num_batched_tokens, args.distributed_executor_backend,
             args.gpu_memory_utilization, args.num_scheduler_steps,
             args.use_v2_block_manager, args.download_dir, args.load_format,
-            args.disable_async_output_proc
+            args.disable_async_output_proc,
+            args.max_num_batched_tokens, args.gpu_memory_utilization,
+            args.download_dir, args.max_batch_size, args.enable_kvc,
+            args.kvc_rate, args.protected_window_size, args.metric_collection_buffer_size,
+            args.kv_head_bias_path, args.kvc_interval, args.max_num_kv_per_compression,
+            args.new_token_limit, args.max_cache_tokens,
+            args.record_decoding_metrics, args.metric_aggregation,
+            args.compress_once
         ]
 
         if args.async_engine:
             run_args.append(args.disable_frontend_multiprocessing)
             elapsed_time = uvloop.run(run_vllm_async(*run_args))
+            max_decoding_batch = None
         else:
-            elapsed_time = run_vllm(*run_args)
+            elapsed_time, max_decoding_batch = run_vllm(*run_args)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -348,10 +405,20 @@ def main(args: argparse.Namespace):
                                args.output_len)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
-    total_num_tokens = sum(prompt_len + output_len
-                           for _, prompt_len, output_len in requests)
+
+    if args.benchmark_input_only:
+        total_num_tokens = sum(prompt_len
+                               for _, prompt_len, _ in requests)
+    elif args.benchmark_output_only:
+        total_num_tokens = sum(output_len
+                               for _, _, output_len in requests)
+    else:
+        total_num_tokens = sum(prompt_len + output_len
+                               for _, prompt_len, output_len in requests)
+    print(f"Max decoding batch: {max_decoding_batch}")
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+    BENCHMARKER.summarize()
 
     # Output JSON results if specified
     if args.output_json:
@@ -385,7 +452,7 @@ if __name__ == "__main__":
                         default=None,
                         help="Output length for each request. Overrides the "
                         "output length from the dataset.")
-    parser.add_argument("--model", type=str, default="facebook/opt-125m")
+    parser.add_argument("--model", type=str, default="NousResearch/Llama-2-7b-hf")
     parser.add_argument("--tokenizer", type=str, default=None)
     parser.add_argument('--quantization',
                         '-q',
@@ -531,6 +598,100 @@ if __name__ == "__main__":
                         action='store_true',
                         default=False,
                         help="Disable decoupled async engine frontend.")
+    parser.add_argument(
+        "--max-batch-size",
+        type=int,
+        default=256,
+        help='set max batch size for vLLM backend',
+    )
+    parser.add_argument(
+        "--benchmark-input-only",
+        type=int,
+        help='Only use input tokens when computing tok/sec'
+    )
+    parser.add_argument(
+        "--benchmark-output-only",
+        action="store_true",
+        help='Only use output tokens when computing tok/sec'
+    )
+    parser.add_argument(
+        "--kvc-rate",
+        type=float,
+        default=1.0,
+        help="KV cache compression rate",
+    )
+    parser.add_argument(
+        "--enable-kvc",
+        action="store_true",
+        help="Enable KV cache compression",
+    )
+    parser.add_argument(
+        "--protected-window-size",
+        type=int,
+        default=50,
+        help="Protected window size for KV cache compression",
+    )
+    parser.add_argument(
+        '--metric-collection-buffer-size',
+        type=int,
+        default=0,
+        help="Buffer length for collecting KV metric",
+    )
+    parser.add_argument(
+        "--kv-head-bias-path",
+        type=str,
+        default=None,
+        help="Path to KV head bias for KV cache compression",
+    )
+    parser.add_argument(
+        "--kvc-interval",
+        type=int,
+        default=1,
+        help="Compress KV cache every n iterations",
+    )
+    parser.add_argument(
+        "--max-num-kv-per-compression",
+        type=int,
+        default=5_000_000,
+        help="Max number of KVs per compression",
+    )
+    parser.add_argument(
+        '--new-token-limit',
+        type=int,
+        default=-1,
+        help='Max number of tokens that can be added before compression '
+        'is forced',
+    )
+    parser.add_argument(
+        '--max-cache-tokens',
+        type=int,
+        default=-1,
+        help='Number of tokens to compress to',
+    )
+    parser.add_argument(
+        '--only-prefill-metrics',
+        action='store_false',
+        dest='record_decoding_metrics',
+        help='Disable KV metric collection during decoding',
+    )
+    parser.add_argument(
+        '--metric-aggregation',
+        choices=['L1-sum', 'L1-avg', 'L2-sum', 'L2-avg'],
+        default='L2-sum',
+        help='Aggregation used for KV metrics',
+    )
+    parser.add_argument(
+        '--compress-once',
+        action='store_true',
+        help='Whether to compress each each sequence only '
+        'once after prefill',
+    )
+    parser.add_argument(
+        '--compression-rate',
+        type=float,
+        default=None,
+        help='Configure max_cache_tokens as a fraction of input length',
+    )
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model

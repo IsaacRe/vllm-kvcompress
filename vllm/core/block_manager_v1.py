@@ -369,7 +369,8 @@ class BlockSpaceManagerV1(BlockSpaceManager):
 
     def can_append_slots(self,
                          seq_group: SequenceGroup,
-                         num_lookahead_slots: int = 0) -> bool:
+                         num_lookahead_slots: int = 0,
+                         num_free_blocks: Optional[int] = None) -> bool:
         assert (num_lookahead_slots == 0
                 ), "lookahead allocation not supported in BlockSpaceManagerV1"
 
