@@ -33,8 +33,7 @@ def build_chat(tokenizer, prompt, model_name):
     elif "llama2"  in model_name or "llama-2" in model_name or "lwm" in model_name:
         prompt = f"[INST]{prompt}[/INST]"
     elif "llama3" in model_name or "llama-2" in model_name or "lwm" in model_name:
-        # prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>"
-        pass
+        prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|>\n<|start_header_id|>assistant<|end_header_id|>"
     elif "xgen" in model_name:
         header = (
             "A chat between a curious human and an artificial intelligence assistant. "
