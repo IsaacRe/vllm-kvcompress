@@ -26,8 +26,16 @@ parser.add_argument('--metric-aggregation', choices=['L1-sum', 'L1-avg', 'L2-sum
                     default='L2-sum')
 parser.add_argument('--no-maxpool-metrics', action='store_false', dest='maxpool_metrics')
 parser.add_argument('--continual-compression', action='store_false', dest='compress_once')
+parser.add_argument('--compression-rate', default=None, type=float)
 
 def main(args):
+    if args.compression_rate is not None:
+        assert args.max_cache_tokens < 0, "cannot specify both compresion_rate and max_cache_tokens"
+
+    gpu_mem_util = 0.7
+    if args.prefill_metric_collection_window_size > 32:
+        gpu_mem_util = 0.4  # reserve space for large attention matrix slices (configured for H100)
+
     seed_everything(42)
     model_name = MODELS[args.model]
 
@@ -37,12 +45,17 @@ def main(args):
     prompt_format = dataset2prompt[args.dataset]
     max_output_tokens = dataset2maxlen[args.dataset]
 
+    if args.kv_head_bias_weight == 0:
+        args.kv_head_bias_path = None
+
+    block_size = 16
+
     model = LLM(
         model_name,
         dtype="half",
         enforce_eager=True,
         enable_kvcompress=True,
-        block_size=16,
+        block_size=block_size,
         kv_head_bias_path=args.kv_head_bias_path,
         kv_head_bias_weight=args.kv_head_bias_weight,
         trust_remote_code=True,
@@ -55,7 +68,7 @@ def main(args):
         max_kv_per_compression=args.max_kv_per_compression,
         metric_aggregation=args.metric_aggregation,
         maxpool_metrics=args.maxpool_metrics,
-        gpu_memory_utilization=0.4,  # configured for H100
+        gpu_memory_utilization=gpu_mem_util,
     )
     # SnapKV sets max input length per model in their experiments
     max_prompt_length = model2maxlen[args.model]
@@ -108,6 +121,11 @@ def main(args):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
         for input_ids, fp, json_obj in zip(tqdm(inputs), final_prompts, json_objs):
+            if args.compression_rate is not None:
+                # subtract block size from max cache tokens to avoid going below the eviction requirement
+                # due to evicting partially filled blocks
+                sampling_params.max_cache_tokens = max(64, ((int(len(input_ids) / args.compression_rate) - 1) // block_size * block_size))
+            print(f"Using max_cache_tokens={sampling_params.max_cache_tokens}, input_len={len(input_ids)}")
             output = model.generate(prompt_token_ids=[input_ids],
                                     sampling_params=sampling_params)
             response = post_process(output[0].outputs[0].text, args.model)

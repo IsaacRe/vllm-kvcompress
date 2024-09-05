@@ -530,12 +530,15 @@ class CompressionScheduler:
             for seq, freed_blocks in zip(seqs_to_compress, evicted_block_count)
         }
 
-        for seq in freed_block_count:
-            self.total_evicted_kvs[seq] = (
-                self.total_evicted_kvs.get(seq, 0) + freed_block_count[seq].sum().item() * self.block_size
+        for seq in seqs_to_compress:
+            populated_slots = seq.data.get_len() % self.block_size
+            populated_slots = self.block_size if populated_slots == 0 else populated_slots
+            empty_slots = self.block_size - populated_slots
+            self.total_evicted_kvs[seq.seq_id] = (
+                self.total_evicted_kvs.get(seq.seq_id, 0) + (torch.clamp(freed_block_count[seq.seq_id] * self.block_size - empty_slots, min=0)).sum().item()
             )
-            seq_evicted_kvs = self.total_evicted_kvs[seq]
-            print(f'Seq {seq} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.config.num_kv_heads / self.config.num_layers} tokens) so far')
+            seq_evicted_kvs = self.total_evicted_kvs[seq.seq_id]
+            print(f'Seq {seq.seq_id} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.config.num_kv_heads / self.config.num_layers} tokens) so far')
 
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', self.cache_move_indices)
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)
