@@ -135,7 +135,7 @@ def run_vllm(
     start = time.perf_counter()
     llm.generate(prompts, sampling_params, use_tqdm=True)
     end = time.perf_counter()
-    return end - start
+    return end - start, llm.llm_engine.scheduler[0].max_decoding_batch
 
 
 async def run_vllm_async(
@@ -336,8 +336,9 @@ def main(args: argparse.Namespace):
         if args.async_engine:
             run_args.append(args.disable_frontend_multiprocessing)
             elapsed_time = uvloop.run(run_vllm_async(*run_args))
+            max_decoding_batch = None
         else:
-            elapsed_time = run_vllm(*run_args)
+            elapsed_time, max_decoding_batch = run_vllm(*run_args)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -350,6 +351,7 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown backend: {args.backend}")
     total_num_tokens = sum(prompt_len + output_len
                            for _, prompt_len, output_len in requests)
+    print(f"Max decoding batch: {max_decoding_batch}")
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
 
@@ -563,3 +565,4 @@ if __name__ == "__main__":
             raise ValueError("Tokenizer must be the same as the model for MII "
                              "backend.")
     main(args)
+

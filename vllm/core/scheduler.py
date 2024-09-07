@@ -395,6 +395,8 @@ class Scheduler:
         # for processing and deallocation by the free_finished_seq_groups()
         self._async_stopped: List[SequenceGroup] = []
 
+        self.max_decoding_batch = 0
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -508,7 +510,7 @@ class Scheduler:
                 chunked number of tokens are scheduled  if
                 `budget.num_batched_tokens` has not enough capacity to schedule
                 all tokens.
-    
+
         Returns:
             SchedulerRunningOutputs.
         """
@@ -884,7 +886,7 @@ class Scheduler:
 
     def _schedule_default(self) -> SchedulerOutputs:
         """Schedule queued requests.
-        
+
         The current policy is designed to optimize the throughput. First,
         it batches as many prefill requests as possible. And it schedules
         decodes. If there's a pressure on GPU memory, decode requests can
@@ -948,6 +950,7 @@ class Scheduler:
         self.swapped.extend(running_scheduled.swapped_out)
         preempted = (len(running_scheduled.preempted) +
                      len(running_scheduled.swapped_out))
+        self.max_decoding_batch = max(self.max_decoding_batch, len(running_scheduled.decode_seq_groups))
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
@@ -984,7 +987,7 @@ class Scheduler:
 
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
         """Schedule queued requests.
-        
+
         Chunked prefill allows to chunk prefill requests, batch them together
         with decode requests. This policy 1. schedule as many decoding requests
         as possible. 2. schedule chunked prefill requests that are not
@@ -1484,3 +1487,4 @@ class Scheduler:
             else:
                 num_new_tokens = min(num_new_tokens, remaining_token_budget)
         return num_new_tokens
+
