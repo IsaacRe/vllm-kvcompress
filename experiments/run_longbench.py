@@ -9,7 +9,7 @@ from util import load_tokenizer, seed_everything, build_chat, post_process, MODE
 
 parser = ArgumentParser()
 parser.add_argument('--model', type=str, default='mistral')
-parser.add_argument('--kv-head-bias-path', type=str, default='../kv_head_bias_mistral.npz')
+parser.add_argument('--kv-head-bias-path', type=str, default=None)
 parser.add_argument('--kv-head-bias-weight', type=int, default=50)
 parser.add_argument('--dataset', type=str, default='hotpotqa')
 parser.add_argument('--e', action='store_true', help="Evaluate on LongBench-E")
@@ -27,14 +27,14 @@ parser.add_argument('--metric-aggregation', choices=['L1-sum', 'L1-avg', 'L2-sum
 parser.add_argument('--no-maxpool-metrics', action='store_false', dest='maxpool_metrics')
 parser.add_argument('--continual-compression', action='store_false', dest='compress_once')
 parser.add_argument('--compression-rate', default=None, type=float)
+parser.add_argument('--relative-kv-head-bias', action='store_true')
+parser.add_argument('--gpu-mem-util', type=float, default=0.7)
+parser.add_argument('--n-rows', type=int, default=-1)
+parser.add_argument('--min-cache-tokens', type=int, default=128)
 
 def main(args):
     if args.compression_rate is not None:
         assert args.max_cache_tokens < 0, "cannot specify both compresion_rate and max_cache_tokens"
-
-    gpu_mem_util = 0.7
-    if args.prefill_metric_collection_window_size > 32:
-        gpu_mem_util = 0.4  # reserve space for large attention matrix slices (configured for H100)
 
     seed_everything(42)
     model_name = MODELS[args.model]
@@ -44,6 +44,9 @@ def main(args):
     model2maxlen = json.load(open("config/model2maxlen.json", "r"))
     prompt_format = dataset2prompt[args.dataset]
     max_output_tokens = dataset2maxlen[args.dataset]
+
+    if args.kv_head_bias_path is None:
+        args.kv_head_bias_path = f'kv-bias/kv_head_bias_{args.model}-{args.dataset}.npz'
 
     if args.kv_head_bias_weight == 0:
         args.kv_head_bias_path = None
@@ -68,7 +71,7 @@ def main(args):
         max_kv_per_compression=args.max_kv_per_compression,
         metric_aggregation=args.metric_aggregation,
         maxpool_metrics=args.maxpool_metrics,
-        gpu_memory_utilization=gpu_mem_util,
+        gpu_memory_utilization=args.gpu_mem_util,
     )
     # SnapKV sets max input length per model in their experiments
     max_prompt_length = model2maxlen[args.model]
@@ -86,6 +89,8 @@ def main(args):
     final_prompts = []
     json_objs = []
     print("Loading data...")
+    if args.n_rows > 0:
+        dset = dset.take(args.n_rows)
     for json_obj in tqdm(dset):
         json_objs.append(json_obj)
         prompt = prompt_format.format(**json_obj)
@@ -117,7 +122,7 @@ def main(args):
         compress_once=args.compress_once,
     )
     cache_size_id = str(args.max_cache_tokens) if args.max_cache_tokens > 0 else (f"{args.compression_rate}x" if args.compression_rate is not None else 'full')
-    experiment_id = f"{cache_size_id}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}{'_b' if args.kv_head_bias_weight > 0 else ''}{'_cc' if not args.compress_once else ''}"
+    experiment_id = f"{cache_size_id}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}{('_rb' if args.relative_kv_head_bias else '_b') if args.kv_head_bias_weight > 0 else ''}{'_cc' if not args.compress_once else ''}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
@@ -125,7 +130,13 @@ def main(args):
             if args.compression_rate is not None:
                 # subtract block size from max cache tokens to avoid going below the eviction requirement
                 # due to evicting partially filled blocks
-                sampling_params.max_cache_tokens = max(64, ((int(len(input_ids) / args.compression_rate) - 1) // block_size * block_size))
+                sampling_params.max_cache_tokens = max(args.min_cache_tokens, ((int(len(input_ids) / args.compression_rate) - 1) // block_size * block_size))
+            if args.relative_kv_head_bias:
+                # multiply bias by output length
+                output_len = len(tokenizer.encode(json_obj["answers"][0], add_special_tokens=False))
+                bias_multiplier = output_len / 512
+                # TODO make bias weight a sampling param
+                model.llm_engine.kvcompress_state.kv_metrics.kv_metric_bias_weight *= bias_multiplier
             print(f"Using max_cache_tokens={sampling_params.max_cache_tokens}, input_len={len(input_ids)}")
             output = model.generate(prompt_token_ids=[input_ids],
                                     sampling_params=sampling_params)
