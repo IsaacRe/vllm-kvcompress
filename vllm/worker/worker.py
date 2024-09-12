@@ -16,7 +16,6 @@ from vllm.distributed import (ensure_model_parallel_initialized,
                               set_custom_all_reduce)
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
-from vllm.kvcompress.block import BlockState
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.kvcompress.state import KVCompressState
@@ -59,7 +58,7 @@ class Worker(LocalOrDistributedWorkerBase):
         speculative_config: Optional[SpeculativeConfig] = None,
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
         kvcompress_config: Optional[KVCompressConfig] = None,
-        kvc_block_tables: Optional[BlockState] = None,
+        kvc_state: Optional[KVCompressState] = None,
         is_driver_worker: bool = False,
         model_runner_cls: Optional[Type[GPUModelRunnerBase]] = None,
         observability_config: Optional[ObservabilityConfig] = None,
@@ -77,9 +76,9 @@ class Worker(LocalOrDistributedWorkerBase):
         self.load_config = load_config
         self.prompt_adapter_config = prompt_adapter_config
         self.kvcompress_config = kvcompress_config
-        self.kvc_block_tables = kvc_block_tables
+        self.kvc_state = kvc_state
         if self.kvcompress_config:
-            assert self.kvc_block_tables, ("KV-Compress is enabled but "
+            assert self.kvc_state, ("KV-Compress is enabled but "
                                            "no block state was passed.")
         self.is_driver_worker = is_driver_worker
         if parallel_config and is_driver_worker:
@@ -120,7 +119,7 @@ class Worker(LocalOrDistributedWorkerBase):
             is_driver_worker=is_driver_worker,
             prompt_adapter_config=prompt_adapter_config,
             observability_config=observability_config,
-            kvc_block_state=self.kvc_block_tables,
+            kvc_state=self.kvc_state,
             **speculative_args,
         )
         # Uninitialized cache engine. Will be initialized by

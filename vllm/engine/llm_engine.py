@@ -347,8 +347,8 @@ class LLMEngine:
             device_config=device_config,
             lora_config=lora_config,
             kvcompress_config=kvcompress_config,
-            kvc_block_tables=(kvcompress_shared_state.block_state
-                              if kvcompress_config else None),
+            kvc_state=(kvcompress_shared_state
+                       if kvcompress_config else None),
             speculative_config=speculative_config,
             load_config=load_config,
             prompt_adapter_config=prompt_adapter_config,

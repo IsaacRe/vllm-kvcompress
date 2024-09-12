@@ -54,7 +54,9 @@ from vllm.worker.model_runner_base import (
     _add_sampling_metadata_broadcastable_dict,
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict)
-from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.state import KVCompressState
+from vllm.core.kv_cache import KVCache, UnifiedKVCache
+from vllm.benchmark import BENCHMARKER
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
@@ -781,7 +783,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         # Attention metadata.
         attn_metadata = self.attn_metadata_builder.build(
             seq_lens, query_lens, cuda_graph_pad_size, batch_size,
-            self.runner.kvc_block_state)
+            self.runner.kvc_state)
 
         # LoRA data.
         lora_requests = set()
@@ -875,7 +877,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         observability_config: Optional[ObservabilityConfig] = None,
         input_registry: InputRegistry = INPUT_REGISTRY,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
-        kvc_block_state: Optional[BlockState] = None,
+        kvc_state: Optional[KVCompressState] = None,
     ):
         self.model_config = model_config
         self.parallel_config = parallel_config
@@ -910,7 +912,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             parallel_config)
 
         # KV-Compress block state
-        self.kvc_block_state = kvc_block_state
+        self.kvc_state = kvc_state
 
         # When using CUDA graph, the input block tables must be padded to
         # max_seq_len_to_capture. However, creating the block table in

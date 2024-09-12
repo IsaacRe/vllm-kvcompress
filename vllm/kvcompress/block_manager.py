@@ -13,7 +13,6 @@ from vllm.kvcompress.block import BlockMetadata, PhysicalTokenBlock, BlockStateV
 from vllm.benchmark import BENCHMARKER
 from vllm.debug import CHECKPOINTER
 from vllm.config import KVCompressConfig
-from vllm.core.evictor import EvictionPolicy, Evictor, make_evictor
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.logger import init_logger
 from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
@@ -38,8 +37,7 @@ class BlockAllocatorBase(ABC):
     def __init__(self,
                  device: Device,
                  block_size: int,
-                 num_blocks: int,
-                 eviction_policy: EvictionPolicy = EvictionPolicy.LRU):
+                 num_blocks: int):
         pass
 
     @abstractmethod

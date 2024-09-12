@@ -6,7 +6,7 @@ from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          PromptAdapterConfig, SchedulerConfig,
                          SpeculativeConfig, KVCompressConfig)
 from vllm.lora.request import LoRARequest
-from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.state import KVCompressState
 from vllm.kvcompress.scheduler import CacheMoves
 from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.model_executor.layers.sampler import SamplerOutput
@@ -34,7 +34,7 @@ class ExecutorBase(ABC):
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
         kvcompress_config: Optional[KVCompressConfig],
-        kvc_block_tables: Optional[BlockState],
+        kvc_state: Optional[KVCompressState],
         speculative_config: Optional[SpeculativeConfig],
         prompt_adapter_config: Optional[PromptAdapterConfig],
         observability_config: Optional[ObservabilityConfig],
@@ -44,7 +44,7 @@ class ExecutorBase(ABC):
         self.lora_config = lora_config
         self.load_config = load_config
         self.kvcompress_config = kvcompress_config
-        self.kvc_block_tables = kvc_block_tables
+        self.kvc_state = kvc_state
         self.parallel_config = parallel_config
         self.scheduler_config = scheduler_config
         self.device_config = device_config

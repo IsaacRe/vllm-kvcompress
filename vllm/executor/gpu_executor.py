@@ -68,7 +68,7 @@ class GPUExecutor(ExecutorBase):
             or (rank % self.parallel_config.tensor_parallel_size == 0),
             observability_config=self.observability_config,
             kvcompress_config=self.kvcompress_config,
-            kvc_block_tables=self.kvc_block_tables,
+            kvc_state=self.kvc_state,
         )
 
     def _get_worker_module_and_class(
