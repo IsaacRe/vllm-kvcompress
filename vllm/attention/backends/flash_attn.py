@@ -311,8 +311,10 @@ class FlashAttentionMetadata(AttentionMetadata):
             block_tables=self.block_tables[:self.num_prefills],
             use_cuda_graph=False,
             kv_metrics=self.kv_metrics,
-            kv_metric_buffer_len=self.kv_metric_buffer_len[:self.num_prefills],
-            token_positions=self.token_positions[:self.num_prefill_tokens],
+            kv_metric_buffer_len=None if self.kv_metric_buffer_len is None else
+                                 self.kv_metric_buffer_len[:self.num_prefills],
+            token_positions=None if self.token_positions is None else
+                            self.token_positions[:self.num_prefill_tokens],
             prefill_kv_metric_window_size=self.prefill_kv_metric_window_size,
             prefill_kv_metric_block_size=self.prefill_kv_metric_block_size,
             kv_metric_use_l2=self.kv_metric_use_l2,
@@ -331,6 +333,14 @@ class FlashAttentionMetadata(AttentionMetadata):
         assert self.block_tables is not None
         assert self.seq_lens_tensor is not None
 
+        # If using KV-Compress
+        if self.kv_metrics:
+            context_lens_tensor = self.context_lens_tensor[:,self.num_prefills:]
+            block_tables = self.block_tables[:,self.num_prefills:]
+        else:
+            context_lens_tensor = self.context_lens_tensor[self.num_prefills:]
+            block_tables = self.block_tables[self.num_prefills:]
+
         self._cached_decode_metadata = FlashAttentionMetadata(
             num_prefills=0,
             num_prefill_tokens=0,
@@ -344,12 +354,14 @@ class FlashAttentionMetadata(AttentionMetadata):
             max_decode_seq_len=self.max_decode_seq_len,
             query_start_loc=None,
             seq_start_loc=None,
-            context_lens_tensor=None,
-            block_tables=self.block_tables[self.num_prefills:],
+            context_lens_tensor=context_lens_tensor,
+            block_tables=block_tables,
             use_cuda_graph=self.use_cuda_graph,
             kv_metrics=self.kv_metrics,
-            kv_metric_buffer_len=self.kv_metric_buffer_len[self.num_prefills:],
-            token_positions=self.token_positions[self.num_prefill_tokens:],
+            kv_metric_buffer_len=None if self.kv_metric_buffer_len is None else
+                                 self.kv_metric_buffer_len[self.num_prefills:],
+            token_positions=None if self.token_positions is None else
+                            self.token_positions[self.num_prefill_tokens:],
             prefill_kv_metric_window_size=self.prefill_kv_metric_window_size,
             prefill_kv_metric_block_size=self.prefill_kv_metric_block_size,
             kv_metric_use_l2=self.kv_metric_use_l2,
@@ -526,8 +538,7 @@ class FlashAttentionMetadataBuilder(
                                  self.block_size, inter_data.block_tables)
 
     def build(self, seq_lens: List[int], query_lens: List[int],
-              cuda_graph_pad_size: int, batch_size: int,
-              block_state: Optional[BlockState]):
+              cuda_graph_pad_size: int, batch_size: int):
         """Build attention metadata with on-device tensors.
 
         Args:
@@ -539,7 +550,8 @@ class FlashAttentionMetadataBuilder(
         """
         device = self.runner.device
         use_captured_graph = cuda_graph_pad_size != -1
-        use_kvcompress = block_state is not None
+        use_kvcompress = self.runner.kvc_state is not None
+        block_state = self.runner.kvc_state.block_state if use_kvcompress else None
         is_profile_run = is_block_tables_empty(
             self.input_builder.inter_data_list[0].block_tables)
 
@@ -598,20 +610,6 @@ class FlashAttentionMetadataBuilder(
                             for i in self.prefill_block_state_indices],
                         dim=1,
                     )
-            elif self.prefill_block_state_indices:
-                prefill_block_state_view = block_state.get_block_state_batch_view(
-                    self.prefill_block_state_indices)
-                # TODO context lens should be the same
-                context_lens_tensor = prefill_block_state_view.get_context_lens()
-                block_tables = torch.tensor([[] * len(self.input_builder.inter_data_list)],
-                                            dtype=torch.int,
-                                            device=device)
-                slot_mapping_tensor = torch.cat(
-                    [block_state.get_block_state_seq_view(i)
-                                .get_prefill_slot_mapping()
-                        for i in self.prefill_block_state_indices],
-                    dim=1,
-                )
             elif self.decode_block_state_indices:
                 decode_block_state_view = block_state.get_block_state_batch_view(
                     self.decode_block_state_indices)
@@ -677,8 +675,6 @@ class FlashAttentionMetadataBuilder(
                      dtype=query_start_loc.dtype,
                      out=query_start_loc[1:])
 
-        assert isinstance(self.runner.kvc_state, KVCompressState)
-
         return FlashAttentionMetadata(
             num_prefills=self.num_prefills,
             slot_mapping=slot_mapping_tensor,
@@ -695,17 +691,24 @@ class FlashAttentionMetadataBuilder(
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
-            kv_metrics=self.runner.kvc_state.kv_metrics,
+            kv_metrics=None if is_profile_run or self.runner.kvc_state is None else
+                       self.runner.kvc_state.kv_metrics,
             kv_metric_buffer_len=kv_metric_buffer_len,
             token_positions=token_positions,
             prefill_kv_metric_window_size=
-                self.runner.kvcompress_config.prefill_metric_collection_window_size,
+                self.runner.kvcompress_config.prefill_metric_collection_window_size
+                if self.runner.kvcompress_config else None,
             prefill_kv_metric_block_size=
-                self.runner.kvcompress_config.prefill_metric_collection_block_size,
-            kv_metric_use_l2=self.runner.kvcompress_config.kv_metric_use_l2,
-            kv_metric_use_average=self.runner.kvcompress_config.kv_metric_use_average,
-            kv_metric_use_maxpool=self.runner.kvcompress_config.kv_metric_use_maxpool,
-            enable_flash_kvc=self.runner.kvcompress_config.enable_flash_kvc,
+                self.runner.kvcompress_config.prefill_metric_collection_block_size
+                if self.runner.kvcompress_config else None,
+            kv_metric_use_l2=self.runner.kvcompress_config.kv_metric_use_l2
+                             if self.runner.kvcompress_config else None,
+            kv_metric_use_average=self.runner.kvcompress_config.kv_metric_use_average
+                                  if self.runner.kvcompress_config else None,
+            kv_metric_use_maxpool=self.runner.kvcompress_config.kv_metric_use_maxpool
+                                  if self.runner.kvcompress_config else None,
+            enable_flash_kvc=self.runner.kvcompress_config.enable_flash_kvc
+                             if self.runner.kvcompress_config else None,
         )
 
 
@@ -849,7 +852,6 @@ class FlashAttentionImpl(AttentionImpl):
             # not cached. This happens during the initial memory profiling run.
             if kvcompress_enabled:
                 assert k_scale == v_scale
-                kv_scale = k_scale
                 key_cache, value_cache = KVCAttention.split_kv_cache(
                     kv_cache, self.head_size)
                 assert kv_metrics
@@ -871,7 +873,7 @@ class FlashAttentionImpl(AttentionImpl):
                                                   slot_mapping,
                                                   kv_metric_head_bias,
                                                   attn_metadata.kv_cache_dtype,
-                                                  kv_scale)
+                                                  k_scale, v_scale)
 
                 CHECKPOINTER.checkpoint('flash_attn__kv_metrics', kv_metrics.metrics)
 
@@ -940,8 +942,8 @@ class FlashAttentionImpl(AttentionImpl):
                         v=value,
                         cu_seqlens_q=prefill_meta.seq_start_loc,
                         cu_seqlens_k=prefill_meta.seq_start_loc,
-                        max_seqlen_q=prefill_meta.max_prompt_len,
-                        max_seqlen_k=prefill_meta.max_prompt_len,
+                        max_seqlen_q=prefill_meta.max_prefill_seq_len,
+                        max_seqlen_k=prefill_meta.max_prefill_seq_len,
                         softmax_scale=self.scale,
                         causal=True,
                         window_size=self.sliding_window,
@@ -974,8 +976,8 @@ class FlashAttentionImpl(AttentionImpl):
                         v=value,
                         cu_seqlens_q=prefill_meta.seq_start_loc,
                         cu_seqlens_k=prefill_meta.seq_start_loc,
-                        max_seqlen_q=prefill_meta.max_prompt_len,
-                        max_seqlen_k=prefill_meta.max_prompt_len,
+                        max_seqlen_q=prefill_meta.max_prefill_seq_len,
+                        max_seqlen_k=prefill_meta.max_prefill_seq_len,
                         softmax_scale=self.scale,
                         causal=True,
                         window_size=self.sliding_window,
@@ -992,7 +994,7 @@ class FlashAttentionImpl(AttentionImpl):
                         query,
                         key,
                         value,
-                        prefill_meta.prompt_lens,
+                        prefill_meta.seq_lens,
                         self.scale,
                         kv_metric_buffer_len,
                         n_observed=prefill_observed_queries,
@@ -1065,7 +1067,7 @@ class FlashAttentionImpl(AttentionImpl):
             if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 block_tables = decode_meta.block_tables[layer_index]
-                context_lens = decode_meta.context_lens[layer_index]
+                context_lens = decode_meta.context_lens_tensor[layer_index]
                 decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
                 output[num_prefill_tokens:] = KVCAttention.forward_decode(
                     decode_query,
@@ -1076,12 +1078,13 @@ class FlashAttentionImpl(AttentionImpl):
                     kv_metrics.token_positions,
                     decode_positions,
                     kv_metric_buffer_len,
-                    decode_meta.max_context_len,
+                    decode_meta.max_decode_seq_len,
                     attn_metadata.kv_cache_dtype,
                     self.num_kv_heads,
                     self.scale,
                     self.alibi_slopes,
-                    kv_scale,
+                    k_scale,
+                    v_scale,
                     kv_metrics.temp_metrics,
                     kv_metrics.temp_v2_metrics,
                     kv_metrics.record_decoding_metrics,

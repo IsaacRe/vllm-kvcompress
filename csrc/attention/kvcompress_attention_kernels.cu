@@ -797,22 +797,19 @@ void kvc_paged_attention_v1_launcher(
     case 1:                                                                 \
       CALL_KVC_V1_LAUNCHER(T, CACHE_T, 1, KV_DTYPE);                \
       break;                                                                \
+    case 8:                                                           \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 8, KV_DTYPE);          \
+      break;                                                          \
+    case 16:                                                          \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 16, KV_DTYPE);         \
+      break;                                                          \
+    case 32:                                                          \
+      CALL_KVC_V1_LAUNCHER(T, CACHE_T, 32, KV_DTYPE);         \
+      break;                                                          \
     default:                                                          \
       TORCH_CHECK(false, "Unsupported block size: ", block_size);     \
-      break;}
-  //   case 8:                                                           \
-  //     CALL_KVC_V1_LAUNCHER(T, CACHE_T, 8, KV_DTYPE);          \
-  //     break;                                                          \
-  //   case 16:                                                          \
-  //     CALL_KVC_V1_LAUNCHER(T, CACHE_T, 16, KV_DTYPE);         \
-  //     break;                                                          \
-  //   case 32:                                                          \
-  //     CALL_KVC_V1_LAUNCHER(T, CACHE_T, 32, KV_DTYPE);         \
-  //     break;                                                          \
-  //   default:                                                          \
-  //     TORCH_CHECK(false, "Unsupported block size: ", block_size);     \
-  //     break;                                                          \
-  // }
+      break;                                                          \
+  }
 
 void kvcompress_paged_attention_v1(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
@@ -1011,22 +1008,19 @@ void kvc_paged_attention_v2_launcher(
     case 1:                                                                 \
       CALL_KVC_V2_LAUNCHER(T, CACHE_T, 1, KV_DTYPE);                \
       break;                                                                \
+    case 8:                                                                 \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 8, KV_DTYPE);                \
+      break;                                                                \
+    case 16:                                                                \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 16, KV_DTYPE);               \
+      break;                                                                \
+    case 32:                                                                \
+      CALL_KVC_V2_LAUNCHER(T, CACHE_T, 32, KV_DTYPE);               \
+      break;                                                                \
     default:                                                                \
       TORCH_CHECK(false, "Unsupported block size: ", block_size);           \
-      break;}
-  //   case 8:                                                                 \
-  //     CALL_KVC_V2_LAUNCHER(T, CACHE_T, 8, KV_DTYPE);                \
-  //     break;                                                                \
-  //   case 16:                                                                \
-  //     CALL_KVC_V2_LAUNCHER(T, CACHE_T, 16, KV_DTYPE);               \
-  //     break;                                                                \
-  //   case 32:                                                                \
-  //     CALL_KVC_V2_LAUNCHER(T, CACHE_T, 32, KV_DTYPE);               \
-  //     break;                                                                \
-  //   default:                                                                \
-  //     TORCH_CHECK(false, "Unsupported block size: ", block_size);           \
-  //     break;                                                                \
-  // }
+      break;                                                                \
+  }
 
 void kvcompress_paged_attention_v2(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]

@@ -423,7 +423,7 @@ class Worker(LocalOrDistributedWorkerBase):
     def execute_cache_moves(
         self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics
     ) -> None:
-        self.cache_engine.execute_cache_moves(cache_moves, kv_metrics)
+        self.cache_engine[0].execute_cache_moves(cache_moves, kv_metrics)
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         return self.model_runner.add_lora(lora_request)

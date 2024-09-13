@@ -149,7 +149,8 @@ def paged_attention_kvc_v1(
     max_context_len: int,
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
-    kv_scale: float,
+    k_scale: float,
+    v_scale: float,
     record_kv_metrics: bool,
 ) -> None:
     torch.ops._C.kvcompress_paged_attention_v1(out, kv_metric_out, query, key_cache,
@@ -158,7 +159,7 @@ def paged_attention_kvc_v1(
                                                kv_position, last_position,
                                                kv_metric_buffer_len, block_size,
                                                max_context_len, alibi_slopes,
-                                               kv_cache_dtype, kv_scale,
+                                               kv_cache_dtype, k_scale, v_scale,
                                                record_kv_metrics)
 
 
@@ -184,7 +185,8 @@ def paged_attention_kvc_v2(
     max_context_len: int,
     alibi_slopes: Optional[torch.Tensor],
     kv_cache_dtype: str,
-    kv_scale: float,
+    k_scale: float,
+    v_scale: float,
     record_kv_metrics: bool,
 ) -> None:
     torch.ops._C.kvcompress_paged_attention_v2(out, kv_metric_out, exp_sum,
@@ -196,7 +198,7 @@ def paged_attention_kvc_v2(
                                                last_position, kv_metric_buffer_len,
                                                block_size, max_context_len,
                                                alibi_slopes, kv_cache_dtype,
-                                               kv_scale, record_kv_metrics)
+                                               k_scale, v_scale, record_kv_metrics)
 
 
 # pos encoding ops
@@ -645,13 +647,15 @@ def reshape_and_cache_kvc(
     slot_mapping: torch.Tensor,
     kv_metric_head_bias: torch.Tensor,
     kv_cache_dtype: str,
-    kv_scale: float,
+    k_scale: float,
+    v_scale: float,
 ) -> None:
     torch.ops._C_cache_ops.kvcompress_reshape_and_cache(key, value, key_cache,
                                                         value_cache, kv_metrics,
                                                         slot_mapping,
                                                         kv_metric_head_bias,
-                                                        kv_cache_dtype, kv_scale)
+                                                        kv_cache_dtype, k_scale,
+                                                        v_scale)
 
 def reshape_and_cache_flash(
     key: torch.Tensor,

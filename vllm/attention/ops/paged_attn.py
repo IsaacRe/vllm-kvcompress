@@ -293,7 +293,8 @@ class KVCAttention(PagedAttention):
         slot_mapping: torch.Tensor,
         kv_metric_head_bias: torch.Tensor,
         kv_cache_dtype: str,
-        kv_scale: float,
+        k_scale: float,
+        v_scale: float,
     ) -> None:
         ops.reshape_and_cache_kvc(
             key,
@@ -304,7 +305,7 @@ class KVCAttention(PagedAttention):
             slot_mapping.flatten(),
             kv_metric_head_bias,
             kv_cache_dtype,
-            kv_scale,
+            k_scale, v_scale
         )
 
     @staticmethod
@@ -322,7 +323,8 @@ class KVCAttention(PagedAttention):
         num_kv_heads: int,
         scale: float,
         alibi_slopes: Optional[torch.Tensor],
-        kv_scale: float,
+        k_scale: float,
+        v_scale: float,
         kv_metric_out: torch.Tensor,
         tmp_kv_metric_out: torch.Tensor,
         record_kv_metrics: bool,
@@ -361,7 +363,8 @@ class KVCAttention(PagedAttention):
                 max_context_len,
                 alibi_slopes,
                 kv_cache_dtype,
-                kv_scale,
+                k_scale,
+                v_scale,
                 record_kv_metrics,
             )
         else:
@@ -399,7 +402,8 @@ class KVCAttention(PagedAttention):
                 max_context_len,
                 alibi_slopes,
                 kv_cache_dtype,
-                kv_scale,
+                k_scale,
+                v_scale,
                 record_kv_metrics,
             )
         return output

@@ -29,6 +29,7 @@ from vllm.distributed import (destroy_distributed_environment,
                               init_distributed_environment,
                               initialize_model_parallel)
 from vllm.inputs import (ExplicitEncoderDecoderPrompt, TextPrompt,
+                         TokensPrompt,
                          to_enc_dec_tuple_list, zip_enc_dec_prompts)
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
@@ -666,10 +667,30 @@ class VllmRunner:
     ) -> List[Tuple[List[int], str, Optional[SampleLogprobs]]]:
         assert sampling_params.logprobs is not None
 
+        n_prompts = len(prompts if prompts is not None else prompt_token_ids)
         if images is not None:
-            assert len(prompts) == len(images)
+            assert n_prompts == len(images)
 
-        inputs = [TextPrompt(prompt=prompt) for prompt in prompts]
+        if not reference_completions:
+            reference_completions = [None] * n_prompts
+        if not reference_token_ids:
+            reference_token_ids = [None] * n_prompts
+
+        if prompts:
+            inputs = [TextPrompt(prompt=prompt,
+                                 reference_completion=ref_text,
+                                 reference_token_ids=ref_toks)
+                      for prompt, ref_text, ref_toks in
+                      zip(prompts, reference_completions, reference_token_ids)]
+        elif prompt_token_ids:
+            inputs = [TokensPrompt(prompt_token_ids=tokens,
+                                   reference_completion=ref_text,
+                                   reference_token_ids=ref_toks)
+                      for tokens, ref_text, ref_toks in
+                      zip(prompt_token_ids, reference_completions, reference_token_ids)]
+        else:
+            raise ValueError("No input text/tokens passed")
+
         if images is not None:
             for i, image in enumerate(images):
                 inputs[i]["multi_modal_data"] = {"image": image}
@@ -679,10 +700,7 @@ class VllmRunner:
                 inputs[i]["multi_modal_data"] = {"audio": audio}
 
         req_outputs = self.model.generate(inputs,
-                                          sampling_params=sampling_params,
-                                          prompt_token_ids=prompt_token_ids,
-                                          reference_completions=reference_completions,
-                                          reference_token_ids=reference_token_ids)
+                                          sampling_params=sampling_params)
         return self._final_steps_generate_w_logprobs(req_outputs)
 
     def generate_encoder_decoder_w_logprobs(
@@ -738,8 +756,8 @@ class VllmRunner:
                                                 target_compression_rate=target_compression_rate,
                                                 max_cache_tokens=max_cache_tokens,
                                                 metric_collection_buffer_size=metric_collection_buffer_size)
-        outputs = self.generate_w_logprobs(prompts,
-                                           greedy_logprobs_params,
+        outputs = self.generate_w_logprobs(greedy_logprobs_params,
+                                           prompts=prompts,
                                            images=images,
                                            audios=audios,
                                            prompt_token_ids=prompt_token_ids,

@@ -423,11 +423,11 @@ class Scheduler:
         # for processing and deallocation by the free_finished_seq_groups()
         self._async_stopped: List[SequenceGroup] = []
 
+        self.max_decoding_batch = 0
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
-
-        self.max_decoding_batch = 0
 
     @property
     def lora_enabled(self) -> bool:

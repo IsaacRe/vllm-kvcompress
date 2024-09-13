@@ -1144,6 +1144,7 @@ def get_logprobs(
         ranks = ranks.to('cpu')
 
     # Select logprobs of reference tokens
+    reference_logprobs = None
     if ref_token_seq_indices:
         reference_logprobs = logprobs[[
             torch.tensor(ref_token_seq_indices, device=logprobs.device),
@@ -1272,6 +1273,7 @@ def _get_sampled_logprob_if_needed(
                 len(next_token_ids)].tolist()
             rank_items = ranks[selected_logprobs_idx:selected_logprobs_idx +
                                len(next_token_ids)].tolist()
+            reference_logprobs_dict = None
             if seq_ids[0] in seq_id_to_ref_seq_index:
                 seq_index = seq_id_to_ref_seq_index[seq_ids[0]]
                 # At the moment rank return is not supported for reference tokens

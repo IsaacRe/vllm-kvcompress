@@ -111,11 +111,6 @@ class AttentionMetadata:
         # If layer-specific metadata is required during attention, layer_index
         # should be set before each call to the attention backend.
         self.layer_index = None
-        if self.num_prefill_tokens > 0:
-            assert self.num_prefills > 0
-            assert self.prefill_metadata is not None
-        if self.num_decode_tokens > 0:
-            assert self.decode_metadata is not None
 
     @property
     @abstractmethod

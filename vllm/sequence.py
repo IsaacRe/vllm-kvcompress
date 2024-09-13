@@ -172,6 +172,8 @@ class SequenceData(msgspec.Struct,
     _reference_token_ids: List[int] = msgspec.field(default_factory=list)
 
     def __post_init__(self) -> None:
+        if self._reference_token_ids is None:
+            self._reference_token_ids = []
         assert self._prompt_token_ids.typecode == "l"
         assert self._output_token_ids.typecode == "l"
         self._prompt_token_ids_tuple: Tuple[int, ...] = tuple(
@@ -415,7 +417,7 @@ class Sequence:
 
         self.data = SequenceData(
             array(VLLM_TOKEN_ID_ARRAY_TYPE, self.prompt_token_ids),
-            reference_token_ids=reference_token_ids)
+            _reference_token_ids=inputs.get("reference_token_ids", []))
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
 

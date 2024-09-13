@@ -1553,6 +1553,15 @@ class LLMEngine:
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
+        if self.kvcompress_config:
+            cache_moves = self.scheduler[0].schedule_kvcompress()
+
+            if cache_moves:
+                BENCHMARKER.start_range("execute_cache_moves")
+                self.model_executor.execute_cache_moves(cache_moves,
+                                                        self.kvcompress_state.kv_metrics)
+                BENCHMARKER.end_range("execute_cache_moves")
+
         # Skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
@@ -1580,16 +1589,6 @@ class LLMEngine:
         assert seq_group_metadata_list is not None
         assert scheduler_outputs is not None
 
-        if self.kvcompress_config:
-            cache_moves = self.scheduler.schedule_kvcompress()
-
-            if cache_moves:
-                BENCHMARKER.start_range("execute_cache_moves")
-                self.model_executor.execute_cache_moves(cache_moves,
-                                                        self.kvcompress_state.kv_metrics)
-                BENCHMARKER.end_range("execute_cache_moves")
-
-        seq_group_metadata_list, scheduler_outputs = self.scheduler.schedule()
         if not scheduler_outputs.is_empty():
             finished_requests_ids = self.scheduler[
                 virtual_engine].get_and_reset_finished_requests_ids()
