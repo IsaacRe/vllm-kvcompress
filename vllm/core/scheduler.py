@@ -1120,7 +1120,7 @@ class Scheduler:
         preempted = (len(running_scheduled.preempted) +
                      len(running_scheduled.swapped_out))
         self.max_decoding_batch = max(self.max_decoding_batch, len(running_scheduled.decode_seq_groups))
-        print(f"{len(self.running)}/{len(self.waiting)} (runnning/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
+        # print(f"{len(self.running)}/{len(self.waiting)} (runnning/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
@@ -1288,7 +1288,7 @@ class Scheduler:
         # KV-Compress.
         seqs = [sg.get_seqs()[0] for sg in self.running]
         sampling_params = [sg.sampling_params for sg in self.running]
-        print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
+        # print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
 
         if seqs and (kvc_output :=
                      self.kvcompress_scheduler.schedule_compression(seqs, sampling_params)):
