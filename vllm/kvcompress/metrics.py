@@ -557,12 +557,12 @@ class CompressionMetrics:
         # containing the number of hanging tokens for the corresponding
         # sequence, head and layer of each block in sorted_masked_metrics
         # Sequence, layer, head indices per block ordered by (sequence, layer, head, KV metric value)
-        sorted_masked_seq_layer_head_idx_blocks = sorted_masked_seq_layer_head_idx.view(-1, self.block_size)[:,0]  # [ masked_blocks ]
+        # sorted_masked_seq_layer_head_idx_blocks = sorted_masked_seq_layer_head_idx.view(-1, self.block_size)[:,0]  # [ masked_blocks ]
         # assert hanging_token_count.numel() > sorted_masked_seq_layer_head_idx_blocks.max()
-        sorted_hanging_tokens_blocks = (  # [ masked_blocks ]
-            hanging_token_count.flatten()
-                          .gather(dim=0, index=sorted_masked_seq_layer_head_idx_blocks.type(torch.long))
-        )
+        # sorted_hanging_tokens_blocks = (  # [ masked_blocks ]
+        #     hanging_token_count.flatten()
+        #                   .gather(dim=0, index=sorted_masked_seq_layer_head_idx_blocks.type(torch.long))
+        # )
 
         # 2.b. Create sorted_masked_metric_blocks
         # Block metric per block ordered by (sequence, layer, head, block metric value)
