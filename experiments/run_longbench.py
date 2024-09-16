@@ -77,6 +77,7 @@ def main(args):
     max_prompt_length = model2maxlen[args.model]
     max_model_prompt_length = min(model.llm_engine.scheduler_config.max_num_batched_tokens,
                                   model.llm_engine.model_config.max_model_len)
+    max_prompt_length = min(max_prompt_length, max_model_prompt_length - dataset2maxlen[args.dataset])
 
     tokenizer = load_tokenizer(args.model)
     dset = load_dataset('THUDM/LongBench',
@@ -91,6 +92,7 @@ def main(args):
     print("Loading data...")
     if args.n_rows > 0:
         dset = dset.take(args.n_rows)
+    max_len = 0
     for json_obj in tqdm(dset):
         json_objs.append(json_obj)
         prompt = prompt_format.format(**json_obj)
@@ -111,6 +113,9 @@ def main(args):
             input = tokenizer(prompt, truncation=False, return_tensors="pt").to(args.device)
         inputs.append(input.input_ids[0].cpu().numpy().tolist())
         assert len(inputs[-1]) <= max_model_prompt_length, f"{len(inputs[-1])=}, {max_prompt_length=}, {max_model_prompt_length=}"
+        max_len = max(len(inputs[-1]), max_len)
+
+    print(f"{max_len=}")
 
     sampling_params = SamplingParams(
         max_tokens=max_output_tokens,

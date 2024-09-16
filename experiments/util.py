@@ -10,11 +10,13 @@ import torch
 
 MODELS = {
     "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
-    "llama3": "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    "llama3": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    "llama3-70b": "neuralmagic/Meta-Llama-3.1-70B-Instruct-FP8",
 }
 MODEL_REVISIONS = {
     "mistral": "b70aa86578567ba3301b21c8a27bea4e8f6d6d61",
     "llama3": "5206a32e0bd3067aef1ce90f5528ade7d866253f",
+    "llama3-70b": "02ba52a9f4103a54ba80cfabf09adb3396a324b5",
 }
 
 
