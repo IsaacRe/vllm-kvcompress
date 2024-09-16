@@ -317,6 +317,7 @@ class CompressionMetrics:
             hanging_token_count,
             evicted_kv_offsets,
             [32],
+            profile=True,
         )
         final_mem = torch.cuda.max_memory_allocated(
             torch.device(self.device))
@@ -350,6 +351,9 @@ class CompressionMetrics:
         self.layer_index_by_block[metadata.physical_blocks] = metadata.layer_indices
         self.head_index_by_block[metadata.physical_blocks] = metadata.head_indices
         self.token_positions[metadata.physical_blocks] = metadata.token_positions
+        # Initialize metrics to zero for new blocks
+        # self.metrics[metadata.physical_blocks] = MAX_INT
+        self.metrics[metadata.physical_blocks] = 0
         # self.validate_metadata()
         # metadata.validate_even_layer_evict()
         # self.validate_metadata_even_layer_evict()
@@ -439,6 +443,7 @@ class CompressionMetrics:
         evicted_kv_offsets: torch.Tensor,
         num_protected: List[int],
         debug={},
+        profile=False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         assert len(seq_indices) > 0
 
@@ -563,9 +568,10 @@ class CompressionMetrics:
         # Block metric per block ordered by (sequence, layer, head, block metric value)
         reshape_sorted_masked_metrics = sorted_masked_metrics.view(-1, self.block_size)  # [ masked_blocks, block_size ]
         # assert reshape_sorted_masked_metrics.size(-1) > (sorted_hanging_tokens_blocks - 1).max()
-        sorted_masked_metric_blocks = reshape_sorted_masked_metrics.gather(
-            dim=-1, index=(sorted_hanging_tokens_blocks[:,None] - 1).type(torch.long)
-        ).squeeze(-1)
+        # sorted_masked_metric_blocks = reshape_sorted_masked_metrics.gather(
+        #     dim=-1, index=(sorted_hanging_tokens_blocks[:,None] - 1).type(torch.long)
+        # ).squeeze(-1)
+        sorted_masked_metric_blocks = reshape_sorted_masked_metrics[...,-1].squeeze(-1)
         # Empty blocks should not contain evictable KVs
         # assert not ((sorted_hanging_tokens_blocks < 1) & (sorted_masked_metric_blocks < float('inf'))).any()
 
@@ -605,12 +611,14 @@ class CompressionMetrics:
         #     evicted_mask = ref_masked_sort_indices != MAX_INT
         #     assert (ref_masked_sort_indices[evicted_mask] == masked_sort_indices[evicted_mask]).all(), f'{ref_masked_sort_indices=}\n{masked_sort_indices=}'
         seq_sorted_masked_logical_indices = sorted_masked_logical_indices[seq_sorted_indices_blocks,:]
+        # seq_sorted_masked_seq_layer_head_indices = sorted_masked_seq_layer_head_idx[seq_sorted_indices_blocks]
 
         # 3.d. Iterate over sequences and slice from each sequence's start to end offset
         # setting non-evicted KVs in seq_sorted_masked_logical_indices to MAX INT
         total_blocks_per_seq = (
             (context_lens + self.block_size - 1) // self.block_size
         ).sum(dim=0).sum(dim=-1)
+        # print(f'{total_blocks_per_seq=}')
         offset = 0
         # # debug
         # seq_sorted_seq_layer_head_idx = sorted_masked_seq_layer_head_idx_blocks[seq_sorted_indices_blocks]
@@ -626,6 +634,9 @@ class CompressionMetrics:
             #         block_count = (seq_sorted_seq_layer_head_idx[offset:unevicted_offset] == slh_idx).sum()
             #         assert block_count == debug['block_count'].view(-1)[slh_idx], f'{block_count=}, {debug["block_count"].view(-1)[slh_idx]=}, {debug["kv_count"].view(-1)[slh_idx]=}, {hanging_token_count[i,l,h]=}'
             seq_sorted_masked_logical_indices[unevicted_offset:end_offset] = MAX_INT
+            # print(f'{blocks_to_evict=}')
+            # print(f'{seq_sorted_masked_logical_indices[:unevicted_offset].shape=}')
+            # print(f'{seq_sorted_masked_seq_layer_head_indices[:unevicted_offset].shape=}')
             offset = end_offset
 
         # # debug
@@ -689,6 +700,8 @@ class CompressionMetrics:
             (evicted_block_count - 1) * self.block_size + hanging_token_count,
             0,
         )
+        if not profile:
+            assert (context_lens.transpose(0, 1) > evicted_kv_count).all()
 
         # assert (debug['kv_count'] == evicted_kv_count).all()
 
@@ -725,8 +738,6 @@ class CompressionMetrics:
             logical_idx_sorted_masked_logical_indices[head_sorted_indices]
         )
         # print(f"{head_sorted_masked_logical_indices.shape=}")
-
-        # assert (context_lens.transpose(0, 1) > evicted_kv_count).all()
 
         # for slh_idx in range(len(seq_indices) * 8 * 32):
         #     # print(debug['kv_count'].view(-1)[slh_idx])
@@ -867,3 +878,4 @@ class CompressionMetrics:
         CHECKPOINTER.checkpoint('metrics__head_index_by_block', self.head_index_by_block)
         CHECKPOINTER.checkpoint('metrics__logical_block_num_by_block', self.logical_block_num_by_block)
         CHECKPOINTER.checkpoint('metrics__token_positions', self.token_positions)
+

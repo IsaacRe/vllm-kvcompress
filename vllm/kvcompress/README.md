@@ -57,6 +57,8 @@ Use stable=True during sort()
 Get eviction test passing for even_layer_evict and protected_window > 0
 Remove arguments from LLM config that are now passed in SampleParams
 Test correctness of compress_once
+Fix bug: encountering negative context length eventually when running large batch decoding
+- reproduce with `python3 benchmarks/benchmark_throughput.py --num-prompts 256 --input-len 250 --output-len 500 --enforce-eager --model meta-llama/Meta-Llama-3.1-8B-Instruct --max-model-len 19000 --max-cache-tokens 128 --new-token-limit 249 --kvc-interval 1000000 --metric-collection-buffer-size 10 --protected-window-size 32 --enable-kvc --max-kv-per-compression 5000000` on L4
 
 
 ### Potential Problem Code
