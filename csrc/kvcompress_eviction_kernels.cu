@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+// #include <assert.h>
 #include <torch/all.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -367,12 +368,17 @@ __global__ void execute_cache_moves_kernel(
   int* __restrict__ kv_position,                  // [num_blocks, block_size]
   const int* __restrict__ cache_move_idx,         // [max_evicted_kv, 2] indexes into [num_blocks, block_size]
   const int* __restrict__ cache_move_count,       // [num_seqs, num_layers, num_kv_heads]
-  const int* __restrict__ evicted_kv_offsets) {   // [num_seqs, num_layers, num_kv_heads] (offset into cache_move_idx for each head)
+  const int* __restrict__ evicted_kv_offsets,
+  const int cache_move_count_size,
+  const int cache_move_idx_size,
+  const int kv_metrics_size,
+  const int k_cache_size) {   // [num_seqs, num_layers, num_kv_heads] (offset into cache_move_idx for each head)
   constexpr int BLOCK_STRIDE = BLOCK_SIZE * HEAD_SIZE;
   constexpr int K_STRIDE = BLOCK_SIZE * VEC_SIZE;
   const int seq_layer_head_idx = blockIdx.y * blockDim.y + threadIdx.y;  // allow block-level or thread-level parallelization (or both)
 
   // get range of src KVs that will be handled by this thread
+  // assert(seq_layer_head_idx < cache_move_count_size);
   const int moved_kv_count = cache_move_count[seq_layer_head_idx];
   const int moved_kv_offset = blockIdx.x * blockDim.x + threadIdx.x;
   const int max_parallel_kv = gridDim.x * blockDim.x;
@@ -383,31 +389,36 @@ __global__ void execute_cache_moves_kernel(
     i < move_table_offset + moved_kv_count;
     i += max_parallel_kv) {
     const int move_pair_idx = i * 2;
+    // assert(move_pair_idx + 1 < cache_move_idx_size);
     const int src_idx = cache_move_idx[move_pair_idx+1];
-    const int src_block_start = src_idx / BLOCK_SIZE * BLOCK_STRIDE;
+    const int64_t src_block_start = static_cast<int64_t>(src_idx / BLOCK_SIZE) * BLOCK_STRIDE;
     const int src_block_offset = src_idx % BLOCK_SIZE;
     const int dst_idx = cache_move_idx[move_pair_idx];
-    const int dst_block_start = dst_idx / BLOCK_SIZE * BLOCK_STRIDE;
+    const int64_t dst_block_start = static_cast<int64_t>(dst_idx / BLOCK_SIZE) * BLOCK_STRIDE;
     const int dst_block_offset = dst_idx % BLOCK_SIZE;
 
-    const int src_k_start = src_block_start + src_block_offset * VEC_SIZE;
-    const int src_v_start = src_block_start + src_block_offset;
-    const int dst_k_start = dst_block_start + dst_block_offset * VEC_SIZE;
-    const int dst_v_start = dst_block_start + dst_block_offset;
+    const int64_t src_k_start = src_block_start + src_block_offset * VEC_SIZE;
+    const int64_t src_v_start = src_block_start + src_block_offset;
+    const int64_t dst_k_start = dst_block_start + dst_block_offset * VEC_SIZE;
+    const int64_t dst_v_start = dst_block_start + dst_block_offset;
 
     // printf("seq_layer_head_idx: %d, move_pair_idx: %d, src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
     //   seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
 
+    // assert(dst_idx < kv_metrics_size);
+    // assert(src_idx < kv_metrics_size);
     kv_metrics[dst_idx] = kv_metrics[src_idx];
     kv_position[dst_idx] = kv_position[src_idx];
 
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += K_STRIDE) {
-      const int dst_k_group_start = dst_k_start + j;
-      const int src_k_group_start = src_k_start + j;
+      const int64_t dst_k_group_start = dst_k_start + j;
+      const int64_t src_k_group_start = src_k_start + j;
 #pragma unroll
       for (int k = 0; k < VEC_SIZE; ++k) {
         // printf("(j=%d, k=%d), ", j, k);
+        // assert(dst_k_group_start + k < k_cache_size);
+        // assert(src_k_group_start + k < k_cache_size);
         k_cache[dst_k_group_start + k] = k_cache[src_k_group_start + k];
       }
     }
@@ -415,6 +426,8 @@ __global__ void execute_cache_moves_kernel(
 #pragma unroll
     for (int j = 0; j < BLOCK_STRIDE; j += BLOCK_SIZE) {
       // printf("%d, ", j);
+      // assert(dst_v_start +j < k_cache_size);
+      // assert(src_v_start +j < k_cache_size);
       v_cache[dst_v_start + j] = v_cache[src_v_start + j];
     }
     // printf("\n");
@@ -785,7 +798,11 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
   kv_position_ptr,\
   cache_moves_idx_ptr,\
   cache_moves_count_ptr,\
-  evicted_kv_offsets_ptr);
+  evicted_kv_offsets_ptr,\
+  cache_move_count_size,\
+  cache_move_idx_size,\
+  kv_metrics_size,\
+  k_cache_size);
 
 #define EXECUTE_MOVES_KERNEL_HEAD_SIZE_VEC_SIZE(HEAD_SIZE, VEC_SIZE, BLOCK_SIZE) \
   switch (BLOCK_SIZE) { \
@@ -854,6 +871,11 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   const int num_seqs = cache_moves_count.size(0);
   const int num_layers = cache_moves_count.size(1);
   const int num_kv_heads = cache_moves_count.size(2);
+
+  const int cache_move_count_size = cache_moves_count.numel();
+  const int cache_move_idx_size = cache_moves_idx.numel();
+  const int kv_metrics_size = kv_metrics.numel();
+  const int k_cache_size = k_cache.numel();
 
   CACHE_T* k_cache_ptr = reinterpret_cast<CACHE_T*>(k_cache.data_ptr());
   CACHE_T* v_cache_ptr = reinterpret_cast<CACHE_T*>(v_cache.data_ptr());

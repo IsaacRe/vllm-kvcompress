@@ -1247,7 +1247,7 @@ def execute_cache_moves(
         k_cache,
         v_cache,
         kv_metrics,
-        kv_position.contiguous(),
+        kv_position,
         cache_moves_indices.contiguous(),
         cache_moves_count.contiguous(),
         evicted_kv_offsets.contiguous(),
