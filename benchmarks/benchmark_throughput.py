@@ -104,6 +104,12 @@ def run_vllm(
     record_decoding_metrics: bool = True,
     metric_aggregation: str = "L2-sum",
     compress_once: bool = False,
+    # speculative decoding
+    speculative_model: str = None,
+    speculative_model_quantization: str = None,
+    spec_decoding_acceptance_method: str = 'typical_acceptane_sampler',
+    typical_acceptance_sampler_posterior_threshold: float = 0.09,
+    typical_acceptance_sampler_posterior_alpha: float = 0.3,
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -141,6 +147,12 @@ def run_vllm(
         max_cache_tokens=max_cache_tokens,
         record_decoding_metrics=record_decoding_metrics,
         metric_aggregation=metric_aggregation,
+        # speculative decoding
+        speculative_model=speculative_model,
+        speculative_model_quantization=speculative_model_quantization,
+        spec_decoding_acceptance_method=spec_decoding_acceptance_method,
+        typical_acceptance_sampler_posterior_threshold=typical_acceptance_sampler_posterior_threshold,
+        typical_acceptance_sampler_posterior_alpha=typical_acceptance_sampler_posterior_alpha,
     )
 
     # Add the requests to the engine.
@@ -348,6 +360,14 @@ def run_mii(
     return end - start
 
 
+REAL_TEXT_PROMPT = """John Jeremy Thorpe (29 April 1929 – 4 December 2014) was a British politician who served as the Member of Parliament for North Devon from 1959 to 1979, and as leader of the Liberal Party from 1967 to 1976. In May 1979, he was tried at the Old Bailey on charges of conspiracy and incitement to murder his ex-boyfriend Norman Scott, a former model. Thorpe was acquitted on all charges, but the case, and the furore surrounding it, ended his political career.
+
+Thorpe was the son and grandson of Conservative MPs, but decided to align with the small and ailing Liberal Party. After reading Law at Oxford University he became one of the Liberals' brightest stars in the 1950s. He entered Parliament at the age of 30, rapidly made his mark, and was elected party leader in 1967. After an uncertain start during which the party lost ground, Thorpe capitalised on the growing unpopularity of the Conservative and Labour parties to lead the Liberals through a period of electoral success. This culminated in the general election of February 1974, when the party won 6 million votes. Under the first-past-the-post electoral system this gave them only 14 seats, but in a hung parliament, no party having an overall majority, Thorpe was in a strong position. He was offered a cabinet post by the Conservative prime minister, Edward Heath, if he would bring the Liberals into a coalition. His price for such a deal, reform of the electoral system, was rejected by Heath, who resigned in favour of a minority Labour government.
+
+The February 1974 election was the high-water mark of Thorpe's career. Thereafter his and his party's fortunes declined, particularly from late 1975 when rumours of his involvement in a plot to murder Norman Scott began to multiply. Thorpe resigned the leadership in May 1976 when his position became untenable. When the matter came to court three years later, Thorpe chose not to give evidence to avoid being cross-examined by counsel for the prosecution. This left many questions unanswered; despite his acquittal, Thorpe was discredited and did not return to public life. From the mid-1980s he was disabled by Parkinson's disease. During his long retirement he gradually recovered the affections of his party, and by the time of his death was honoured by a later generation of leaders, who drew attention to his record as an internationalist, a supporter of human rights and an opponent of apartheid and all forms of racism."""
+CHAR_PER_TOK_APPROX = 2
+
+
 def main(args: argparse.Namespace):
     print(args)
     random.seed(args.seed)
@@ -355,7 +375,11 @@ def main(args: argparse.Namespace):
     # Sample the requests.
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer, trust_remote_code=args.trust_remote_code)
-    if args.dataset is None:
+    if args.real_text:
+        requests = [(REAL_TEXT_PROMPT[:args.input_len * CHAR_PER_TOK_APPROX],
+                     args.input_len, args.output_len)
+                    for _ in range(args.num_prompts)]
+    elif args.dataset is None:
         # Synthesize a prompt with the given input length.
         prompt = "hi" * (args.input_len - 1)
         requests = [(prompt, args.input_len, args.output_len)
@@ -384,7 +408,12 @@ def main(args: argparse.Namespace):
             args.kv_head_bias_path, args.kvc_interval, args.max_kv_per_compression,
             args.new_token_limit, args.max_cache_tokens,
             args.record_decoding_metrics, args.metric_aggregation,
-            args.compress_once
+            args.compress_once,
+            # speculative decoding
+            args.speculative_model, args.speculative_model_quantization,
+            args.spec_decoding_acceptance_method,
+            args.typical_acceptance_sampler_posterior_threshold,
+            args.typical_acceptance_sampler_posterior_alpha,
         ]
 
         if args.async_engine:
@@ -689,6 +718,36 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help='Configure max_cache_tokens as a fraction of input length',
+    )
+    parser.add_argument(
+        '--speculative-model',
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        '--speculative-model-quantization',
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        '--spec-decoding-acceptance-method',
+        type=str,
+        choices=['typical_acceptance_sampler', 'rejection_sampler'],
+        default='typical_acceptance_sampler'
+    )
+    parser.add_argument(
+        '--typical-acceptance-sampler-posterior-threshold',
+        type=float,
+        default=0.09,
+    )
+    parser.add_argument(
+        '--typical-acceptance-sampler-posterior-alpha',
+        type=float,
+        default=0.3,  # sqrt of posterior threshold
+    )
+    parser.add_argument(
+        '--real-text',
+        action='store_true',
     )
     args = parser.parse_args()
     if args.tokenizer is None:
