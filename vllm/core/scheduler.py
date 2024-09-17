@@ -1272,6 +1272,15 @@ class Scheduler:
             and not seq_group.sampling_params.use_beam_search)
         return no_beam_search
 
+    def must_preempt(self) -> bool:
+        """Checks whether preemption must happend before generation
+        can continue for sequences in the running queue.
+        """
+        new_blocks = sum([self.block_manager.get_new_block_count(sg)
+                          for sg in self.running])
+        free_blocks = self.block_manager.get_num_free_gpu_blocks()
+        return free_blocks < new_blocks
+
     @BENCHMARKER.wrap()
     def schedule_kvcompress(self) -> Optional[CacheMoves]:
         """Check whether to schedule KV cache compression this
@@ -1286,12 +1295,14 @@ class Scheduler:
         """
         # Assume all sequence groups have a single sequence when using
         # KV-Compress.
+        must_preempt = self.must_preempt()
         seqs = [sg.get_seqs()[0] for sg in self.running]
         sampling_params = [sg.sampling_params for sg in self.running]
         # print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
 
         if seqs and (kvc_output :=
-                     self.kvcompress_scheduler.schedule_compression(seqs, sampling_params)):
+                     self.kvcompress_scheduler.schedule_compression(seqs, sampling_params,
+                                                                    force=must_preempt)):
             # Return physical cache moves to be executed by cache engine
             return kvc_output.cache_moves
 

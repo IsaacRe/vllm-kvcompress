@@ -559,10 +559,11 @@ class CompressionScheduler:
     def increment_new_tokens(self, new_token_count: int) -> None:
         self.new_tokens += new_token_count
 
-    def schedule_compression(self, seqs: List[Sequence], sampling_params: List[SamplingParams]) -> Optional[CompressionOutputs]:
+    def schedule_compression(self, seqs: List[Sequence], sampling_params: List[SamplingParams],
+                             force: bool = False) -> Optional[CompressionOutputs]:
         """Returns number of KV evictions per sequence"""
         self.iteration_count += 1
-        if (self.iteration_count >= self.config.compression_interval
+        if force or (self.iteration_count >= self.config.compression_interval
             or (self.config.new_token_limit > -1 and
                 self.new_tokens > self.config.new_token_limit)):
             self.iteration_count = 0
