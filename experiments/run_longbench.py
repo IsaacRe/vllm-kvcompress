@@ -31,6 +31,7 @@ parser.add_argument('--relative-kv-head-bias', action='store_true')
 parser.add_argument('--gpu-mem-util', type=float, default=0.7)
 parser.add_argument('--n-rows', type=int, default=-1)
 parser.add_argument('--min-cache-tokens', type=int, default=128)
+parser.add_argument('--test-row', type=int, default=None)
 
 def main(args):
     if args.compression_rate is not None:
@@ -92,6 +93,8 @@ def main(args):
     print("Loading data...")
     if args.n_rows > 0:
         dset = dset.take(args.n_rows)
+    elif args.test_row is not None:
+        dset = [list(dset.take(args.test_row + 1))[-1]]
     max_len = 0
     for json_obj in tqdm(dset):
         json_objs.append(json_obj)
