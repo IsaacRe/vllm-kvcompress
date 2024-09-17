@@ -390,7 +390,7 @@ def main(args: argparse.Namespace):
 
     if args.compression_rate is not None:
         block_size = 16
-        args.max_cache_tokens = max(64, ((int(args.input_len / args.compression_rate) - 1) // block_size * block_size))
+        args.max_cache_tokens = max(128, ((int(args.input_len / args.compression_rate) - 1) // block_size * block_size))
 
     if args.backend == "vllm":
         run_args = [
