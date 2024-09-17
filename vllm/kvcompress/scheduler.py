@@ -538,7 +538,7 @@ class CompressionScheduler:
                 self.total_evicted_kvs.get(seq.seq_id, 0) + (torch.clamp(freed_block_count[seq.seq_id] * self.block_size - empty_slots, min=0)).sum().item()
             )
             seq_evicted_kvs = self.total_evicted_kvs[seq.seq_id]
-            print(f'Seq {seq.seq_id} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.config.num_kv_heads / self.config.num_layers} tokens) so far')
+            # print(f'Seq {seq.seq_id} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.config.num_kv_heads / self.config.num_layers} tokens) so far')
 
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', self.cache_move_indices)
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)

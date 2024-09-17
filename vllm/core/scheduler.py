@@ -425,6 +425,15 @@ class Scheduler:
 
         self.max_decoding_batch = 0
 
+        # Track whether there are past prefills in need of KV cache compression
+        self.uncompressed_prefill = False
+        # If we are forced to compress to avoid preemption we set a lock
+        # to prevent further prefilling until one or more generations
+        # currently running have been completed or preempted. This prevents
+        # immediately re-allocating the space that is reclaimed by compression,
+        # avoiding frequent compression-preemption cycles.
+        self.lock_prefill = False
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -1073,7 +1082,7 @@ class Scheduler:
         swapped_in = SchedulerSwappedInOutputs.create_empty()
 
         # If any requests are swapped, prioritized swapped requests.
-        if not self.swapped:
+        if not (self.swapped or self.lock_prefill):
             prefills = self._schedule_prefills(budget,
                                                curr_loras,
                                                enable_chunking=False)
@@ -1120,7 +1129,7 @@ class Scheduler:
         preempted = (len(running_scheduled.preempted) +
                      len(running_scheduled.swapped_out))
         self.max_decoding_batch = max(self.max_decoding_batch, len(running_scheduled.decode_seq_groups))
-        # print(f"{len(self.running)}/{len(self.waiting)} (runnning/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
+        # print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
@@ -1141,6 +1150,12 @@ class Scheduler:
 
         ignored_seq_groups = prefills.ignored_seq_groups
         ignored_seq_groups.extend(swapped_in.infeasible_seq_groups)
+
+        self.uncompressed_prefill = (self.uncompressed_prefill
+                                     or num_prefill_groups > 0)
+
+        # Remove prefill lock whenever a sequence is preempted
+        self.lock_prefill = self.lock_prefill and not preempted
 
         return SchedulerOutputs(
             scheduled_seq_groups=scheduled_seq_groups,
@@ -1293,16 +1308,27 @@ class Scheduler:
         inference scheduling and the cache moves must be executed
         by the cache engine before the current inference step.
         """
+        # We force a compression iteration whenever there are new prefill
+        # sequences since the last compression iteration or we would
+        # need to preempt otherwise.
+        must_preempt = self.must_preempt()
+        # lock future prefills if we are forced to compress to avoid preemption
+        self.lock_prefill = self.lock_prefill or (must_preempt and
+                                                  not self.uncompressed_prefill)
+        force_compression = self.uncompressed_prefill or must_preempt
+        # NOTE: All current uncompressed prior prefills will not necessarily
+        # be compressed since the compression batch size is limited by
+        # max_kv_per_compression.
+        self.uncompressed_prefill = False
         # Assume all sequence groups have a single sequence when using
         # KV-Compress.
-        must_preempt = self.must_preempt()
         seqs = [sg.get_seqs()[0] for sg in self.running]
         sampling_params = [sg.sampling_params for sg in self.running]
         # print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
 
         if seqs and (kvc_output :=
                      self.kvcompress_scheduler.schedule_compression(seqs, sampling_params,
-                                                                    force=must_preempt)):
+                                                                    force=force_compression)):
             # Return physical cache moves to be executed by cache engine
             return kvc_output.cache_moves
 
@@ -1493,6 +1519,7 @@ class Scheduler:
 
     def free_finished_seq_groups(self) -> None:
         remaining: Deque[SequenceGroup] = deque()
+        has_finished = False
         for seq_group in self.running:
             if seq_group.is_finished():
                 # Free cross-attention block table, if it exists
@@ -1501,6 +1528,7 @@ class Scheduler:
                 # This list will be used to update the Mamba cache in the
                 # next step.
                 self._finished_requests_ids.append(seq_group.request_id)
+                has_finished = True
             else:
                 remaining.append(seq_group)
 
@@ -1512,6 +1540,7 @@ class Scheduler:
         # Handle async stopped sequence groups
         # (ones that reached max model len)
         if self._async_stopped:
+            has_finished = True
             for seq_group in self._async_stopped:
                 self._free_seq_group_cross_attn_blocks(seq_group)
                 self._finished_requests_ids.append(seq_group.request_id)
@@ -1520,6 +1549,9 @@ class Scheduler:
                 self._free_finished_seqs(seq_group)
 
             self._async_stopped.clear()
+
+        # Remove prefill lock whenever a sequence is finished
+        self.lock_prefill = self.lock_prefill and not has_finished
 
     def _allocate_and_set_running(self, seq_group: SequenceGroup) -> None:
         self.block_manager.allocate(seq_group)
