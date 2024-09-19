@@ -32,6 +32,7 @@ parser.add_argument('--gpu-mem-util', type=float, default=0.7)
 parser.add_argument('--n-rows', type=int, default=-1)
 parser.add_argument('--min-cache-tokens', type=int, default=128)
 parser.add_argument('--test-row', type=int, default=None)
+parser.add_argument('--run-id', type=str, default=None)
 
 def main(args):
     if args.compression_rate is not None:
@@ -107,7 +108,7 @@ def main(args):
             half = int((max_prompt_length)/2)
             prompt = tokenizer.decode(tokenized_prompt[:half], skip_special_tokens=True)+tokenizer.decode(tokenized_prompt[-half:], skip_special_tokens=True)
         prompts.append(prompt)
-        if args.dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p"]: # chat models are better off without build prompts on these tasks
+        if args.dataset not in ["trec", "triviaqa", "samsum", "lsht", "lcc", "repobench-p", "passage_count"]: # chat models are better off without build prompts on these tasks
             prompt = build_chat(tokenizer, prompt, args.model)
         final_prompts.append(prompt)
         if "chatglm3" in args.model:
@@ -131,6 +132,8 @@ def main(args):
     )
     cache_size_id = str(args.max_cache_tokens) if args.max_cache_tokens > 0 else (f"{args.compression_rate}x" if args.compression_rate is not None else 'full')
     experiment_id = f"{cache_size_id}_w{args.prefill_metric_collection_window_size}_{args.metric_aggregation.split('-')[0]}{('_rb' if args.relative_kv_head_bias else '_b') if args.kv_head_bias_weight > 0 else ''}{'_cc' if not args.compress_once else ''}"
+    if args.run_id is not None:
+        experiment_id = f"{experiment_id}_{args.run_id}"
     out_path = f"results/{args.model}/{args.dataset}-{experiment_id}.jsonl"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
