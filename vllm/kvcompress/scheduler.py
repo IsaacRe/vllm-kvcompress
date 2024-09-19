@@ -132,11 +132,12 @@ class CompressionScheduler:
             0,
             self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
         )
-        if max_cache_tokens > 0:
+        if max_cache_tokens >= 0:
             # Evict by max number of KV per sequence.
             max_cache_kv = max_cache_tokens * total_kv_heads
-            evict_kv_count = max(
-                0, self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
+            max_cache_blocks = (max_cache_kv + self.block_size - 1) // self.block_size
+            evict_block_count = max(
+                0, self.block_manager.get_sequence_block_count(seq) - max_cache_blocks,
             )
         else:
             # Evict by target compression rate.
@@ -163,8 +164,7 @@ class CompressionScheduler:
             )
 
             evict_kv_count = max(0, compressed_kv_count - target_kv_count)
-
-        evict_block_count = evict_kv_count // self.block_size
+            evict_block_count = (evict_kv_count + self.block_size - 1) // self.block_size
 
         # make sure # block evictions is evenly divisible by num_layers if even_layer_evict
         if self.config.even_layer_evict:
@@ -205,11 +205,13 @@ class CompressionScheduler:
                 compress_once=sample_params.compress_once,
             )
             if evicted_block_count == 0:
+                print(f"Skipping compression for sequence {seq.seq_id}")
                 continue
 
             # Stop once we reach the maximum number of KVs to compress.
             total_kv_count += self.block_manager.get_sequence_block_count(seq) * self.block_size
             if total_kv_count > self.config.max_kv_per_compression:
+                print(f"Reached maximum number of KVs for compression: {total_kv_count > self.config.max_kv_per_compression}")
                 break
 
             seqs_to_compress.append(seq)
@@ -252,9 +254,10 @@ class CompressionScheduler:
         CHECKPOINTER.checkpoint('schedule_compression__seq_lens', torch.tensor(seq_lens))
 
         # Last token in sequence was predicted during last iteration and its KVs are
-        # not yet cached so we decrement by 1 to get position of the last KVs in cache.
+        # not yet cached so we decrement by 1 to get position of that token when it is
+        # added to KV cache.
         last_token_positions = torch.tensor(
-            seq_lens, dtype=torch.int, device=self.device) - 2
+            seq_lens, dtype=torch.int, device=self.device) - 1
 
         # Get context lengths, block tables and hanging token counts
         batch_block_state = self.block_manager.get_block_state_batch_view(
