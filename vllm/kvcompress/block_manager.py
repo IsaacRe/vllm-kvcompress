@@ -176,6 +176,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.free_batch_slots = set(range(self.block_state.max_num_seqs))
         self.batch_slot_mapping = {}
 
+    def reinit(self):
+        self.gpu_allocator.free_all()
+        self.block_state.clear()
+        self.kv_metrics.reinit_kv_metadata()
+
     def _validate_allocator(self) -> None:
         free_blocks = self.gpu_allocator.block_numbers[self.gpu_allocator.free_mask]
         allocated_blocks = self.block_state.get_allocated_blocks()

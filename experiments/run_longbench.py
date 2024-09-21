@@ -138,6 +138,7 @@ def main(args):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w+", encoding="utf-8") as f:
         for input_ids, fp, json_obj in zip(tqdm(inputs), final_prompts, json_objs):
+            model.llm_engine.scheduler[0].block_manager.reinit()
             if args.compression_rate is not None:
                 # subtract block size from max cache tokens to avoid going below the eviction requirement
                 # due to evicting partially filled blocks

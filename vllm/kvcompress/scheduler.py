@@ -205,7 +205,7 @@ class CompressionScheduler:
                 compress_once=sample_params.compress_once,
             )
             if evicted_block_count == 0:
-                print(f"Skipping compression for sequence {seq.seq_id}")
+                # print(f"Skipping compression for sequence {seq.seq_id}")
                 continue
 
             # Stop once we reach the maximum number of KVs to compress.
