@@ -242,7 +242,7 @@ class FlashAttentionImpl(AttentionImpl):
                 KVCAttention.write_to_paged_cache(key, value, key_cache,
                                                   value_cache, kv_metrics.metrics,
                                                   slot_mapping,
-                                                  kv_metric_head_bias,
+                                                  torch.zeros_like(kv_metric_head_bias),
                                                   attn_metadata.kv_cache_dtype,
                                                   kv_scale)
 
