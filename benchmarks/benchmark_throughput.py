@@ -157,7 +157,7 @@ def run_vllm(
     for output in outputs:
         assert len(output.outputs[0].token_ids) == output_len, (
             f"{len(output.outputs[0].token_ids)=}, {output_len=}")
-    return end - start
+    return end - start, llm.llm_engine.scheduler.max_decoding_batch
 
 
 def run_hf(
@@ -255,7 +255,7 @@ def main(args: argparse.Namespace):
                                    args.output_len)
 
     if args.backend == "vllm":
-        elapsed_time = run_vllm(
+        elapsed_time, max_decoding_batch = run_vllm(
             requests, args.model, args.tokenizer, args.quantization,
             args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
             args.trust_remote_code, args.dtype, args.max_model_len,
@@ -290,6 +290,7 @@ def main(args: argparse.Namespace):
     else:
         total_num_tokens = sum(prompt_len + output_len
                                for _, prompt_len, output_len in requests)
+    print(f"Max decoding batch: {max_decoding_batch}")
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
     BENCHMARKER.summarize()
@@ -525,3 +526,4 @@ if __name__ == "__main__":
             raise ValueError("Tokenizer must be the same as the model for MII "
                              "backend.")
     main(args)
+
