@@ -184,7 +184,7 @@ class CompressionScheduler:
     def _schedule_compression(self, seqs: List[Sequence], sampling_params: List[SamplingParams]) -> Optional[CompressionOutputs]:
         # Benchmark - 1
         # BENCHMARKER.start_range("_schedule_compression - 1")
-        print(f"(seq_idx, iters_since_compression){[(self.block_manager.batch_slot_mapping[seq.seq_id], self._iters_since_compression.get(seq.seq_id)) for seq in seqs]}")
+        # print(f"(seq_idx, iters_since_compression){[(self.block_manager.batch_slot_mapping[seq.seq_id], self._iters_since_compression.get(seq.seq_id)) for seq in seqs]}")
 
         # Select sequences to compress this iteration and determine blocks to
         # evict.
