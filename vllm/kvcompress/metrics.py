@@ -266,6 +266,11 @@ class CompressionMetrics:
         )
         self.validate_metadata()
 
+    def reinit_kv_metadata(self) -> None:
+        num_blocks = self.num_blocks
+        self.clear_kv_metadata()
+        self.init_kv_metadata(num_blocks)
+
     def profile_schedule_evictions(self):
         # Should not have begun handling requests
         assert self.num_blocks is None, "cannot profile after initialization"
