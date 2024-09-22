@@ -447,7 +447,7 @@ class CompressionMetrics:
         hanging_token_count: torch.Tensor,
         evicted_kv_offsets: torch.Tensor,
         num_protected: List[int],
-        uniform_evict: bool = True,
+        uniform_evict: bool = False,
         debug={},
         profile=False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
