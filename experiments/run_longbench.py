@@ -45,7 +45,11 @@ def main(args):
     dataset2prompt = json.load(open("config/dataset2prompt.json", "r"))
     dataset2maxlen = json.load(open("config/dataset2maxlen.json", "r"))
     model2maxlen = json.load(open("config/model2maxlen.json", "r"))
-    prompt_format = dataset2prompt[args.dataset]
+    prompt_format_query = args.dataset
+    # Llama 70B without compression performs poorly on coding subsets with og template
+    if args.model == 'llama3-70b' and args.dataset in ['lcc', 'repobench-p']:
+        prompt_format_query = f'{args.dataset}-llama_3_1_70b'
+    prompt_format = dataset2prompt[prompt_format_query]
     max_output_tokens = dataset2maxlen[args.dataset]
 
     if args.kv_head_bias_path is None:
