@@ -33,6 +33,7 @@ parser.add_argument('--n-rows', type=int, default=-1)
 parser.add_argument('--min-cache-tokens', type=int, default=128)
 parser.add_argument('--test-row', type=int, default=None)
 parser.add_argument('--run-id', type=str, default=None)
+parser.add_argument('--data-dir', type=str, default=None)
 
 def main(args):
     if args.compression_rate is not None:
@@ -82,10 +83,21 @@ def main(args):
     max_prompt_length = min(max_prompt_length, max_model_prompt_length - dataset2maxlen[args.dataset])
 
     tokenizer = load_tokenizer(args.model)
-    dset = load_dataset('THUDM/LongBench',
-                        args.dataset,
-                        split=args.split,
-                        streaming=True)
+
+    def _load_longbench(subset, dir):
+        records = []
+        with open(f"{dir}/LongBench/{subset}.jsonl") as fp:
+            for line in fp:
+                records.append(json.loads(line))
+        return records
+
+    if args.data_dir is None:
+        dset = load_dataset('THUDM/LongBench',
+                            args.dataset,
+                            split=args.split,
+                            streaming=True)
+    else:
+        dset = _load_longbench(args.dataset, args.data_dir)
 
     inputs = []
     prompts = []
