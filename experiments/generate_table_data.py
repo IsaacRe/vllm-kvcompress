@@ -94,7 +94,7 @@ else:
         for dset in DATASET_NAMES:
             key = f'{dset}-{cs}_{args.method}'
             if not is_complete(args.model, dset, cs, args.method,
-                               backup=args.backup_model):
+                               backup=args.backup_model) or key not in results:
                 print('null ', end='\t')
                 result_by_cache_size[cs].append(None)
                 continue
