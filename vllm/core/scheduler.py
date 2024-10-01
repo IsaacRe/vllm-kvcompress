@@ -434,6 +434,8 @@ class Scheduler:
         # avoiding frequent compression-preemption cycles.
         self.lock_prefill = False
 
+        self.logged_decoding = False
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -1129,7 +1131,14 @@ class Scheduler:
         preempted = (len(running_scheduled.preempted) +
                      len(running_scheduled.swapped_out))
         self.max_decoding_batch = max(self.max_decoding_batch, len(running_scheduled.decode_seq_groups))
-        # print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
+
+        if len(prefills.seq_groups) > 0:
+            self.logged_decoding = False
+
+        if not self.logged_decoding:
+            print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
+            if len(running_scheduled.decode_seq_groups) > 0:
+                self.logged_decoding = True
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.

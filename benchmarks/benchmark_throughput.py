@@ -445,7 +445,8 @@ def main(args: argparse.Namespace):
     print(f"Max decoding batch: {max_decoding_batch}")
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
           f"{total_num_tokens / elapsed_time:.2f} tokens/s")
-    BENCHMARKER.summarize()
+    if args.latency_breakdown:
+        BENCHMARKER.summarize()
 
     # Output JSON results if specified
     if args.output_json:
@@ -747,6 +748,10 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         '--real-text',
+        action='store_true',
+    )
+    parser.add_argument(
+        '--latency-breakdown',
         action='store_true',
     )
     args = parser.parse_args()
