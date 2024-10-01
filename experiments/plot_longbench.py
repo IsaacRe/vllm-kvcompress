@@ -30,6 +30,7 @@ ALL_SUBTASKS = map(lambda x: x.strip(), open('datasets.txt', 'r').readlines())
 parser = ArgumentParser()
 parser.add_argument("--file", type=str, default="result.json")
 parser.add_argument("--full-file", type=str, default=None)
+parser.add_argument("--code-file", type=str, default=None)
 parser.add_argument("--exp-id", type=str, default="w32_L2_cc")
 parser.add_argument("--full-exp-id", type=str, default="w32_L2_cc")
 parser.add_argument("--subsets", type=str, nargs="+",
@@ -57,6 +58,9 @@ elif args.subsets == ['all']:
 
 results = json.load(open(args.file, 'r'))
 full_results = json.load(open(args.full_file, 'r'))
+code_results = {}
+if args.code_file:
+    code_results = json.load(open(args.code_file, 'r'))
 
 if args.by_category:
     category_results = {}
@@ -66,9 +70,14 @@ if args.by_category:
             category = SUBTASK_CATEGORIES[dset]
             if category in args.exclude_category:
                 continue
-            full_score = full_results[f'{dset}-full_{args.full_exp_id}']
-            dset_results = [results[f'{dset}-{cr}_{args.exp_id}'] / full_score * 100.
-                            for cr in COMPRESSION_RATE_STRINGS]
+            if category == 'Code' and '70b' in args.file:
+                full_score = code_results[f'{dset}-full_{args.full_exp_id}']
+                dset_results = [code_results[f'{dset}-{cr}_{args.exp_id}'] / full_score * 100.
+                                for cr in COMPRESSION_RATE_STRINGS]
+            else:
+                full_score = full_results[f'{dset}-full_{args.full_exp_id}']
+                dset_results = [results[f'{dset}-{cr}_{args.exp_id}'] / full_score * 100.
+                                for cr in COMPRESSION_RATE_STRINGS]
             category_results[category] = [cr + dr
                                         for cr, dr in
                                         zip(category_results.get(category, [0] * len(COMPRESSION_RATE_STRINGS)),

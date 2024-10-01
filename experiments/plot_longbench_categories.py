@@ -32,6 +32,7 @@ ALL_CATEGORIES = ["Single-Doc. QA", "Multi-Doc. QA", "Summarization",
 parser = ArgumentParser()
 parser.add_argument("--file", type=str, default="result.json")
 parser.add_argument("--full-file", type=str, default=None)
+parser.add_argument("--code-file", type=str, default=None)
 parser.add_argument("--exp-id", type=str, default="w32_L2_cc")
 parser.add_argument("--full-exp-id", type=str, default="w32_L2_cc")
 parser.add_argument("--save-dir", type=str, default="./")
@@ -50,6 +51,9 @@ print(args.full_exp_id)
 
 results = json.load(open(args.file, 'r'))
 full_results = json.load(open(args.full_file, 'r'))
+code_results = {}
+if args.code_file is not None:
+    code_results = json.load(open(args.code_file, 'r'))
 
 fig, ax = plt.subplots(2, 3, figsize=(12, 7))
 
@@ -61,9 +65,14 @@ for i, category in enumerate(ALL_CATEGORIES):
         if dset_cat == category:
             try:
                 if category == "Code" and "70b" in args.file:
-                    full_score = full_results[f'{dset}-full_{args.full_exp_id}']
-                    dset_results = ([full_score] +
-                            [results[f'{dset}-{cr}_{args.exp_id}']
+                    # full_score = full_results[f'{dset}-full_{args.full_exp_id}']
+                    # dset_results = ([full_score] +
+                    #         [results[f'{dset}-{cr}_{args.exp_id}']
+                    #             for cr in COMPRESSION_RATE_STRINGS])
+                    # ax_.plot(COMPRESSION_RATES, dset_results, label=dset)
+                    full_score = code_results[f'{dset}-full_{args.full_exp_id}']
+                    dset_results = ([100.] +
+                            [code_results[f'{dset}-{cr}_{args.exp_id}'] / full_score * 100.
                                 for cr in COMPRESSION_RATE_STRINGS])
                     ax_.plot(COMPRESSION_RATES, dset_results, label=dset)
                 else:
@@ -81,8 +90,10 @@ for i, category in enumerate(ALL_CATEGORIES):
         ymin = set_ymin
     if set_ymax is not None:
         ymax = set_ymax
-    if category == "Code" and "70b" in args.file:
-        ax_.set_ylabel("absolute performance")
+    # if category == "Code" and "70b" in args.file:
+    #     ax_.set_ylabel("absolute performance")
+    if False:
+        pass
     else:
         ax_.set_ylim(ymin, ymax)
         if y == 0:

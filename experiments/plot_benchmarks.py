@@ -15,6 +15,7 @@ parser = ArgumentParser()
 parser.add_argument("--file", type=str, default="out.csv")
 parser.add_argument("--plot-input-lens", type=int, nargs="+", default=[-1])
 parser.add_argument("--max-input-len", type=int, default=None)
+parser.add_argument("--min-input-len", type=int, default=None)
 parser.add_argument("--plot-cr-mult", type=float, nargs="+", default=[-1.0])
 parser.add_argument("--save-dir", type=str, default=None)
 parser.add_argument("--model", type=str, default=None)
@@ -44,6 +45,8 @@ max_shared_input_len = df__.input_len.min()
 if args.max_input_len is not None:
     max_shared_input_len = args.max_input_len
 df = df[df.input_len <= max_shared_input_len]
+if args.min_input_len is not None:
+    df = df[df.input_len >= args.min_input_len]
 
 max_compression_rate = df.compression_rate.max()
 input_lengths = df.input_len.unique()
@@ -124,24 +127,24 @@ plt.plot(df_.input_len, df_.tok_per_s, label='vanilla vLLM', linestyle='--', c='
 plt.legend()
 plt.grid()
 plt.title(f"{args.gpu} - {args.model}")
-plt.savefig(f'{save_dir}/throughput_by_len.pdf')
-plt.savefig(f'{save_dir}/throughput_by_len.jpg')
 plt.xlabel('input length')
 plt.ylabel('throughput (tok/sec)')
+plt.savefig(f'{save_dir}/throughput_by_len.pdf')
+plt.savefig(f'{save_dir}/throughput_by_len.jpg')
 plt.show()
 plt.clf()
 
 fig, ax = plt.subplots()
 
 # max decoding batch by compression rate
-for c, input_len in zip(color_cycle, sorted(input_lengths)):
+for c, input_len in zip(color_cycle[1:], sorted(input_lengths)):
     if args.plot_input_lens != [-1] and input_len not in args.plot_input_lens:
         continue
     df_ = df[(df.input_len == input_len) & (df.compression_rate != -1)]
     df_ = df_.sort_values('compression_rate')
     ax.plot(df_.compression_rate, df_.max_batch_size, label=input_len, alpha=0.7, c=c)
 xmin, xmax = plt.xlim()
-for c, input_len in zip(color_cycle, sorted(input_lengths)):
+for c, input_len in zip(color_cycle[1:], sorted(input_lengths)):
     if input_len not in args.plot_input_lens:
         continue
     df_ = df[(df.input_len == input_len) & (df.compression_rate == -1)]
