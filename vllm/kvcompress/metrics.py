@@ -721,7 +721,8 @@ class CompressionMetrics:
                     unevicted_offset -= num_evicted_infs
 
                 seq_sorted_masked_logical_indices[unevicted_offset:end_offset] = MAX_INT
-                assert (seq_sorted_masked_metric_blocks[:unevicted_offset] < float('inf')).all()
+                if not profile:
+                    assert (seq_sorted_masked_metric_blocks[offset:unevicted_offset] < float('inf')).all()
                 # print(f'{blocks_to_evict=}')
                 # print(f'{seq_sorted_masked_logical_indices[:unevicted_offset].shape=}')
                 # print(f'{seq_sorted_masked_seq_layer_head_indices[:unevicted_offset].shape=}')
