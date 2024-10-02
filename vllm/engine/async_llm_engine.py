@@ -286,6 +286,13 @@ class _AsyncLLMEngine(LLMEngine):
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
+        if self.kvcompress_config:
+            cache_moves = self.scheduler[0].schedule_kvcompress()
+
+            if cache_moves:
+                self.model_executor.execute_cache_moves(cache_moves,
+                                                        self.kvcompress_state.kv_metrics)
+
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
@@ -293,7 +300,7 @@ class _AsyncLLMEngine(LLMEngine):
 
             # Schedule iteration
             (seq_group_metadata_list, scheduler_outputs,
-             allow_async_output_proc, cache_moves
+             allow_async_output_proc
              ) = self.scheduler[virtual_engine].schedule()
 
             ctx.seq_group_metadata_list = seq_group_metadata_list
@@ -313,10 +320,6 @@ class _AsyncLLMEngine(LLMEngine):
 
         assert seq_group_metadata_list is not None
         assert scheduler_outputs is not None
-
-        if cache_moves:
-            self.model_executor.execute_cache_moves(cache_moves,
-                                                    self.kvcompress_state.kv_metrics)
 
         if not scheduler_outputs.is_empty():
 
@@ -358,6 +361,8 @@ class _AsyncLLMEngine(LLMEngine):
                 execute_model_req)
 
             if self.kvcompress_config:
+                # Aggregate KV metrics that were collected to be used in sorting during
+                # later iterations.
                 self.kvcompress_state.kv_metrics.aggregate_decode()
 
             # we need to do this here so that last step's sampled_token_ids can
@@ -373,6 +378,13 @@ class _AsyncLLMEngine(LLMEngine):
         if self.scheduler_config.is_multi_step:
             for seq_group in seq_group_metadata_list:
                 seq_group.finish_step()
+
+        # Remove finished sequences from scheduler
+        if self.kvcompress_config:
+            for seq_group in scheduler_outputs.scheduled_seq_groups:
+                if seq_group.seq_group.is_finished():
+                    seq = seq_group.seq_group.get_seqs()[0]
+                    self.scheduler[virtual_engine].kvcompress_scheduler.complete_seqs([seq])
 
         if not self._has_remaining_steps(seq_group_metadata_list):
             # Clear the cache if we have finished all the steps

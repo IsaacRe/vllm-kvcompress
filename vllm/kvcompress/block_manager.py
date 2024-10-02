@@ -563,9 +563,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def mark_blocks_as_computed(self, seq_group: SequenceGroup, chunk_size: int):
         pass
 
-    def get_prefix_cache_hit_rate(self) -> float:
+    def get_prefix_cache_hit_rate(self, device: Device) -> float:
         """Prefix cache hit rate. -1 means not supported or disabled."""
-        pass
+        return -1
 
     def checkpoint(self) -> None:
         self.block_state.checkpoint()

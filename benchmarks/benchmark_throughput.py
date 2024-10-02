@@ -674,7 +674,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--kvc-interval",
         type=int,
-        default=1,
+        default=1_000_000,
         help="Compress KV cache every n iterations",
     )
     parser.add_argument(
