@@ -21,6 +21,14 @@ This is a (messy) fork of [vLLM](https://github.com/vllm-project/vllm) v0.6.0 sh
 
 <img src="experiments/out-8b/longbench_score_by_cr.jpg" width=400px><img src="experiments/out-8b/throughtput_by_cr.jpg" width=400px>
 
+## Current Limitations
+We will be expanding the set of supported vLLM features as we upstream this work. The following features are not *yet* supported:
+- Tensor Parallelism
+- Chunked-prefill
+- Prefix caching
+- FlashInfer and other non-FlashAttention attention backends
+- CUDA graphs
+
 ## Setup
 
 It is recommended to run within the NVIDIA PyTorch image:
