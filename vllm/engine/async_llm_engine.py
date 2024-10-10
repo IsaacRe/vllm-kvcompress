@@ -279,11 +279,19 @@ class _AsyncLLMEngine(LLMEngine):
         seq_group_metadata_list = cached_outputs.seq_group_metadata_list
         scheduler_outputs = cached_outputs.scheduler_outputs
         allow_async_output_proc = cached_outputs.allow_async_output_proc
+        cache_moves = None
 
         ctx = self.scheduler_contexts[virtual_engine]
 
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
+
+        if self.kvcompress_config:
+            cache_moves = self.scheduler[0].schedule_kvcompress()
+
+            if cache_moves:
+                self.model_executor.execute_cache_moves(cache_moves,
+                                                        self.kvcompress_state.kv_metrics)
 
         # skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
@@ -314,6 +322,7 @@ class _AsyncLLMEngine(LLMEngine):
         assert scheduler_outputs is not None
 
         if not scheduler_outputs.is_empty():
+
             finished_requests_ids = self.scheduler[
                 virtual_engine].get_and_reset_finished_requests_ids()
 
@@ -335,15 +344,26 @@ class _AsyncLLMEngine(LLMEngine):
                 finished_requests_ids=finished_requests_ids,
                 # We use ExecuteModelRequest to pass the last sampled_token_ids
                 # to each of the non-last PP stages for in-place prepare_input.
-                last_sampled_token_ids=last_sampled_token_ids)
+                last_sampled_token_ids=last_sampled_token_ids,
+                kvc_state=self.kvcompress_state)
 
             if allow_async_output_proc:
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
+            if self.kvcompress_config:
+                # Temp metrics must be cleared before each forward pass to ensure correct
+                # metric aggregation afterward
+                self.kvcompress_state.kv_metrics.clear_temp_metrics()
+
             # Execute the model.
             output = await self.model_executor.execute_model_async(
                 execute_model_req)
+
+            if self.kvcompress_config:
+                # Aggregate KV metrics that were collected to be used in sorting during
+                # later iterations.
+                self.kvcompress_state.kv_metrics.aggregate_decode()
 
             # we need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
@@ -358,6 +378,13 @@ class _AsyncLLMEngine(LLMEngine):
         if self.scheduler_config.is_multi_step:
             for seq_group in seq_group_metadata_list:
                 seq_group.finish_step()
+
+        # Remove finished sequences from scheduler
+        if self.kvcompress_config:
+            for seq_group in scheduler_outputs.scheduled_seq_groups:
+                if seq_group.seq_group.is_finished():
+                    seq = seq_group.seq_group.get_seqs()[0]
+                    self.scheduler[virtual_engine].kvcompress_scheduler.complete_seqs([seq])
 
         if not self._has_remaining_steps(seq_group_metadata_list):
             # Clear the cache if we have finished all the steps
@@ -409,6 +436,7 @@ class _AsyncLLMEngine(LLMEngine):
         prompt: str,
         request_id: str,
         lora_request: Optional[LoRARequest],
+        **tokenization_kwargs,
     ) -> List[int]:
         """Async version of :meth:`_tokenize_prompt`."""
         tokenizer = self.get_tokenizer_group(
@@ -416,7 +444,8 @@ class _AsyncLLMEngine(LLMEngine):
 
         return await tokenizer.encode_async(request_id=request_id,
                                             prompt=prompt,
-                                            lora_request=lora_request)
+                                            lora_request=lora_request,
+                                            **tokenization_kwargs)
 
     async def _extract_prompt_components_async(
         self,
@@ -425,6 +454,7 @@ class _AsyncLLMEngine(LLMEngine):
         lora_request: Optional[LoRARequest] = None,
     ) -> PromptComponents:
         """Async version of :meth:`_extract_prompt_components`."""
+        reference_token_ids = None
         if isinstance(inputs, str):
             prompt = inputs
             prompt_token_ids = await self._tokenize_prompt_async(
@@ -446,11 +476,21 @@ class _AsyncLLMEngine(LLMEngine):
                     lora_request=lora_request,
                 )
 
+            if "reference_token_ids" in inputs:
+                reference_token_ids = inputs["reference_token_ids"]
+            elif "reference_completion" in inputs:
+                reference_token_ids = await self._tokenize_prompt_async(
+                    inputs["reference_completion"],
+                    request_id=request_id,
+                    lora_request=lora_request,
+                    add_special_tokens=False,
+                )
+
             multi_modal_data = inputs.get("multi_modal_data")
         else:
             assert_never(inputs)
 
-        return prompt, prompt_token_ids, multi_modal_data
+        return prompt, prompt_token_ids, multi_modal_data, reference_token_ids
 
     async def _process_encoder_decoder_prompt_async(
         self,
@@ -973,7 +1013,7 @@ class AsyncLLMEngine:
         arrival_time: Optional[float] = None,
         lora_request: Optional[LoRARequest] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
-        prompt_adapter_request: Optional[PromptAdapterRequest] = None
+        prompt_adapter_request: Optional[PromptAdapterRequest] = None,
     ) -> AsyncGenerator[Union[RequestOutput, EmbeddingRequestOutput], None]:
         if not self.is_running:
             if self.start_engine_loop:
@@ -1020,7 +1060,7 @@ class AsyncLLMEngine:
             request_id: The unique id of the request.
             lora_request: LoRA request to use for generation, if any.
             trace_headers: OpenTelemetry trace headers.
-            prompt_adapter_request: Prompt Adapter request to use 
+            prompt_adapter_request: Prompt Adapter request to use
                                             for generation, if any.
 
         Yields:

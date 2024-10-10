@@ -8,7 +8,9 @@ import torch
 from transformers import PretrainedConfig
 
 import vllm.envs as envs
+from vllm.debug import CHECKPOINTER
 from vllm.logger import init_logger
+from vllm.utils import get_dtype_size
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.model_executor.models import ModelRegistry
 from vllm.platforms import current_platform
@@ -58,8 +60,8 @@ class ModelConfig:
 
     Args:
         model: Name or path of the huggingface model to use.
-            It is also used as the content for `model_name` tag in metrics 
-            output when `served_model_name` is not specified. 
+            It is also used as the content for `model_name` tag in metrics
+            output when `served_model_name` is not specified.
         tokenizer: Name or path of the huggingface tokenizer to use.
         tokenizer_mode: Tokenizer mode. "auto" will use the fast tokenizer if
             available, "slow" will always use the slow tokenizer, and
@@ -110,15 +112,15 @@ class ModelConfig:
         skip_tokenizer_init: If true, skip initialization of tokenizer and
             detokenizer.
         served_model_name: The model name used in metrics tag `model_name`,
-            matches the model name exposed via the APIs. If multiple model 
-            names provided, the first name will be used. If not specified, 
+            matches the model name exposed via the APIs. If multiple model
+            names provided, the first name will be used. If not specified,
             the model name will be the same as `model`.
-        limit_mm_per_prompt: Maximum number of data instances per modality 
+        limit_mm_per_prompt: Maximum number of data instances per modality
             per prompt. Only applicable for multimodal models.
-        override_neuron_config: Initialize non default neuron config or 
-            override default neuron config that are specific to Neuron devices, 
-            this argument will be used to configure the neuron config that 
-            can not be gathered from the vllm arguments. 
+        override_neuron_config: Initialize non default neuron config or
+            override default neuron config that are specific to Neuron devices,
+            this argument will be used to configure the neuron config that
+            can not be gathered from the vllm arguments.
     """
 
     def __init__(
@@ -528,6 +530,10 @@ class ModelConfig:
         num_heads = getattr(self.hf_text_config, "num_attention_heads", 0)
         return num_heads // parallel_config.tensor_parallel_size
 
+    def get_num_queries_per_kv(self) -> int:
+        """Returns the number of query heads per KV head."""
+        return self.hf_text_config.num_attention_heads // self.get_total_num_kv_heads()
+
     def get_num_layers(self, parallel_config: "ParallelConfig") -> int:
         from vllm.distributed.utils import get_pp_indices
         total_num_hidden_layers = getattr(self.hf_text_config,
@@ -613,15 +619,23 @@ class CacheConfig:
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
         cpu_offload_gb: float = 0,
+        enable_kvcompress: bool = False,
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
-        self.swap_space_bytes = swap_space * GiB_bytes
+        # Swap-preemption not yet supported with KV-Compress
+        self.swap_space_bytes = 0 if enable_kvcompress else swap_space * GiB_bytes
         self.num_gpu_blocks_override = num_gpu_blocks_override
         self.cache_dtype = cache_dtype
         self.sliding_window = sliding_window
+        if enable_kvcompress:
+            logger.warning("Model has sliding window configured, but "
+                           "it will be disabled due to incompatibility with "
+                           "KV-Compress.")
+            self.sliding_window = None
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
+        self.enable_kvcompress = enable_kvcompress
         self._verify_args()
         self._verify_cache_dtype()
         self._verify_prefix_caching()
@@ -636,6 +650,11 @@ class CacheConfig:
         return {key: str(value) for key, value in self.__dict__.items()}
 
     def _verify_args(self) -> None:
+        if self.enable_kvcompress:
+            if self.sliding_window is not None:
+                raise ValueError(
+                    "Sliding window and KV-Compress are not compatible")
+
         if self.gpu_memory_utilization > 1.0:
             raise ValueError(
                 "GPU memory utilization must be less than 1.0. Got "
@@ -680,6 +699,8 @@ class CacheConfig:
         elif cpu_memory_usage > 0.4 * total_cpu_memory:
             logger.warning("Possibly too large swap space. %s", msg)
 
+        if self.enable_kvcompress and parallel_config.world_size > 1:
+            raise ValueError("KV-Compress with multi-GPU not yet supported")
 
 @dataclass
 class TokenizerPoolConfig:
@@ -765,9 +786,9 @@ class LoadConfig:
                 fast weight loading.
             "bitsandbytes" will load nf4 type weights.
         ignore_patterns: The list of patterns to ignore when loading the model.
-            Default to "original/**/*" to avoid repeated loading of llama's 
+            Default to "original/**/*" to avoid repeated loading of llama's
             checkpoints.
-            
+
     """
 
     load_format: Union[str, LoadFormat, "BaseModelLoader"] = LoadFormat.AUTO
@@ -924,6 +945,209 @@ class ParallelConfig:
                              "run with Ray.")
 
 
+class CheckpointConfig:
+
+    def __init__(
+        self,
+        save_checkpoint_dir: str,
+        load_checkpoint_dir: str,
+    ) -> None:
+        self.save_checkpoint_dir = save_checkpoint_dir
+        self.load_checkpoint_dir = load_checkpoint_dir
+
+        # Configure checkpointer
+        CHECKPOINTER.do_save = bool(save_checkpoint_dir)
+        CHECKPOINTER.do_validate = bool(load_checkpoint_dir)
+        CHECKPOINTER.base_dir = save_checkpoint_dir or load_checkpoint_dir
+
+        self._verify_args()
+
+    def _verify_args(self):
+        if self.save_checkpoint_dir and self.load_checkpoint_dir:
+            raise ValueError("cannot specify both save_checkpoint_dir and "
+                             "load_checkpoint_dir")
+
+
+class KVCompressConfig:
+    """Configuration for KV-Compress
+
+    Since all KVs for a particular sequence need to be compressed at the
+    same time, a set of sequences will be selected each iteration
+    so that the total KV count between them remains under the configured
+    max_kv_per_compression. The need for limiting the number of KVs during
+    compression is due to the reliance on running torch.sort over the metrics
+    for all KVs implicated in the compression. Runtime for torch.sort begins
+    scaling linearly with array length for large arrays, so to keep the
+    compression latency minimal, the number of KVs per iteration
+    needs to be kept small (< ~100,000,000). Additionally, the memory
+    overhead for torch.sort for large tensors is ~8x the footprint
+    of the input array, so we keep it small to leave more space for
+    KV cache.
+
+    Args:
+        target_compression_rate: The target compression rate for each
+            sequence.
+        compression_interval: Number of decoding iterations between each
+            compression iteration.
+        use_tiered_block_table: Whether two use two-tiered block-table
+            to reduce memory footprint of the block tables.
+        max_num_blocks_per_head: The maximum number of cache blocks per
+            sequence per KV head.
+        max_kv_per_compression: The maximum number of KVs that will be
+            compressed during each iteration of KV-Compress.
+        protected_window_size: The minimum sequence length before we
+            begin compression for a sequence. We do not compress the last
+            protected_window_size tokens.
+        metric_collection_buffer_size: The minimum distance between a
+            query and key for the attention between them to be aggregated
+            into KV metrics. Must be <= protected_window_size.
+        kv_head_bias_path: Path to the tensor holding metric bias for each
+            KV head of the model. Can be a URL, local path or huggingface
+            repo/path.
+        random_evict: Whether to run random eviction baseline.
+    """
+    def __init__(
+        self,
+        target_compression_rate: float,
+        max_cache_tokens: int,
+        compression_interval: int,
+        num_layers: int,
+        num_kv_heads: int,
+        num_queries_per_kv: int,
+        max_num_blocks_per_head: int,
+        max_blocks: int,
+        max_kv_per_compression: int,
+        protected_window_size: int,
+        metric_collection_buffer_size: int,
+        prefill_metric_collection_window_size: int,
+        prefill_metric_collection_block_size: int,
+        metric_aggregation: str,
+        maxpool_metrics: bool,
+        record_decoding_metrics: bool,
+        kv_head_bias_path: str,
+        kv_head_bias_weight: float,
+        random_evict: bool,
+        even_layer_evict: bool,
+        control_layers: List[int],
+        new_token_limit: int,
+        enable_flash_kvc: bool,
+    ) -> None:
+        self.target_compression_rate = target_compression_rate
+        self.max_cache_tokens = max_cache_tokens
+        self.compression_interval = compression_interval
+        self.num_layers = num_layers
+        self.num_kv_heads = num_kv_heads
+        self.num_queries_per_kv = num_queries_per_kv
+        self.max_num_blocks_per_head = max_num_blocks_per_head
+        self.max_blocks = max_blocks
+        self.max_kv_per_compression = max_kv_per_compression
+        self.protected_window_size = protected_window_size
+        self.metric_collection_buffer_size = metric_collection_buffer_size
+        self.prefill_metric_collection_window_size = prefill_metric_collection_window_size
+        self.prefill_metric_collection_block_size = prefill_metric_collection_block_size
+        self.metric_aggregation = metric_aggregation
+        l2_or_l1, avg_or_sum = metric_aggregation.split("-")
+        self.kv_metric_use_l2 = l2_or_l1 == "L2"
+        self.kv_metric_use_average = avg_or_sum == "avg"
+        self.kv_metric_use_maxpool = maxpool_metrics
+        self.record_decoding_metrics = record_decoding_metrics
+        self.kv_head_bias_path = kv_head_bias_path
+        self.kv_head_bias_weight = kv_head_bias_weight
+        self.random_evict = random_evict
+        self.even_layer_evict = even_layer_evict
+        self.control_layers = control_layers
+        self.new_token_limit = new_token_limit
+        self.enable_flash_kvc = False
+
+        self._verify_args()
+
+    def _verify_args(self) -> None:
+        if (self.max_cache_tokens > 0 and self.target_compression_rate < 1.0):
+            raise ValueError("only one of target_compression_rate and "
+                             "max_cache_tokens may be specified")
+
+        if (self.target_compression_rate <= 0.0
+            or self.target_compression_rate > 1.0):
+            raise ValueError("target_compression_rate must be in (0, 1]")
+
+        if self.compression_interval < 1:
+            raise ValueError("compression_interval must be >= 1")
+
+        if self.num_layers <= 0 or self.num_kv_heads <= 0:
+            raise ValueError(
+                "num_layers and num_kv_heads should both be > 0")
+
+        if self.metric_collection_buffer_size > self.protected_window_size:
+            raise ValueError(
+                "metric_collection_buffer_size cannot be greater than "
+                "protected_window_size")
+
+        if (self.max_cache_tokens > 0
+            and self.protected_window_size > self.max_cache_tokens):
+            raise ValueError("max_cache_tokens must be greater than "
+                             "protected_window_size if it is specified")
+
+        if self.random_evict and self.even_layer_evict:
+            raise ValueError("cannot specify both random_evict and "
+                             "even_layer_evict")
+
+        if self.control_layers and min(self.control_layers) < 0:
+            raise ValueError("control_layers cannot include indices < 0")
+
+        if self.control_layers and max(self.control_layers) >= self.num_layers:
+            raise ValueError("control_layers cannot include indices "
+                             f"> maximum layer index (={self.num_layers})")
+
+        if self.control_layers and not self.even_layer_evict:
+            raise ValueError("control_layers can only be scpecified "
+                             "when setting even_layer_evict")
+
+        if self.metric_aggregation not in ["L1-sum", "L2-sum", "L1-avg", "L2-avg"]:
+            raise ValueError("invalid kv-metric aggregation")
+
+        if self.enable_flash_kvc:
+            try:
+                import flash_attn_kvc
+            except Exception as e:
+                raise ValueError(f"failed to import flash_attn_kvc: {e}\n "
+                                 "Ensure package is installed or set "
+                                 "enable_flash_kvc=False")
+
+    def get_cache_block_size(
+        self,
+        block_size: int,
+        head_size: int,
+        cache_dtype_size: int) -> int:
+        key_cache_block = block_size * head_size * cache_dtype_size
+        value_cache_block = key_cache_block
+
+        # Compute KV-Compress overhead
+        bool_size = get_dtype_size(torch.bool)
+        int_size = get_dtype_size(torch.int)
+        long_size = get_dtype_size(torch.int64)
+        float_size = get_dtype_size(torch.float)
+
+        # Overhead per block
+        per_block_overhead = 1 * int_size  # layer index (for scheduling)
+        per_block_overhead += 1 * int_size  # head index (for scheduling)
+        per_block_overhead += 1 * int_size  # logical block index (for scheduling)
+        per_block_overhead += 1 * long_size  # block index (for allocation)
+        per_block_overhead += 1 * bool_size  # free block mask (for allocation)
+
+        # Overhead per KV
+        per_kv_overhead = 1 * int_size  # sequence index
+        per_kv_overhead += 1 * float_size  # metrics tensor
+        per_kv_overhead += self.num_queries_per_kv * float_size  # temp_metrics tensor
+        per_kv_overhead += self.num_queries_per_kv * float_size  # temp_v2_metrics tensor
+        per_kv_overhead += 1 * int_size  # token position (for scheduling and paged attn)
+
+        block_size = (
+            key_cache_block + value_cache_block +
+            per_block_overhead + block_size * per_kv_overhead)
+
+        return block_size
+
+
 class SchedulerConfig:
     """Scheduler configuration.
 
@@ -944,7 +1168,7 @@ class SchedulerConfig:
         enable_chunked_prefill: If True, prefill requests can be chunked based
             on the remaining max_num_batched_tokens.
         embedding_mode: Whether the running model is for embedding.
-        preemption_mode: Whether to perform preemption by swapping or 
+        preemption_mode: Whether to perform preemption by swapping or
             recomputation. If not specified, we determine the mode as follows:
             We use recomputation by default since it incurs lower overhead than
             swapping. However, when the sequence group has multiple sequences
@@ -1154,7 +1378,7 @@ class SpeculativeConfig:
             typical_acceptance_sampler_posterior_threshold (Optional[float]):
                 A threshold value that sets a lower bound on the posterior
                 probability of a token in the target model for it to be
-                accepted. This threshold is used only when we use the 
+                accepted. This threshold is used only when we use the
                 TypicalAcceptanceSampler for token acceptance.
             typical_acceptance_sampler_posterior_alpha (Optional[float]):
                 A scaling factor for the entropy-based threshold in the
@@ -1164,7 +1388,7 @@ class SpeculativeConfig:
                 If set to False, token log probabilities are returned
                 according to the log probability settings in SamplingParams.
                 If not specified, it defaults to True.
-    
+
         Returns:
             Optional["SpeculativeConfig"]: An instance of SpeculativeConfig if
                 the necessary conditions are met, else None.
@@ -1409,13 +1633,13 @@ class SpeculativeConfig:
             typical_acceptance_sampler_posterior_threshold (Optional[float]):
                 A threshold value that sets a lower bound on the posterior
                 probability of a token in the target model for it to be
-                accepted. This threshold is used only when we use the 
+                accepted. This threshold is used only when we use the
                 TypicalAcceptanceSampler for token acceptance.
             typical_acceptance_sampler_posterior_alpha (Optional[float]):
                 A scaling factor for the entropy-based threshold in the
                 TypicalAcceptanceSampler.
             disable_logprobs: If set to True, token log probabilities will not
-                be returned even if requested by sampling parameters. This 
+                be returned even if requested by sampling parameters. This
                 reduces latency by skipping logprob calculation in proposal
                 sampling, target sampling, and after accepted tokens are
                 determined. If set to False, log probabilities will be
@@ -1780,10 +2004,10 @@ def _get_and_verify_max_len(
 def get_served_model_name(model: str,
                           served_model_name: Optional[Union[str, List[str]]]):
     """
-    If the input is a non-empty list, the first model_name in 
-    `served_model_name` is taken. 
-    If the input is a non-empty string, it is used directly. 
-    For cases where the input is either an empty string or an 
+    If the input is a non-empty list, the first model_name in
+    `served_model_name` is taken.
+    If the input is a non-empty string, it is used directly.
+    For cases where the input is either an empty string or an
     empty list, the fallback is to use `self.model`.
     """
     if not served_model_name:
@@ -1853,6 +2077,7 @@ class EngineConfig:
     decoding_config: Optional[DecodingConfig]
     observability_config: Optional[ObservabilityConfig]
     prompt_adapter_config: Optional[PromptAdapterConfig]
+    kvcompress_config: Optional[KVCompressConfig]
 
     def __post_init__(self):
         """Verify configs are valid & consistent with each other.

@@ -211,6 +211,8 @@ class LLM:
         sampling_params: Optional[Union[SamplingParams,
                                         List[SamplingParams]]] = None,
         prompt_token_ids: Optional[List[List[int]]] = None,
+        reference_completions: Optional[Union[str, List[Optional[str]]]] = None,
+        reference_token_ids: Optional[List[Optional[List[int]]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
     ) -> List[RequestOutput]:

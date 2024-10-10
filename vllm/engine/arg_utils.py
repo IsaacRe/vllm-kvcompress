@@ -1,7 +1,7 @@
 import argparse
 import dataclasses
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import (TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple,
                     Type, Union)
 
@@ -12,12 +12,14 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          EngineConfig, LoadConfig, LoadFormat, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig,
-                         SpeculativeConfig, TokenizerPoolConfig)
+                         SpeculativeConfig, TokenizerPoolConfig,
+                         KVCompressConfig, CheckpointConfig)
 from vllm.executor.executor_base import ExecutorBase
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.transformers_utils.utils import check_gguf_file
 from vllm.utils import FlexibleArgumentParser
+from vllm.debug import CHECKPOINTER
 
 if TYPE_CHECKING:
     from vllm.transformers_utils.tokenizer_group import BaseTokenizerGroup
@@ -150,6 +152,31 @@ class EngineArgs:
     collect_detailed_traces: Optional[str] = None
     disable_async_output_proc: bool = False
     override_neuron_config: Optional[Dict[str, Any]] = None
+
+    # KV-Compress configuration.
+    enable_kvcompress: bool = False
+    target_compression_rate: float = 1.0
+    max_cache_tokens: int = -1
+    compression_interval: int = 1
+    max_kv_per_compression: int = 5_000_000
+    protected_window_size: int = 64
+    metric_collection_buffer_size: int = 0
+    prefill_metric_collection_window_size: int = 32
+    prefill_metric_collection_block_size: int = 4096
+    metric_aggregation: str = "L2-sum"
+    maxpool_metrics: bool = True
+    record_decoding_metrics: bool = True
+    kv_head_bias_path: str = ""
+    kv_head_bias_weight: int = 1.0
+    random_evict: bool = False
+    even_layer_evict: bool = False
+    control_layers: List[int] = field(default_factory=list)
+    new_token_limit: int = -1
+    enable_flash_kvc: bool = False
+
+    # Checkpointing (for debugging purposes)
+    save_checkpoint_dir: str = ""
+    load_checkpoint_dir: str = ""
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -753,6 +780,149 @@ class EngineArgs:
             default=None,
             help="override or set neuron device configuration.")
 
+        # KV-Compress configuration
+        parser.add_argument('--enable-kvcompress',
+                            action='store_true',
+                            help='If set, run online KV cache compression '
+                            'with KV-Compress for better throughput.')
+
+        parser.add_argument('--target-compression-rate',
+                            type=float,
+                            default=1.0,
+                            help='KV cache compression rate for '
+                            'KV-Compress. Sequences scheduled for '
+                            'compression will be compressed down to '
+                            'this proportion of total sequence length '
+                            'during each compression iteration.')
+
+        parser.add_argument('--max-cache-tokens',
+                            type=int,
+                            default=-1,
+                            help='Max number of tokens-worth of KVs to '
+                            'in KV cache. Compression will be scheduled '
+                            'for any sequences that go over this limit '
+                            'to compress down to the configured number '
+                            'of KVs.')
+
+        parser.add_argument('--compression-interval',
+                            type=int,
+                            default=1,
+                            help='Number of decoding iterations between '
+                            'each compression iteration. Raise to reduce '
+                            'overhead from running the compression. '
+                            'By default the compression will run every '
+                            'decoding iteration.')
+
+        parser.add_argument('--max-kv-per-compression',
+                            type=int,
+                            default=5_000_000,
+                            help='Maximum number of KVs to process '
+                            'during each compression iteration. '
+                            'Should be set < 100_000_000 to avoid '
+                            'expensize memory and latency overhead from '
+                            'sorting metrics of all participating KVs.')
+
+        parser.add_argument('--protected-window-size',
+                            type=int,
+                            default=64,
+                            help='Avoid compressing KVs that correspond '
+                            'to the last N tokens. This setting defines '
+                            'the value of N.')
+
+        parser.add_argument('--metric-collection-buffer-size',
+                            type=int,
+                            default=0,
+                            help='Avoid collecting compression metrics '
+                            'between keys and queries that are less than '
+                            'N positions apart. This setting defines the '
+                            'value of N. Should be <= '
+                            'protected_window_size.')
+
+        parser.add_argument('--prefill-metric-collection-window-size',
+                            type=int,
+                            default=32,
+                            help='We initialize KV metrics with aggregate '
+                            'attention for each key over the last N prompt '
+                            'queries. Defines N.')
+
+        parser.add_argument('--prefill-metric-collection-block-size',
+                            type=int,
+                            default=4096,
+                            help='Max number of KVs to collect metrics for '
+                            'in parallel during prefill.')
+
+        parser.add_argument('--metric-aggregation',
+                            type=str,
+                            choices=['L1-sum', 'L2-sum', 'L1-avg', 'L2-avg'],
+                            default='L2-sum',
+                            help='How to aggregate attention over queries '
+                            'to obtain eviction metric per KV.')
+
+        parser.add_argument('--no-maxpool-metrics',
+                            action='store_false',
+                            dest='maxpool_metrics',
+                            help='Whether to apply max pooling over sequence '
+                            'dimension of KV metrics used for eviction.')
+
+        parser.add_argument('--only-prefill-metrics',
+                            action='store_false',
+                            dest='record_decoding_metrics',
+                            help='Whether to only collect KV metrics '
+                            'during prefill phase to reduce latency '
+                            'in paged-attention kernel.')
+
+        parser.add_argument('--kv-head-bias-path',
+                            type=str,
+                            default='',
+                            help='Path to the tensor containing bias '
+                            'for each KV head of the model. Can be a '
+                            'URL, local path or huggingface repo/path.')
+
+        parser.add_argument('--kv-head-bias-weight',
+                            type=float,
+                            default=1.0,
+                            help='Global weight applied to all KV head '
+                            'biases.')
+
+        parser.add_argument('--random-evict',
+                            action='store_true',
+                            help='Whether to run random-eviction baseline.')
+
+        parser.add_argument('--even-layer-evict',
+                            action='store_true',
+                            help='Whether to evict the same number of KVs '
+                            'per layer.')
+
+        parser.add_argument('--control-layers',
+                            nargs='*',
+                            type=int,
+                            help='Specify indices of layers for which '
+                            'KV cache compression will be avoided. '
+                            'Can only be specified when --even-layer-evict '
+                            'is also set.')
+
+        parser.add_argument('--new-token-limit',
+                            type=int,
+                            default=-1,
+                            help='Number of new tokens to allow before '
+                            'a compression iteration is forced.')
+
+        parser.add_argument('--enable-flash-kvc',
+                            action='store_true',
+                            help='Enable custom flash-attn implementation '
+                            'that returns a slice of the attention matrix '
+                            'that is used to compute initial KV metrics '
+                            'during prefill.')
+
+        # Checkpointing
+        parser.add_argument('--save-checkpoint-dir',
+                            type=str,
+                            default='')
+
+        parser.add_argument('--load-checkpoint-dir',
+                            type=str,
+                            default='')
+
         return parser
 
     @classmethod
@@ -824,6 +994,7 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            enable_kvcompress=self.enable_kvcompress,
         )
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,
@@ -971,6 +1142,47 @@ class EngineArgs:
         decoding_config = DecodingConfig(
             guided_decoding_backend=self.guided_decoding_backend)
 
+        if self.load_checkpoint_dir or self.save_checkpoint_dir:
+            CheckpointConfig(
+                self.save_checkpoint_dir,
+                self.load_checkpoint_dir,
+            )
+
+        if self.enable_kvcompress:
+            max_model_len = self.max_model_len or model_config.max_model_len
+            max_blocks_per_head = (max_model_len + self.block_size
+                          - 1) // self.block_size
+            num_layers = model_config.get_num_layers(parallel_config)
+            num_kv_heads = model_config.get_total_num_kv_heads()
+            kvcompress_config = KVCompressConfig(
+                target_compression_rate=self.target_compression_rate,
+                max_cache_tokens=self.max_cache_tokens,
+                compression_interval=self.compression_interval,
+                num_layers=num_layers,
+                num_kv_heads=num_kv_heads,
+                num_queries_per_kv=model_config.get_num_queries_per_kv(),
+                max_num_blocks_per_head=max_blocks_per_head,
+                max_blocks=(max_blocks_per_head * self.max_num_seqs * num_layers
+                            * num_kv_heads),
+                max_kv_per_compression=self.max_kv_per_compression,
+                protected_window_size=self.protected_window_size,
+                metric_collection_buffer_size=self.metric_collection_buffer_size,
+                prefill_metric_collection_window_size=self.prefill_metric_collection_window_size,
+                prefill_metric_collection_block_size=self.prefill_metric_collection_block_size,
+                metric_aggregation=self.metric_aggregation,
+                maxpool_metrics=self.maxpool_metrics,
+                record_decoding_metrics=self.record_decoding_metrics,
+                kv_head_bias_path=self.kv_head_bias_path,
+                kv_head_bias_weight=self.kv_head_bias_weight,
+                random_evict=self.random_evict,
+                even_layer_evict=self.even_layer_evict,
+                control_layers=self.control_layers,
+                new_token_limit=self.new_token_limit,
+                enable_flash_kvc=self.enable_flash_kvc,
+            )
+        else:
+            kvcompress_config = None
+
         detailed_trace_modules = []
         if self.collect_detailed_traces is not None:
             detailed_trace_modules = self.collect_detailed_traces.split(",")
@@ -1006,6 +1218,7 @@ class EngineArgs:
             decoding_config=decoding_config,
             observability_config=observability_config,
             prompt_adapter_config=prompt_adapter_config,
+            kvcompress_config=kvcompress_config,
         )
 
 

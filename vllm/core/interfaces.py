@@ -1,6 +1,6 @@
 import enum
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 from typing import Sequence as GenericSequence
 from typing import Tuple
 
@@ -53,7 +53,8 @@ class BlockSpaceManager(ABC):
 
     @abstractmethod
     def can_append_slots(self, seq_group: SequenceGroup,
-                         num_lookahead_slots: int) -> bool:
+                         num_lookahead_slots: int,
+                         num_free_blocks: Optional[int] = None) -> bool:
         pass
 
     @abstractmethod

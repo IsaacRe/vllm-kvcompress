@@ -4,6 +4,8 @@ from dataclasses import dataclass, fields
 from enum import Enum, auto
 from typing import (TYPE_CHECKING, Any, Dict, Generic, List, Optional, Set,
                     Tuple, Type, TypeVar)
+from vllm.kvcompress.block import BlockState
+
 
 import torch
 
@@ -102,6 +104,13 @@ class AttentionMetadata:
     # is 16, the three tokens are stored in the 3rd slot in block 2, 2nd slot
     # in block 0, and 1st slot in block 1, respectively.
     slot_mapping: torch.Tensor
+    # The kv cache's data type.
+    kv_cache_dtype: str
+
+    def __post_init__(self):
+        # If layer-specific metadata is required during attention, layer_index
+        # should be set before each call to the attention backend.
+        self.layer_index = None
 
     @property
     @abstractmethod
@@ -129,6 +138,11 @@ class AttentionMetadata:
             field.name: getattr(self, field.name)
             for field in fields(self) if field.name not in skip_fields
         }
+
+    def set_layer(self, layer_index: int) -> "AttentionMetadata":
+        """Record the active layer and return."""
+        self.layer_index = layer_index
+        return self
 
 
 T = TypeVar("T", bound=AttentionMetadata)
@@ -184,7 +198,8 @@ class AttentionMetadataBuilder(ABC, Generic[T]):
 
     @abstractmethod
     def build(self, seq_lens: List[int], query_lens: List[int],
-              cuda_graph_pad_size: int, batch_size: int) -> T:
+              cuda_graph_pad_size: int, batch_size: int,
+              block_state: Optional[BlockState]) -> T:
         """Build attention metadata with on-device tensors."""
         raise NotImplementedError
 

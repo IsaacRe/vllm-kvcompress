@@ -267,6 +267,24 @@ class ChatCompletionRequest(OpenAIBaseModel):
             "If specified, will override the default whitespace pattern "
             "for guided json decoding."))
 
+    # KV-Compress
+    protected_window_size: Optional[int] = Field(
+        default=32,
+        description=(
+            "Number of last tokens whose KVs should be protected from "
+            "compression."))
+    max_cache_tokens: Optional[int] = Field(
+        default=-1,
+        description=(
+            "Maximum number of tokens worth of KVs that should be kept "
+            "in cache for this sequence."))
+    compress_once: Optional[int] = Field(
+        default=False,
+        description=(
+            "Whether to limit compression of this sequence to a single "
+            "iteration following prefill, allowing decoding to go on "
+            "unperturbed."))
+
     # doc: end-chat-completion-extra-params
 
     def to_sampling_params(
@@ -316,6 +334,9 @@ class ChatCompletionRequest(OpenAIBaseModel):
             length_penalty=self.length_penalty,
             logits_processors=logits_processors,
             truncate_prompt_tokens=self.truncate_prompt_tokens,
+            max_cache_tokens=self.max_cache_tokens,
+            protected_window_size=self.protected_window_size,
+            compress_once=self.compress_once,
         )
 
     @model_validator(mode="before")
@@ -509,6 +530,24 @@ class CompletionRequest(OpenAIBaseModel):
             "If specified, will override the default whitespace pattern "
             "for guided json decoding."))
 
+    # KV-Compress
+    protected_window_size: Optional[int] = Field(
+        default=32,
+        description=(
+            "Number of last tokens whose KVs should be protected from "
+            "compression."))
+    max_cache_tokens: Optional[int] = Field(
+        default=-1,
+        description=(
+            "Maximum number of tokens worth of KVs that should be kept "
+            "in cache for this sequence."))
+    compress_once: Optional[int] = Field(
+        default=False,
+        description=(
+            "Whether to limit compression of this sequence to a single "
+            "iteration following prefill, allowing decoding to go on "
+            "unperturbed."))
+
     # doc: end-completion-extra-params
 
     def to_sampling_params(
@@ -559,6 +598,9 @@ class CompletionRequest(OpenAIBaseModel):
             length_penalty=self.length_penalty,
             logits_processors=logits_processors,
             truncate_prompt_tokens=self.truncate_prompt_tokens,
+            max_cache_tokens=self.max_cache_tokens,
+            protected_window_size=self.protected_window_size,
+            compress_once=self.compress_once,
         )
 
     @model_validator(mode="before")

@@ -6,9 +6,14 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import (Callable, Deque, Dict, Iterable, List, Optional, Set,
                     Tuple, Union)
+import torch
 
-from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
+from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig, KVCompressConfig
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
+from vllm.kvcompress.block_manager import BlockSpaceManagerKVC
+from vllm.kvcompress.block import BlockState, BlockStateView
+from vllm.kvcompress.scheduler import CompressionScheduler, CacheMoves, CompressionOutputs
+from vllm.kvcompress.state import KVCompressState
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.prompt_adapter.request import PromptAdapterRequest
@@ -16,6 +21,7 @@ from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta,
                            SequenceStatus)
 from vllm.utils import Device, PyObjectCache
+from vllm.benchmark import BENCHMARKER
 
 logger = init_logger(__name__)
 
@@ -303,6 +309,8 @@ class Scheduler:
         lora_config: Optional[LoRAConfig],
         pipeline_parallel_size: int = 1,
         output_proc_callback: Optional[Callable] = None,
+        kvcompress_config: Optional[KVCompressConfig] = None,
+        kvcompress_shared_state: Optional[KVCompressState] = None,
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
@@ -310,6 +318,7 @@ class Scheduler:
         # simple and NOT fair. It can lead to starvation of some
         # LoRAs. This should be improved in the future.
         self.lora_config = lora_config
+        self.kvcompress_config = kvcompress_config
 
         version = "v1"
         if self.scheduler_config.use_v2_block_manager:
@@ -317,24 +326,43 @@ class Scheduler:
         if self.scheduler_config.embedding_mode:
             version = "embedding"
 
-        BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(
-            version)
+        # Create the block space manager. If using KV-Compress initialize
+        # the compression scheduler.
+        self.kvcompress_scheduler = None
+        if self.kvcompress_config:
+            assert kvcompress_shared_state is not None
+            # Do not yet support swap with KV-Compress since any swaps would need
+            # coordination with the metrics tensor
+            self.scheduler_config.preemption_mode = "recompute"
+            self.block_manager = BlockSpaceManagerKVC(
+                block_size=cache_config.block_size,
+                num_gpu_blocks=cache_config.num_gpu_blocks,
+                num_cpu_blocks=cache_config.num_cpu_blocks,
+                kvcompress_config=self.kvcompress_config,
+                shared_state=kvcompress_shared_state)
+            self.kvcompress_scheduler = CompressionScheduler(
+                config=self.kvcompress_config,
+                block_manager=self.block_manager,
+                compression_metrics=kvcompress_shared_state.kv_metrics)
+        else:
+            BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(
+                version)
 
-        num_gpu_blocks = cache_config.num_gpu_blocks
-        if num_gpu_blocks:
-            num_gpu_blocks //= pipeline_parallel_size
+            num_gpu_blocks = cache_config.num_gpu_blocks
+            if num_gpu_blocks:
+                num_gpu_blocks //= pipeline_parallel_size
 
-        num_cpu_blocks = cache_config.num_cpu_blocks
-        if num_cpu_blocks:
-            num_cpu_blocks //= pipeline_parallel_size
+            num_cpu_blocks = cache_config.num_cpu_blocks
+            if num_cpu_blocks:
+                num_cpu_blocks //= pipeline_parallel_size
 
-        # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=num_gpu_blocks,
-            num_cpu_blocks=num_cpu_blocks,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching)
+            # Create the block space manager.
+            self.block_manager = BlockSpaceManagerImpl(
+                block_size=self.cache_config.block_size,
+                num_gpu_blocks=num_gpu_blocks,
+                num_cpu_blocks=num_cpu_blocks,
+                sliding_window=self.cache_config.sliding_window,
+                enable_caching=self.cache_config.enable_prefix_caching)
 
         # Sequence groups in the WAITING state.
         # Contain new prefill or preempted requests.
@@ -395,6 +423,19 @@ class Scheduler:
         # for processing and deallocation by the free_finished_seq_groups()
         self._async_stopped: List[SequenceGroup] = []
 
+        self.max_decoding_batch = 0
+
+        # Track whether there are past prefills in need of KV cache compression
+        self.uncompressed_prefill = False
+        # If we are forced to compress to avoid preemption we set a lock
+        # to prevent further prefilling until one or more generations
+        # currently running have been completed or preempted. This prevents
+        # immediately re-allocating the space that is reclaimed by compression,
+        # avoiding frequent compression-preemption cycles.
+        self.lock_prefill = False
+
+        self.logged_decoding = False
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -402,6 +443,10 @@ class Scheduler:
     @property
     def lora_enabled(self) -> bool:
         return bool(self.lora_config)
+
+    @property
+    def kvcompress_enabled(self) -> bool:
+        return bool(self.kvcompress_config)
 
     @property
     def num_decoding_tokens_per_seq(self) -> int:
@@ -489,6 +534,135 @@ class Scheduler:
         self._finished_requests_ids = list()
         return finished_requests_ids
 
+    @BENCHMARKER.wrap()
+    def _batch_schedule_running(
+        self,
+        budget: SchedulingBudget,
+        curr_loras: Optional[Set[int]],
+        enable_chunking: bool = False,
+    ) -> Tuple[deque, SchedulerRunningOutputs]:
+        """Schedule sequence groups that are running in parallel.
+        Used exclusively by KV-Compress.
+
+        Copy-on-write and chunked prefill not supported.
+
+        Running queue should include decode and chunked prefill requests.
+
+        Args:
+            running_queue: The queue that contains running requests (i.e.,
+                decodes). The given arguments are NOT in-place modified.
+            budget: The scheduling budget. The argument is in-place updated
+                when any decodes are preempted.
+            curr_loras: Currently batched lora request ids. The argument is
+                in-place updated when any decodes are preempted.
+            policy: The sorting policy to sort running_queue.
+            enable_chunking: If True, seq group can be chunked and only a
+                chunked number of tokens are scheduled  if
+                `budget.num_batched_tokens` has not enough capacity to schedule
+                all tokens.
+
+        Returns:
+            A tuple of remaining running queue (should be always 0) after
+            scheduling and SchedulerRunningOutputs.
+        """
+        assert not enable_chunking, "batched scheduling does not support chunked prefill"
+
+        ret: SchedulerRunningOutputs = \
+            self._scheduler_running_outputs_cache[self.cache_id].get_object()
+        ret.blocks_to_swap_out.clear()
+        ret.blocks_to_copy.clear()
+        ret.decode_seq_groups.clear()
+        ret.prefill_seq_groups.clear()
+        ret.preempted.clear()
+        ret.swapped_out.clear()
+
+        ret.num_lookahead_slots = self._get_num_lookahead_slots(
+            is_prefill=False)
+
+        ret.decode_seq_groups_list.clear()
+        ret.prefill_seq_groups_list.clear()
+
+        decode_seq_groups: List[ScheduledSequenceGroup] = ret.decode_seq_groups
+        prefill_seq_groups: List[
+            ScheduledSequenceGroup] = ret.prefill_seq_groups
+        preempted: List[SequenceGroup] = ret.preempted
+
+        # Store original running requests for the case of async + preemption
+        assert not self.use_async_output_proc
+
+        running_queue = self.running
+        assert len(self._async_stopped) == 0
+        # total_blocks = self.block_manager.num_total_gpu_blocks
+        remaining_blocks = self.block_manager.get_num_free_gpu_blocks()
+
+        while running_queue:
+            seq_group = running_queue[0]
+            num_running_tokens = self._get_num_new_tokens(
+                seq_group, SequenceStatus.RUNNING, enable_chunking, budget)
+
+            # We can have up to 1 running prefill at any given time in running
+            # queue, which means we can guarantee chunk size is at least 1.
+            assert num_running_tokens != 0
+
+            new_blocks = self.block_manager.get_new_block_count(seq_group)
+            # print(f"Checking DECODE allocation: {new_blocks} blocks ({total_blocks - remaining_blocks + new_blocks} total)")
+
+            running_queue.popleft()
+            while new_blocks > remaining_blocks:
+                budget.subtract_num_batched_tokens(seq_group.request_id,
+                                                   num_running_tokens)
+                num_running_seqs = seq_group.get_max_num_running_seqs()
+                budget.subtract_num_seqs(seq_group.request_id,
+                                         num_running_seqs)
+                if (curr_loras is not None and seq_group.lora_int_id > 0
+                        and seq_group.lora_int_id in curr_loras):
+                    curr_loras.remove(seq_group.lora_int_id)
+
+                if running_queue:
+                    # Preempt the lowest-priority sequence groups.
+                    victim_seq_group = running_queue.pop()
+                    # We assume single sequence per group
+                    victim_seq = victim_seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
+                    remaining_blocks += self.block_manager.get_sequence_block_count(
+                        victim_seq)
+                    preempted.append(victim_seq_group)
+                else:
+                    # No other sequence groups can be preempted.
+                    # Preempt the current sequence group.
+                    preempted.append(seq_group)
+                    break
+            else:
+                remaining_blocks -= self.block_manager.get_new_block_count(seq_group)
+                is_prefill = seq_group.is_prefill()
+                scheduled_seq_group: ScheduledSequenceGroup = \
+                    self._scheduled_seq_group_cache[self.cache_id].get_object()
+                scheduled_seq_group.seq_group = seq_group
+                if is_prefill:
+                    scheduled_seq_group.token_chunk_size = num_running_tokens
+                    prefill_seq_groups.append(scheduled_seq_group)
+                    ret.prefill_seq_groups_list.append(seq_group)
+                else:
+                    scheduled_seq_group.token_chunk_size = 1
+                    decode_seq_groups.append(scheduled_seq_group)
+                    ret.decode_seq_groups_list.append(seq_group)
+
+                budget.add_num_batched_tokens(seq_group.request_id,
+                                              num_running_tokens)
+                if curr_loras is not None and seq_group.lora_int_id > 0:
+                    curr_loras.add(seq_group.lora_int_id)
+        # print(f"schedule_running preempted: {len(preempted)} preempted, {len(decode_seq_groups)} decode, {len(prefill_seq_groups)} prefill")
+        self._batch_preempt_by_recompute(preempted)
+        self._batch_append_slots(decode_seq_groups + prefill_seq_groups)
+
+        # Make sure all queues are updated.
+        assert len(running_queue) == 0
+
+        self._scheduler_running_outputs_cache[self.next_cache_id].reset()
+        self._scheduled_seq_group_cache[self.next_cache_id].reset()
+
+        return ret
+
+    @BENCHMARKER.wrap()
     def _schedule_running(
         self,
         budget: SchedulingBudget,
@@ -508,7 +682,7 @@ class Scheduler:
                 chunked number of tokens are scheduled  if
                 `budget.num_batched_tokens` has not enough capacity to schedule
                 all tokens.
-    
+
         Returns:
             SchedulerRunningOutputs.
         """
@@ -763,6 +937,7 @@ class Scheduler:
         else:
             return prompt_limit
 
+    @BENCHMARKER.wrap()
     def _schedule_prefills(
         self,
         budget: SchedulingBudget,
@@ -884,7 +1059,7 @@ class Scheduler:
 
     def _schedule_default(self) -> SchedulerOutputs:
         """Schedule queued requests.
-        
+
         The current policy is designed to optimize the throughput. First,
         it batches as many prefill requests as possible. And it schedules
         decodes. If there's a pressure on GPU memory, decode requests can
@@ -909,7 +1084,7 @@ class Scheduler:
         swapped_in = SchedulerSwappedInOutputs.create_empty()
 
         # If any requests are swapped, prioritized swapped requests.
-        if not self.swapped:
+        if not (self.swapped or self.lock_prefill):
             prefills = self._schedule_prefills(budget,
                                                curr_loras,
                                                enable_chunking=False)
@@ -918,9 +1093,16 @@ class Scheduler:
         # NOTE: If `_schedule_prefills` doesn't enable chunking, self.running
         # only contains decode requests, not chunked prefills.
         if len(prefills.seq_groups) == 0:
-            running_scheduled = self._schedule_running(budget,
-                                                       curr_loras,
-                                                       enable_chunking=False)
+            # When running KV-Compress we modify block table batches in parallel
+            if self.kvcompress_enabled:
+                running_scheduled = self._batch_schedule_running(
+                    budget,
+                    curr_loras,
+                    enable_chunking=False)
+            else:
+                running_scheduled = self._schedule_running(budget,
+                                                           curr_loras,
+                                                           enable_chunking=False)
 
             # If any sequence group is preempted, do not swap in any sequence
             # group. because it means there's no slot for new running requests.
@@ -948,6 +1130,15 @@ class Scheduler:
         self.swapped.extend(running_scheduled.swapped_out)
         preempted = (len(running_scheduled.preempted) +
                      len(running_scheduled.swapped_out))
+        self.max_decoding_batch = max(self.max_decoding_batch, len(running_scheduled.decode_seq_groups))
+
+        if len(prefills.seq_groups) > 0:
+            self.logged_decoding = False
+
+        if not self.logged_decoding:
+            print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
+            if len(running_scheduled.decode_seq_groups) > 0:
+                self.logged_decoding = True
 
         # There should be no prefill from running queue because this policy
         # doesn't allow chunked prefills.
@@ -969,6 +1160,12 @@ class Scheduler:
         ignored_seq_groups = prefills.ignored_seq_groups
         ignored_seq_groups.extend(swapped_in.infeasible_seq_groups)
 
+        self.uncompressed_prefill = (self.uncompressed_prefill
+                                     or num_prefill_groups > 0)
+
+        # Remove prefill lock whenever a sequence is preempted
+        self.lock_prefill = self.lock_prefill and not preempted
+
         return SchedulerOutputs(
             scheduled_seq_groups=scheduled_seq_groups,
             num_prefill_groups=num_prefill_groups,
@@ -984,7 +1181,7 @@ class Scheduler:
 
     def _schedule_chunked_prefill(self) -> SchedulerOutputs:
         """Schedule queued requests.
-        
+
         Chunked prefill allows to chunk prefill requests, batch them together
         with decode requests. This policy 1. schedule as many decoding requests
         as possible. 2. schedule chunked prefill requests that are not
@@ -1066,6 +1263,7 @@ class Scheduler:
                        len(running_scheduled.swapped_out)),
         )
 
+    @BENCHMARKER.wrap()
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
         if self.scheduler_config.chunked_prefill_enabled:
@@ -1098,8 +1296,54 @@ class Scheduler:
             and not seq_group.sampling_params.use_beam_search)
         return no_beam_search
 
+    def must_preempt(self) -> bool:
+        """Checks whether preemption must happend before generation
+        can continue for sequences in the running queue.
+        """
+        new_blocks = sum([self.block_manager.get_new_block_count(sg)
+                          for sg in self.running])
+        free_blocks = self.block_manager.get_num_free_gpu_blocks()
+        return free_blocks < new_blocks
+
+    @BENCHMARKER.wrap()
+    def schedule_kvcompress(self) -> Optional[CacheMoves]:
+        """Check whether to schedule KV cache compression this
+        iteration. If compression is scheduled, the KV-Compress
+        scheduler will determine which sequences to compress, and
+        return a dict of freed blocks for each compressed sequence
+        and tensor of physical cache moves that must be actioned
+        for the compression to take effect. The freed blocks must
+        be recorded by the scheduler before the current round of
+        inference scheduling and the cache moves must be executed
+        by the cache engine before the current inference step.
+        """
+        # We force a compression iteration whenever there are new prefill
+        # sequences since the last compression iteration or we would
+        # need to preempt otherwise.
+        must_preempt = self.must_preempt()
+        # lock future prefills if we are forced to compress to avoid preemption
+        self.lock_prefill = self.lock_prefill or (must_preempt and
+                                                  not self.uncompressed_prefill)
+        force_compression = self.uncompressed_prefill or must_preempt
+        # NOTE: All current uncompressed prior prefills will not necessarily
+        # be compressed since the compression batch size is limited by
+        # max_kv_per_compression.
+        self.uncompressed_prefill = False
+        # Assume all sequence groups have a single sequence when using
+        # KV-Compress.
+        seqs = [sg.get_seqs()[0] for sg in self.running]
+        sampling_params = [sg.sampling_params for sg in self.running]
+        # print(f"Begin KVC - {len(self.running)}/{len(self.waiting)} (runnning/waiting)")
+
+        if seqs and (kvc_output :=
+                     self.kvcompress_scheduler.schedule_compression(seqs, sampling_params,
+                                                                    force=force_compression)):
+            # Return physical cache moves to be executed by cache engine
+            return kvc_output.cache_moves
+
+    @BENCHMARKER.wrap()
     def schedule(
-            self
+        self
     ) -> Tuple[List[SequenceGroupMetadata], SchedulerOutputs, bool]:
         # Schedule sequence groups.
         # This function call changes the internal states of the scheduler
@@ -1107,6 +1351,9 @@ class Scheduler:
         scheduler_start_time = time.perf_counter()
 
         scheduler_outputs = self._schedule()
+        if self.kvcompress_enabled:
+            self.kvcompress_scheduler.increment_new_tokens(
+                scheduler_outputs.num_batched_tokens)
         now = time.time()
 
         if not self.cache_config.enable_prefix_caching:
@@ -1130,7 +1377,11 @@ class Scheduler:
             # seq_id -> SequenceData
             seq_data: Dict[int, SequenceData] = {}
             # seq_id -> physical block numbers
-            block_tables: Dict[int, List[int]] = {}
+            block_tables: Dict[int, Union[List[int], BlockStateView]] = {}
+            # For KV-Compress, index into global shared block state for
+            # the group's only sequence (multi-sequence groups not supported
+            # with KV-Compress).
+            block_state_index: Optional[int] = None
 
             if seq_group.is_encoder_decoder():
                 # Encoder associated with SequenceGroup
@@ -1145,6 +1396,11 @@ class Scheduler:
                 encoder_seq_data = None
                 cross_block_table = None
 
+            if self.kvcompress_enabled:
+                # Multi-sequence groups not supported with KV-Compress
+                [seq] = seq_group.get_seqs(status=SequenceStatus.RUNNING)
+                block_state_index = self.block_manager.get_batch_slot_index(seq)
+                # assert self.block_manager.block_state.get_block_state_seq_view(block_state_index).context_lens.min() >= 0, "Got empty KV cache for attention head"
             for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
                 seq_id = seq.seq_id
                 seq_data[seq_id] = seq.data
@@ -1200,6 +1456,7 @@ class Scheduler:
                     multi_modal_data=seq_group.multi_modal_data
                     if scheduler_outputs.num_prefill_groups > 0 else None,
                     prompt_adapter_request=seq_group.prompt_adapter_request,
+                    block_state_index=block_state_index,
                 )
             else:
                 # When SPMD mode is enabled, we only send delta data except for
@@ -1215,6 +1472,7 @@ class Scheduler:
                     do_sample=do_sample,
                     token_chunk_size=token_chunk_size,
                     computed_block_nums=common_computed_block_nums,
+                    block_state_index=block_state_index,
                 )
             seq_group_metadata_list.append(seq_group_metadata)
 
@@ -1256,7 +1514,11 @@ class Scheduler:
 
     def free_seq(self, seq: Sequence) -> None:
         """Free a sequence from a block table."""
-        self.block_manager.free(seq)
+        freed_blocks = self.block_manager.free(seq)
+        if freed_blocks is not None and self.kvcompress_enabled:
+            self.kvcompress_scheduler.compression_metrics.remove_metadata(
+                freed_blocks
+            )
 
     def _free_finished_seqs(self, seq_group: SequenceGroup) -> None:
         """Free finished seqs in a sequence group."""
@@ -1266,6 +1528,7 @@ class Scheduler:
 
     def free_finished_seq_groups(self) -> None:
         remaining: Deque[SequenceGroup] = deque()
+        has_finished = False
         for seq_group in self.running:
             if seq_group.is_finished():
                 # Free cross-attention block table, if it exists
@@ -1274,6 +1537,7 @@ class Scheduler:
                 # This list will be used to update the Mamba cache in the
                 # next step.
                 self._finished_requests_ids.append(seq_group.request_id)
+                has_finished = True
             else:
                 remaining.append(seq_group)
 
@@ -1285,6 +1549,7 @@ class Scheduler:
         # Handle async stopped sequence groups
         # (ones that reached max model len)
         if self._async_stopped:
+            has_finished = True
             for seq_group in self._async_stopped:
                 self._free_seq_group_cross_attn_blocks(seq_group)
                 self._finished_requests_ids.append(seq_group.request_id)
@@ -1294,11 +1559,22 @@ class Scheduler:
 
             self._async_stopped.clear()
 
+        # Remove prefill lock whenever a sequence is finished
+        self.lock_prefill = self.lock_prefill and not has_finished
+
     def _allocate_and_set_running(self, seq_group: SequenceGroup) -> None:
         self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
 
+    @BENCHMARKER.wrap()
+    def _batch_append_slots(self, seq_groups: List[ScheduledSequenceGroup]) -> None:
+        seqs: List[Sequence] = []
+        for seq_group in seq_groups:
+            seqs.extend(seq_group.seq_group.get_seqs(status=SequenceStatus.RUNNING))
+        self.block_manager.batch_append_slots(seqs)
+
+    @BENCHMARKER.wrap()
     def _append_slots(
         self,
         seq_group: SequenceGroup,
@@ -1369,6 +1645,15 @@ class Scheduler:
             raise AssertionError("Invalid preemption mode.")
         return preemption_mode
 
+    def _batch_preempt_by_recompute(self, seq_groups: List[SequenceGroup]) -> None:
+        seqs: List[Sequence] = []
+        for seq_group in seq_groups:
+            seqs.extend(seq_group.get_seqs(status=SequenceStatus.RUNNING))
+        self.block_manager.free_batch(seqs)
+        for seq in seqs:
+            seq.status = SequenceStatus.WAITING
+            seq.reset_state_for_recompute()
+
     def _preempt_by_recompute(
         self,
         seq_group: SequenceGroup,
@@ -1385,6 +1670,7 @@ class Scheduler:
         seq_group: SequenceGroup,
         blocks_to_swap_out: List[Tuple[int, int]],
     ) -> None:
+        assert not self.scheduler_config.disable_swap
         self._swap_out(seq_group, blocks_to_swap_out)
 
     def _swap_in(

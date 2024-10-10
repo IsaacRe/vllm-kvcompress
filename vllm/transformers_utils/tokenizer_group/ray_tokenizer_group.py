@@ -160,7 +160,8 @@ class RayTokenizerGroupPool(BaseTokenizerGroup):
             self,
             prompt: str,
             request_id: Optional[str] = None,
-            lora_request: Optional[LoRARequest] = None) -> List[int]:
+            lora_request: Optional[LoRARequest] = None,
+            **encode_kwargs) -> List[int]:
         """Encode a prompt using the tokenizer group.
 
         We pick an idle actor and use it to encode the prompt.
@@ -189,7 +190,8 @@ class RayTokenizerGroupPool(BaseTokenizerGroup):
             try:
                 ret = await actor.encode.remote(request_id=request_id,
                                                 prompt=prompt,
-                                                lora_request=lora_request)
+                                                lora_request=lora_request,
+                                                **encode_kwargs)
             except ActorDiedError as e:
                 logger.error(
                     "%s died for second time in a row, marking "

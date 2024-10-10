@@ -4,7 +4,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import (TYPE_CHECKING, Any, ClassVar, Deque, Dict, Iterable, List,
-                    Mapping, Optional)
+                    Mapping, Optional, Type, Union, Tuple)
 from typing import Sequence as GenericSequence
 from typing import Set, Tuple, Type, Union
 
@@ -16,9 +16,10 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          EngineConfig, LoadConfig, LoRAConfig, ModelConfig,
                          ObservabilityConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig,
-                         SpeculativeConfig)
+                         SpeculativeConfig, KVCompressConfig)
 from vllm.core.scheduler import (ScheduledSequenceGroup, Scheduler,
                                  SchedulerOutputs)
+from vllm.benchmark import BENCHMARKER
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics_types import StatLoggerBase, Stats
 from vllm.engine.output_processor.interfaces import (
@@ -39,6 +40,9 @@ from vllm.outputs import (EmbeddingRequestOutput, RequestOutput,
                           RequestOutputFactory)
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
+from vllm.kvcompress.state import KVCompressState
+from vllm.kvcompress.block import BlockState
+from vllm.kvcompress.metrics import CompressionMetrics
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import (EmbeddingSequenceGroupOutput, ExecuteModelRequest,
                            Sequence, SequenceGroup, SequenceGroupMetadata,
@@ -76,7 +80,8 @@ _G = TypeVar("_G", bound=BaseTokenizerGroup, default=BaseTokenizerGroup)
 _O = TypeVar("_O", RequestOutput, EmbeddingRequestOutput)
 
 PromptComponents = Tuple[Optional[str], List[int],
-                         Optional[MultiModalDataDict]]
+                         Optional[MultiModalDataDict],
+                         Optional[List[int]]]  # reference_token_ids
 DecoderPromptComponents = Tuple[Optional[str], Optional[List[int]],
                                 Optional[MultiModalDataDict]]
 
@@ -131,7 +136,7 @@ class LLMEngine:
             decoding.
         executor_class: The model executor class for managing distributed
             execution.
-        prompt_adapter_config (Optional): The configuration related to serving 
+        prompt_adapter_config (Optional): The configuration related to serving
             prompt adapters.
         log_stats: Whether to log statistics.
         usage_context: Specified entry point, used for usage info collection.
@@ -201,6 +206,7 @@ class LLMEngine:
         decoding_config: Optional[DecodingConfig],
         observability_config: Optional[ObservabilityConfig],
         prompt_adapter_config: Optional[PromptAdapterConfig],
+        kvcompress_config: Optional[KVCompressConfig],
         executor_class: Type[ExecutorBase],
         log_stats: bool,
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
@@ -275,6 +281,7 @@ class LLMEngine:
         self.prompt_adapter_config = prompt_adapter_config
         self.observability_config = observability_config or ObservabilityConfig(
         )
+        self.kvcompress_config = kvcompress_config
         self.log_stats = log_stats
         self.step_return_finished_only = step_return_finished_only
 
@@ -301,6 +308,36 @@ class LLMEngine:
         self.input_registry = input_registry
         self.input_processor = input_registry.create_input_processor(
             model_config)
+        # Initialize KV-Compress block tables before profiling
+        # for model memory usage/KV cache allocation
+        self.kvcompress_state = None
+        if self.kvcompress_config:
+            kvcompress_shared_state = KVCompressState(
+                block_state=BlockState(
+                    block_size=self.cache_config.block_size,
+                    num_layers=self.kvcompress_config.num_layers,
+                    num_kv_heads=self.kvcompress_config.num_kv_heads,
+                    max_num_seqs=self.scheduler_config.max_num_seqs,
+                    max_num_blocks_per_head=self.kvcompress_config.max_num_blocks_per_head,
+                    max_num_t1_blocks=self.kvcompress_config.max_num_blocks_per_head,
+                    use_tiered_block_tables=False,
+                ),
+                kv_metrics=CompressionMetrics(
+                    block_size=self.cache_config.block_size,
+                    num_layers=self.kvcompress_config.num_layers,
+                    num_kv_heads=self.kvcompress_config.num_kv_heads,
+                    num_queries_per_kv=self.kvcompress_config.num_queries_per_kv,
+                    max_kv_per_sort=self.kvcompress_config.max_kv_per_compression,
+                    kv_head_bias_file=self.kvcompress_config.kv_head_bias_path,
+                    kv_head_bias_weight=self.kvcompress_config.kv_head_bias_weight,
+                    random=self.kvcompress_config.random_evict,
+                    even_layer_evict=self.kvcompress_config.even_layer_evict,
+                    use_l2=self.kvcompress_config.kv_metric_use_l2,
+                    use_average=self.kvcompress_config.kv_metric_use_average,
+                    record_decoding_metrics=self.kvcompress_config.record_decoding_metrics,
+                )
+            )
+            self.kvcompress_state = kvcompress_shared_state
 
         self.model_executor = executor_class(
             model_config=model_config,
@@ -309,6 +346,9 @@ class LLMEngine:
             scheduler_config=scheduler_config,
             device_config=device_config,
             lora_config=lora_config,
+            kvcompress_config=kvcompress_config,
+            kvc_state=(kvcompress_shared_state
+                       if kvcompress_config else None),
             speculative_config=speculative_config,
             load_config=load_config,
             prompt_adapter_config=prompt_adapter_config,
@@ -317,6 +357,9 @@ class LLMEngine:
 
         if not self.model_config.embedding_mode:
             self._initialize_kv_caches()
+
+        if self.kvcompress_config:
+            self.kvcompress_state.kv_metrics.init_kv_metadata(self.cache_config.num_gpu_blocks)
 
         # If usage stat is enabled, collect relevant info.
         if is_usage_stats_enabled():
@@ -388,7 +431,9 @@ class LLMEngine:
                 scheduler_config, cache_config, lora_config,
                 parallel_config.pipeline_parallel_size,
                 self.async_callbacks[v_id]
-                if model_config.use_async_output_proc else None)
+                if model_config.use_async_output_proc else None,
+                kvcompress_config,
+                kvcompress_shared_state if kvcompress_config else None)
             for v_id in range(parallel_config.pipeline_parallel_size)
         ]
 
@@ -444,8 +489,9 @@ class LLMEngine:
         The workers will determine the number of blocks in both the GPU cache
         and the swap CPU cache.
         """
+        kv_metrics = self.kvcompress_state.kv_metrics if self.kvcompress_state else None
         num_gpu_blocks, num_cpu_blocks = (
-            self.model_executor.determine_num_available_blocks())
+            self.model_executor.determine_num_available_blocks(kv_metrics))
 
         if self.cache_config.num_gpu_blocks_override is not None:
             num_gpu_blocks_override = self.cache_config.num_gpu_blocks_override
@@ -755,6 +801,7 @@ class LLMEngine:
         prompt: str,
         request_id: str,
         lora_request: Optional[LoRARequest],
+        **tokenization_kwargs,
     ) -> List[int]:
         '''
         Wrapper around application of the model's tokenizer.
@@ -775,7 +822,8 @@ class LLMEngine:
 
         return tokenizer.encode(request_id=request_id,
                                 prompt=prompt,
-                                lora_request=lora_request)
+                                lora_request=lora_request,
+                                **tokenization_kwargs)
 
     def _extract_prompt_components(
         self,
@@ -798,7 +846,7 @@ class LLMEngine:
         * prompt_token_ids
         * multi_modal_data
         '''
-
+        reference_token_ids = None
         if isinstance(inputs, str):
             prompt = inputs
             prompt_token_ids = self._tokenize_prompt(
@@ -820,11 +868,21 @@ class LLMEngine:
                     lora_request=lora_request,
                 )
 
+            if "reference_token_ids" in inputs:
+                reference_token_ids = inputs["reference_token_ids"]
+            elif "reference_completion" in inputs:
+                reference_token_ids = self._tokenize_prompt(
+                    inputs["reference_completion"],
+                    request_id=request_id,
+                    lora_request=lora_request,
+                    add_special_tokens=False,
+                )
+
             multi_modal_data = inputs.get("multi_modal_data")
         else:
             assert_never(inputs)
 
-        return prompt, prompt_token_ids, multi_modal_data
+        return prompt, prompt_token_ids, multi_modal_data, reference_token_ids
 
     def _apply_prompt_adapter(
         self,
@@ -860,7 +918,7 @@ class LLMEngine:
         "default" decoder prompt be <BOS>.
 
         However, it is possible that in the future
-        other models may have different or more 
+        other models may have different or more
         complex logic for the default decoder prompt.
         This motivates having a special helper method
         for default decoder prompts.
@@ -923,7 +981,7 @@ class LLMEngine:
         have any possible singleton type; thus this
         method relies on helper functions to obtain
         token ids for the sub-prompts.
-        
+
         Arguments:
 
         * inputs: an input prompt
@@ -965,14 +1023,15 @@ class LLMEngine:
         prompt_comps: PromptComponents,
         prompt_adapter_request: Optional[PromptAdapterRequest],
     ) -> LLMInputs:
-        prompt, prompt_token_ids, multi_modal_data = prompt_comps
+        prompt, prompt_token_ids, multi_modal_data, reference_token_ids = prompt_comps
 
         prompt_token_ids = self._apply_prompt_adapter(
             prompt_token_ids, prompt_adapter_request=prompt_adapter_request)
 
         return LLMInputs(prompt_token_ids=prompt_token_ids,
                          prompt=prompt,
-                         multi_modal_data=multi_modal_data)
+                         multi_modal_data=multi_modal_data,
+                         reference_token_ids=reference_token_ids)
 
     def _process_decoder_only_prompt(
         self,
@@ -1250,18 +1309,18 @@ class LLMEngine:
         """Apply the model output to the sequences in the scheduled seq groups.
 
         virtual_engine: The engine id to operate on
-        
-        is_async: Indicates whether this postprocessor runs in 
-            parallel with the GPU forward pass and is processing 
+
+        is_async: Indicates whether this postprocessor runs in
+            parallel with the GPU forward pass and is processing
             tokens from the previous step. If this is true, then
             no tokens need to be appended since it is already done
             externally (before the next schedule() call)
-        
-        sampler_output: Used with multi-step execution to provide 
+
+        sampler_output: Used with multi-step execution to provide
             sampler_output of each step
         is_last_output: Used with multi-step execution to indicate
             the last step (of each multi-step group)
-            
+
         Returns RequestOutputs that can be returned to the client.
         """
         now = time.time()
@@ -1494,6 +1553,15 @@ class LLMEngine:
         # Clear outputs for each new scheduler iteration
         ctx.request_outputs.clear()
 
+        if self.kvcompress_config:
+            cache_moves = self.scheduler[0].schedule_kvcompress()
+
+            if cache_moves:
+                BENCHMARKER.start_range("execute_cache_moves")
+                self.model_executor.execute_cache_moves(cache_moves,
+                                                        self.kvcompress_state.kv_metrics)
+                BENCHMARKER.end_range("execute_cache_moves")
+
         # Skip the scheduler if there are any remaining steps in the seq groups.
         # This ensures that the scheduler is only called again when the current
         # batch has completed.
@@ -1542,14 +1610,28 @@ class LLMEngine:
                 finished_requests_ids=finished_requests_ids,
                 # We use ExecuteModelRequest to pass the last sampled_token_ids
                 # to each of the non-last PP stages for in-place prepare_input.
-                last_sampled_token_ids=last_sampled_token_ids)
+                last_sampled_token_ids=last_sampled_token_ids,
+                kvc_state=self.kvcompress_state)
 
             if allow_async_output_proc:
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
 
+            # print(f"Execution scheduled - {len(self.scheduler.running)}/{len(self.scheduler.waiting)} (runnning/waiting)")
+            if self.kvcompress_config:
+                # Temp metrics must be cleared before each forward pass to ensure correct
+                # metric aggregation afterward
+                self.kvcompress_state.kv_metrics.clear_temp_metrics()
+
+            BENCHMARKER.start_range("execute_model")
             output = self.model_executor.execute_model(
                 execute_model_req=execute_model_req)
+            BENCHMARKER.end_range("execute_model")
+
+            if self.kvcompress_config:
+                # Aggregate KV metrics that were collected to be used in sorting during
+                # later iterations.
+                self.kvcompress_state.kv_metrics.aggregate_decode()
 
             # We need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.
@@ -1567,6 +1649,13 @@ class LLMEngine:
         if self.scheduler_config.is_multi_step:
             for seq_group in seq_group_metadata_list:
                 seq_group.finish_step()
+
+        # Remove finished sequences from scheduler
+        if self.kvcompress_config:
+            for seq_group in scheduler_outputs.scheduled_seq_groups:
+                if seq_group.seq_group.is_finished():
+                    seq = seq_group.seq_group.get_seqs()[0]
+                    self.scheduler[virtual_engine].kvcompress_scheduler.complete_seqs([seq])
 
         if not self._has_remaining_steps(seq_group_metadata_list):
             # clear the cache if we have finished all the steps.

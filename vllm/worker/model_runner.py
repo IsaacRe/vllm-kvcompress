@@ -20,7 +20,8 @@ from vllm.attention.backends.abstract import AttentionState
 from vllm.attention.backends.utils import CommonAttentionState
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, ObservabilityConfig, ParallelConfig,
-                         PromptAdapterConfig, SchedulerConfig)
+                         PromptAdapterConfig, SchedulerConfig,
+                         KVCompressConfig)
 from vllm.core.scheduler import SchedulerOutputs
 from vllm.distributed import get_pp_group
 from vllm.distributed.parallel_state import graph_capture
@@ -53,6 +54,9 @@ from vllm.worker.model_runner_base import (
     _add_sampling_metadata_broadcastable_dict,
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict)
+from vllm.kvcompress.state import KVCompressState
+from vllm.core.kv_cache import KVCache, UnifiedKVCache
+from vllm.benchmark import BENCHMARKER
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
@@ -192,6 +196,10 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             self.prompt_adapter_index_mapping.clear()  # type: ignore
             self.prompt_adapter_prompt_mapping.clear()  # type: ignore
 
+            # KV-Compress
+            self.block_state_index_mapping.clear()  # type: ignore
+            self.kv_metric_buffer_lens.clear()  # type: ignore
+
         def __init__(
             self,
             *,
@@ -236,6 +244,10 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
             prefix_cache_hit: bool = False,
             reinit: bool = False,
             reinit_use_defaults: bool = False,
+
+            # KV-Compress
+            block_state_index_mapping: Optional[List[int]] = None,
+            kv_metric_buffer_lens: Optional[List[int]] = None,
         ):
             if reinit:
                 assert len(self.seq_ids) == len(seq_ids)  # type: ignore
@@ -324,6 +336,18 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                     else:
                         self.prompt_adapter_prompt_mapping.clear()
 
+                    if block_state_index_mapping:
+                        self.block_state_index_mapping = \
+                            block_state_index_mapping
+                    else:
+                        self.block_state_index_mapping.clear()
+
+                    if kv_metric_buffer_lens:
+                        self.kv_metric_buffer_lens = \
+                            kv_metric_buffer_lens
+                    else:
+                        self.kv_metric_buffer_lens.clear()
+
             else:
                 self.input_tokens = input_tokens or []
                 self.input_positions = input_positions or []
@@ -342,6 +366,10 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                     prompt_adapter_index_mapping or [])
                 self.prompt_adapter_prompt_mapping = (
                     prompt_adapter_prompt_mapping or [])
+                self.block_state_index_mapping = (
+                    block_state_index_mapping or [])
+                self.kv_metric_buffer_lens = (
+                    kv_metric_buffer_lens or [])
 
             self.prompt_adapter_request = prompt_adapter_request
             self.multi_modal_inputs = multi_modal_inputs
@@ -411,12 +439,15 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         self.per_seq_group_compute_fns = [
             self._compute_prompt_adapter_input,
             self._compute_multi_modal_input,
+            self._set_block_state_index,
+            self._set_kv_metric_buffer_len,
         ]
 
         self.runner = runner
         self.model_input_cls = self.runner._model_input_cls
         self.attn_backend = self.runner.attn_backend
         self.scheduler_config = self.runner.scheduler_config
+        self.kvcompress_config = self.runner.kvcompress_config
         self.sliding_window = self.runner.sliding_window
         self.block_size = self.runner.block_size
         self.enable_lora = self.runner.lora_config is not None
@@ -636,6 +667,18 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         mm_kwargs = self.multi_modal_input_mapper(mm_data)
         inter_data.multi_modal_inputs = mm_kwargs
 
+    def _set_block_state_index(self, inter_data: InterDataForSeqGroup,
+                               seq_group_metadata: SequenceGroupMetadata):
+        # Note: for KV-Compress we assume one sequence per group
+        inter_data.block_state_index_mapping = [
+            seq_group_metadata.block_state_index]
+
+    def _set_kv_metric_buffer_len(self, inter_data: InterDataForSeqGroup,
+                                  seq_group_metadata: SequenceGroupMetadata):
+        # Note: for KV-Compress we assume one sequence per group
+        inter_data.kv_metric_buffer_lens = [
+            seq_group_metadata.sampling_params.metric_collection_buffer_size]
+
     def add_seq_group(self, seq_group_metadata: SequenceGroupMetadata):
         """Add a sequence group to the builder."""
         seq_ids = seq_group_metadata.seq_data.keys()
@@ -825,6 +868,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         cache_config: CacheConfig,
         load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
+        kvcompress_config: Optional[KVCompressConfig],
         kv_cache_dtype: Optional[str] = "auto",
         is_driver_worker: bool = False,
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
@@ -832,6 +876,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         observability_config: Optional[ObservabilityConfig] = None,
         input_registry: InputRegistry = INPUT_REGISTRY,
         mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
+        kvc_state: Optional[KVCompressState] = None,
     ):
         self.model_config = model_config
         self.parallel_config = parallel_config
@@ -840,6 +885,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         self.cache_config = cache_config
         self.lora_config = lora_config
         self.load_config = load_config
+        self.kvcompress_config = kvcompress_config
         self.is_driver_worker = is_driver_worker
         self.prompt_adapter_config = prompt_adapter_config
         self.return_hidden_states = return_hidden_states
@@ -863,6 +909,9 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
         self.has_seqlen_agnostic = model_config.contains_seqlen_agnostic_layers(
             parallel_config)
+
+        # KV-Compress block state
+        self.kvc_state = kvc_state
 
         # When using CUDA graph, the input block tables must be padded to
         # max_seq_len_to_capture. However, creating the block table in
@@ -1120,7 +1169,8 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
 
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
-        kv_caches = [None] * num_layers
+        kv_caches = (UnifiedKVCache(None) if self.kvcompress_config else
+                     KVCache([None] * num_layers))
         finished_requests_ids = [seq.request_id for seq in seqs]
         model_input = self.prepare_model_input(
             seqs, finished_requests_ids=finished_requests_ids)
@@ -1130,7 +1180,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                 batch_size=batch_size,
                 dtype=self.model_config.dtype,
                 device=self.device)
-        self.execute_model(model_input, kv_caches, intermediate_tensors)
+        self.execute_model(model_input, kv_caches, intermediate_tensors, profile=True)
         torch.cuda.synchronize()
         return
 
@@ -1396,12 +1446,14 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
                                    virtual_engine=virtual_engine)
 
     @torch.inference_mode()
+    @BENCHMARKER.wrap_if(profile=None)  # benchmark only when `profile` is not passed
     def execute_model(
         self,
         model_input: ModelInputForGPUWithSamplingMetadata,
         kv_caches: List[torch.Tensor],
         intermediate_tensors: Optional[IntermediateTensors] = None,
         num_steps: int = 1,
+        profile: bool = False
     ) -> Optional[Union[List[SamplerOutput], IntermediateTensors]]:
         if num_steps > 1:
             raise ValueError("num_steps > 1 is not supported in ModelRunner")

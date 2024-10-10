@@ -177,10 +177,13 @@ endif()
 
 set(VLLM_EXT_SRC
   "csrc/cache_kernels.cu"
+  "csrc/kvcompress_cache_kernels.cu"
   "csrc/attention/attention_kernels.cu"
+  "csrc/attention/kvcompress_attention_kernels.cu"
   "csrc/pos_encoding_kernels.cu"
   "csrc/activation_kernels.cu"
   "csrc/layernorm_kernels.cu"
+  "csrc/kvcompress_eviction_kernels.cu"
   "csrc/quantization/squeezellm/quant_cuda_kernel.cu"
   "csrc/quantization/gptq/q_gemm.cu"
   "csrc/quantization/compressed_tensors/int8_quant_kernels.cu"
@@ -197,7 +200,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
         cutlass
         GIT_REPOSITORY https://github.com/nvidia/cutlass.git
         # CUTLASS 3.5.1
-        GIT_TAG 06b21349bcf6ddf6a1686a47a137ad1446579db9 
+        GIT_TAG 06b21349bcf6ddf6a1686a47a137ad1446579db9
         GIT_PROGRESS TRUE
   )
   FetchContent_MakeAvailable(cutlass)
@@ -238,12 +241,12 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   # The machete kernels only work on hopper and require CUDA 12.0 or later.
   if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER 12.0)
     #
-    # For the Machete kernels we automatically generate sources for various 
+    # For the Machete kernels we automatically generate sources for various
     # preselected input type pairs and schedules.
     # Generate sources:
     execute_process(
-      COMMAND ${CMAKE_COMMAND} -E env 
-      PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/csrc/cutlass_extensions/:${CUTLASS_DIR}/python/:${VLLM_PYTHON_PATH}:$PYTHONPATH 
+      COMMAND ${CMAKE_COMMAND} -E env
+      PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}/csrc/cutlass_extensions/:${CUTLASS_DIR}/python/:${VLLM_PYTHON_PATH}:$PYTHONPATH
         ${Python_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/csrc/quantization/machete/generate.py
       RESULT_VARIABLE machete_generation_result
       OUTPUT_VARIABLE machete_generation_output
@@ -253,7 +256,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
 
     if (NOT machete_generation_result EQUAL 0)
       message(FATAL_ERROR "Machete generation failed."
-                          " Result: \"${machete_generation_result}\"" 
+                          " Result: \"${machete_generation_result}\""
                           "\nCheck the log for details: "
                           "${CMAKE_CURRENT_BINARY_DIR}/machete_generation.log")
     else()
@@ -273,7 +276,7 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   endif()
 
   # Add pytorch binding for machete (add on even CUDA < 12.0 so that we can
-  #  raise an error if the user that this was built with an incompatible 
+  #  raise an error if the user that this was built with an incompatible
   #  CUDA version)
   list(APPEND VLLM_EXT_SRC
     csrc/quantization/machete/machete_pytorch.cu)

@@ -6,6 +6,9 @@ from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import ExecuteModelRequest, PoolerOutput
+from vllm.kvcompress.scheduler import CacheMoves
+from vllm.kvcompress.metrics import CompressionMetrics
+from vllm.kvcompress.state import KVCompressState
 from vllm.utils import (get_distributed_init_method, get_ip, get_open_port,
                         make_async)
 from vllm.worker.worker_base import WorkerBase, WorkerWrapperBase
@@ -64,6 +67,8 @@ class GPUExecutor(ExecutorBase):
             is_driver_worker=(not self.parallel_config)
             or (rank % self.parallel_config.tensor_parallel_size == 0),
             observability_config=self.observability_config,
+            kvcompress_config=self.kvcompress_config,
+            kvc_state=self.kvc_state,
         )
 
     def _get_worker_module_and_class(
@@ -107,11 +112,14 @@ class GPUExecutor(ExecutorBase):
             rank=rank,
             distributed_init_method=distributed_init_method))
 
-    def determine_num_available_blocks(self) -> Tuple[int, int]:
+    def determine_num_available_blocks(
+        self,
+        kv_metrics: Optional[CompressionMetrics] = None,
+    ) -> Tuple[int, int]:
         """Determine the number of available KV blocks by invoking the
         underlying worker.
         """
-        return self.driver_worker.determine_num_available_blocks()
+        return self.driver_worker.determine_num_available_blocks(kv_metrics)
 
     def initialize_cache(self, num_gpu_blocks: int, num_cpu_blocks) -> None:
         """Initialize the KV cache by invoking the underlying worker.
@@ -129,6 +137,11 @@ class GPUExecutor(ExecutorBase):
     ) -> Optional[List[Union[SamplerOutput, PoolerOutput]]]:
         output = self.driver_worker.execute_model(execute_model_req)
         return output
+
+    def execute_cache_moves(
+        self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics
+    ) -> None:
+        self.driver_worker.execute_cache_moves(cache_moves, kv_metrics)
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         assert lora_request.lora_int_id > 0, "lora_id must be greater than 0."

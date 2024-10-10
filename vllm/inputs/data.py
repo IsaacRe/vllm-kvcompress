@@ -19,6 +19,16 @@ class TextPrompt(TypedDict):
     if the model supports it.
     """
 
+    reference_completion: NotRequired[str]
+    """
+    Optional reference completion.
+    """
+
+    reference_token_ids: NotRequired[List[int]]
+    """
+    Optional list of token IDs for the reference completion.
+    """
+
 
 class TokensPrompt(TypedDict):
     """Schema for a tokenized prompt."""
@@ -30,6 +40,16 @@ class TokensPrompt(TypedDict):
     """
     Optional multi-modal data to pass to the model,
     if the model supports it.
+    """
+
+    reference_completion: NotRequired[str]
+    """
+    Optional reference completion.
+    """
+
+    reference_token_ids: NotRequired[List[int]]
+    """
+    Optional list of token IDs for the reference completion.
     """
 
 
@@ -67,7 +87,7 @@ _T2_co = TypeVar("_T2_co",
 # TODO: Make fields ReadOnly once mypy supports it
 class ExplicitEncoderDecoderPrompt(TypedDict, Generic[_T1_co, _T2_co]):
     """Represents an encoder/decoder model input prompt,
-    comprising an explicit encoder prompt and a 
+    comprising an explicit encoder prompt and a
     decoder prompt.
 
     The encoder and decoder prompts, respectively,
@@ -120,6 +140,11 @@ class LLMInputs(TypedDict):
     """
     Optional multi-modal data to pass to the model,
     if the model supports it.
+    """
+
+    reference_token_ids: NotRequired[List[int]]
+    """
+    Optional list of token IDs for the reference completion.
     """
 
 
