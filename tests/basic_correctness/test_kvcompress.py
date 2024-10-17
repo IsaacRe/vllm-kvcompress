@@ -19,6 +19,7 @@ MODELS = [
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("dtype", ["half"])
 @pytest.mark.parametrize("max_tokens", [32])
+@pytest.mark.parametrize("chunked_prefill", [True])
 # NOTE: Increasing this in this suite will fail CI because we currently cannot
 # reset distributed env properly. Use a value > 1 just when you test.
 def test_no_compression(
@@ -28,6 +29,7 @@ def test_no_compression(
     model: str,
     dtype: str,
     max_tokens: int,
+    chunked_prefill: bool,
 ) -> None:
     hf_model = hf_runner(model, dtype=dtype)
     hf_outputs = hf_model.generate_greedy(example_prompts, max_tokens)
@@ -41,6 +43,7 @@ def test_no_compression(
         target_compression_rate=1.0,  # no compression
         protected_window_size=1,
         metric_collection_buffer_size=1,
+        enable_chunked_prefill=chunked_prefill,
     )
     vllm_outputs = vllm_model.generate_greedy(example_prompts, max_tokens)
     del vllm_model

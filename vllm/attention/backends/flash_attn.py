@@ -236,6 +236,9 @@ class FlashAttentionMetadata(AttentionMetadata):
     # the batch, used to index into sequence. E.g., if the sequence length is
     # [4, 6], it is [0, 4, 10].
     seq_start_loc: Optional[torch.Tensor]
+    # seq_start_loc of KV cache representation. (batch_size + 1,) by default
+    # or (batch_size * num_kv_heads + 1,) when using KV-Compress
+    cache_seq_start_loc: Optional[torch.Tensor]
     # (batch_size,) A tensor of context lengths (tokens that are computed
     # so far).
     context_lens_tensor: Optional[torch.Tensor]
@@ -294,6 +297,23 @@ class FlashAttentionMetadata(AttentionMetadata):
         assert self.block_tables is not None
         assert self.seq_start_loc is not None
 
+        # If using KV-Compress
+        if self.kv_metrics:
+            if self.block_tables.dim() > 2:  # chunked-prefill
+                num_kv_heads = self.block_tables.size(2)
+                cache_seq_start_loc = self.cache_seq_start_loc[
+                    :, : self.num_prefills * num_kv_heads + 1]
+                context_lens_tensor = self.context_lens_tensor[:,:self.num_prefills]
+                block_tables = self.block_tables[:,:self.num_prefills]
+            else:
+                cache_seq_start_loc = self.cache_seq_start_loc[:self.num_prefills + 1]
+                context_lens_tensor = self.context_lens_tensor[:self.num_prefills]
+                block_tables = self.block_tables[:self.num_prefills]
+        else:
+            cache_seq_start_loc = self.cache_seq_start_loc[:self.num_prefills + 1]
+            context_lens_tensor = self.context_lens_tensor[:self.num_prefills]
+            block_tables = self.block_tables[:self.num_prefills]
+
         self._cached_prefill_metadata = FlashAttentionMetadata(
             num_prefills=self.num_prefills,
             num_prefill_tokens=self.num_prefill_tokens,
@@ -307,8 +327,9 @@ class FlashAttentionMetadata(AttentionMetadata):
             max_decode_seq_len=0,
             query_start_loc=self.query_start_loc[:self.num_prefills + 1],
             seq_start_loc=self.seq_start_loc[:self.num_prefills + 1],
-            context_lens_tensor=self.context_lens_tensor[:self.num_prefills],
-            block_tables=self.block_tables[:self.num_prefills],
+            cache_seq_start_loc=cache_seq_start_loc,
+            context_lens_tensor=context_lens_tensor,
+            block_tables=block_tables,
             use_cuda_graph=False,
             kv_metrics=self.kv_metrics,
             kv_metric_buffer_len=None if self.kv_metric_buffer_len is None else
@@ -335,9 +356,12 @@ class FlashAttentionMetadata(AttentionMetadata):
 
         # If using KV-Compress
         if self.kv_metrics:
+            seq_lens_tensor = self.context_lens_tensor[:,self.num_prefills:].view(
+                self.context_lens_tensor.size(0), -1)
             context_lens_tensor = self.context_lens_tensor[:,self.num_prefills:]
             block_tables = self.block_tables[:,self.num_prefills:]
         else:
+            seq_lens_tensor = self.seq_lens_tensor[self.num_prefills:]
             context_lens_tensor = self.context_lens_tensor[self.num_prefills:]
             block_tables = self.block_tables[self.num_prefills:]
 
@@ -348,12 +372,13 @@ class FlashAttentionMetadata(AttentionMetadata):
             slot_mapping=self.slot_mapping[self.num_prefill_tokens:],
             kv_cache_dtype=self.kv_cache_dtype,
             seq_lens=None,
-            seq_lens_tensor=self.seq_lens_tensor[self.num_prefills:],
+            seq_lens_tensor=seq_lens_tensor,
             max_query_len=None,
             max_prefill_seq_len=0,
             max_decode_seq_len=self.max_decode_seq_len,
             query_start_loc=None,
             seq_start_loc=None,
+            cache_seq_start_loc=None,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
             use_cuda_graph=self.use_cuda_graph,
@@ -429,6 +454,7 @@ class FlashAttentionMetadataBuilder(
 
         # KV-Compress
         self.prefill_block_state_indices: List[int] = []
+        self.first_prefill_block_state_indices: List[int] = []
         self.decode_block_state_indices: List[int] = []
         self.kv_metric_buffer_lens: List[int] = []
 
@@ -464,6 +490,9 @@ class FlashAttentionMetadataBuilder(
             self.context_lens.append(context_len)
 
             if is_prompt:
+                if context_len == 0:  # first prefill request
+                    self.first_prefill_block_state_indices.append(
+                        inter_data.block_state_index_mapping[0])
                 self.prefill_block_state_indices.append(
                     inter_data.block_state_index_mapping[0])
                 self.num_prefills += 1
@@ -579,43 +608,96 @@ class FlashAttentionMetadataBuilder(
             # NOTE: KV-Compress handles context_lens, slot_mapping and block_tables
             # separately during decoding, passing on-device tensors directly from
             # block manager.
-            assert not (self.prefill_block_state_indices
-                        and self.decode_block_state_indices)
             assert self.prefill_block_state_indices or self.decode_block_state_indices
             assert self.prefill_block_state_indices or not is_profile_run
+            block_tables = None
             if self.prefill_block_state_indices:
-                # use original context_lens and block_tables
-                block_tables = make_tensor_with_pad(
-                    self.block_tables,
-                    pad=0,
-                    dtype=torch.int,
-                    device=device,
-                )
-                context_lens_tensor = async_tensor_h2d(self.context_lens, torch.int,
-                                                       device, self.runner.pin_memory)
-                if is_profile_run:
-                    slot_mapping_tensor = torch.ones(
-                        (
-                            self.runner.kvcompress_config.num_layers,
-                            self.num_prefill_tokens,
-                            self.runner.kvcompress_config.num_kv_heads,
-                        ),
-                        dtype=torch.int,
-                        device=device
-                    ) * PAD_SLOT_ID
+                if self.input_builder.chunked_prefill_enabled:
+                    if is_profile_run:
+                        block_tables = torch.zeros(
+                            (
+                                self.runner.kvcompress_config.num_layers,
+                                self.num_prefills,
+                                self.runner.kvcompress_config.num_kv_heads,
+                            ),
+                            dtype=torch.int,
+                            device=device,
+                        )
+                        context_lens_tensor = async_tensor_h2d(
+                            self.context_lens, torch.int,
+                            device, self.runner.pin_memory)[None,:,None].repeat(
+                                self.runner.kvcompress_config.num_layers, 1,
+                                self.runner.kvcompress_config.num_kv_heads)
+                        slot_mapping_tensor = torch.ones(
+                            (
+                                self.runner.kvcompress_config.num_layers,
+                                self.num_prefill_tokens,
+                                self.runner.kvcompress_config.num_kv_heads,
+                            ),
+                            dtype=torch.int,
+                            device=device
+                        ) * PAD_SLOT_ID
+                    else:
+                        prefill_block_state_view = block_state.get_block_state_batch_view(
+                            self.prefill_block_state_indices)
+                        block_tables = prefill_block_state_view.get_block_tables()
+                        context_lens_tensor = prefill_block_state_view.get_context_lens()
+                        slot_mapping_tensor = torch.cat(
+                            [block_state.get_block_state_seq_view(i)
+                                        .get_prefill_slot_mapping()
+                                for i in self.first_prefill_block_state_indices],
+                            dim=1,
+                        )
+                        # Get slot_mapping for continued prefill chunks, if cached
+                        cont_slot_mapping_tensor = block_state.exhaust_cached_slot_mappings()
+                        if cont_slot_mapping_tensor is not None:
+                            assert (self.prefill_block_state_indices[
+                                :len(self.first_prefill_block_state_indices)]
+                                == self.first_prefill_block_state_indices)
+                            slot_mapping_tensor = torch.cat([slot_mapping_tensor,
+                                                             cont_slot_mapping_tensor], dim=1)
                 else:
-                    slot_mapping_tensor = torch.cat(
-                        [block_state.get_block_state_seq_view(i)
-                                    .get_prefill_slot_mapping()
-                            for i in self.prefill_block_state_indices],
-                        dim=1,
+                    block_tables = make_tensor_with_pad(
+                        self.block_tables,
+                        pad=0,
+                        dtype=torch.int,
+                        device=device,
                     )
-            elif self.decode_block_state_indices:
+                    context_lens_tensor = async_tensor_h2d(self.context_lens, torch.int,
+                                                        device, self.runner.pin_memory)
+                    if is_profile_run:
+                        slot_mapping_tensor = torch.ones(
+                            (
+                                self.runner.kvcompress_config.num_layers,
+                                self.num_prefill_tokens,
+                                self.runner.kvcompress_config.num_kv_heads,
+                            ),
+                            dtype=torch.int,
+                            device=device
+                        ) * PAD_SLOT_ID
+                    else:
+                        slot_mapping_tensor = torch.cat(
+                            [block_state.get_block_state_seq_view(i)
+                                        .get_prefill_slot_mapping()
+                                for i in self.prefill_block_state_indices],
+                            dim=1,
+                        )
+            if self.decode_block_state_indices:
                 decode_block_state_view = block_state.get_block_state_batch_view(
                     self.decode_block_state_indices)
-                block_tables = decode_block_state_view.get_block_tables()
-                context_lens_tensor = decode_block_state_view.get_context_lens()
-                slot_mapping_tensor = decode_block_state_view.get_decode_slot_mapping()
+                decode_block_tables = decode_block_state_view.get_block_tables()
+                decode_context_lens_tensor = decode_block_state_view.get_context_lens()
+                decode_slot_mapping_tensor = decode_block_state_view.get_decode_slot_mapping()
+                if block_tables is None:
+                    block_tables = decode_block_tables
+                    context_lens_tensor = decode_context_lens_tensor
+                    slot_mapping_tensor = decode_slot_mapping_tensor
+                else:
+                    block_tables = torch.cat([block_tables, decode_block_tables], dim=1)
+                    context_lens_tensor = torch.cat([context_lens_tensor, decode_context_lens_tensor],
+                                                    dim=1)
+                    slot_mapping_tensor = torch.cat([slot_mapping_tensor, decode_slot_mapping_tensor],
+                                                    dim=1)
         elif use_captured_graph:
             self.slot_mapping.extend([PAD_SLOT_ID] * cuda_graph_pad_size)
             self.block_tables.extend([] * cuda_graph_pad_size)
@@ -667,9 +749,22 @@ class FlashAttentionMetadataBuilder(
                                     dtype=torch.int32,
                                     device=device)
         torch.cumsum(seq_lens_tensor,
-                     dim=0,
-                     dtype=seq_start_loc.dtype,
-                     out=seq_start_loc[1:])
+                    dim=0,
+                    dtype=seq_start_loc.dtype,
+                    out=seq_start_loc[1:])
+        if use_kvcompress and self.input_builder.chunked_prefill_enabled:
+            # To use prefix flash-attention with KV-Compress, cu_seqlens_k
+            # must be expanded to provide offsets for every layer/head
+            num_layers, num_seqs, num_kv_heads = context_lens_tensor.shape
+            cache_seq_start_loc = torch.zeros((num_layers,
+                                               num_seqs * num_kv_heads + 1),
+                                              dtype=seq_start_loc.dtype,
+                                              device=device)
+            cache_seq_start_loc[:,1:] = (context_lens_tensor
+                                         .flatten(start_dim=1)
+                                         .cumsum(dim=-1))
+        else:
+            cache_seq_start_loc = seq_start_loc.clone()
         torch.cumsum(query_lens_tensor,
                      dim=0,
                      dtype=query_start_loc.dtype,
@@ -688,6 +783,7 @@ class FlashAttentionMetadataBuilder(
             max_decode_seq_len=max_decode_seq_len,
             query_start_loc=query_start_loc,
             seq_start_loc=seq_start_loc,
+            cache_seq_start_loc=cache_seq_start_loc,
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
             use_cuda_graph=use_captured_graph,
@@ -847,43 +943,35 @@ class FlashAttentionImpl(AttentionImpl):
         CHECKPOINTER.checkpoint('flash_attn__value', value)
 
         if kv_cache is not None:
-            # Reshape the input keys and values and store them in the cache.
-            # If kv_cache is not provided, the new key and value tensors are
-            # not cached. This happens during the initial memory profiling run.
+            key_cache = kv_cache[0]
+            value_cache = kv_cache[1]
             if kvcompress_enabled:
-                assert k_scale == v_scale
-                key_cache, value_cache = KVCAttention.split_kv_cache(
-                    kv_cache, self.head_size)
                 assert kv_metrics
                 assert layer_index is not None
-                # Extract layer-dependent metadata
-                # TODO remove line below - we now initialize new KV's to zero
-                # and apply bias during the compression
-                kv_metric_head_bias = torch.zeros(
-                    self.num_kv_heads,
-                    dtype=torch.float,
-                    device=key.device,
-                )  #attn_metadata.kv_metric_head_bias[layer_index]
+
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
-
-                CHECKPOINTER.checkpoint('flash_attn__slot_mapping', slot_mapping)
-
-                KVCAttention.write_to_paged_cache(key, value, key_cache,
-                                                  value_cache, kv_metrics.metrics,
-                                                  slot_mapping,
-                                                  torch.zeros_like(kv_metric_head_bias),
-                                                  attn_metadata.kv_cache_dtype,
-                                                  k_scale, v_scale)
-
-                CHECKPOINTER.checkpoint('flash_attn__kv_metrics', kv_metrics.metrics)
+                kv_metrics.metrics.view(-1)[slot_mapping] = 0
 
                 if kv_metrics.random:
                     # if running random-eviction baseline, randomize the metrics that
                     # were just inserted
                     kv_metrics.randomize_metric_slots(slot_mapping)
+
+                # We can reuse standard reshape kernel by flattening both KV caches
+                # and slot-mapping along the (tokens, num_heads) dimensions while
+                # keeping a head dimension of 1 for the KV cache.
+                ops.reshape_and_cache_flash(
+                    key,
+                    value,
+                    key_cache,
+                    value_cache,
+                    attn_metadata.slot_mapping.flatten(),
+                    self.kv_cache_dtype,
+                    k_scale,
+                    v_scale,
+                )
+                torch.ones(1).to(0)
             else:
-                key_cache = kv_cache[0]
-                value_cache = kv_cache[1]
                 ops.reshape_and_cache_flash(
                     key,
                     value,
@@ -916,61 +1004,134 @@ class FlashAttentionImpl(AttentionImpl):
 
         if prefill_meta := attn_metadata.prefill_metadata:
             # Prompt run.
-            if kvcompress_enabled:
-                BENCHMARKER.start_range("prefill_attn_kvc")
+            if (kv_cache is None or prefill_meta.block_tables is None
+                    or prefill_meta.block_tables.numel() == 0):
+                if kvcompress_enabled:
+                    BENCHMARKER.start_range("prefill_attn_kvc")
 
-                # Extract layer-dependent metadata
-                slot_mapping = attn_metadata.slot_mapping[layer_index]
-                slot_mapping = slot_mapping[:num_prefill_tokens]
+                    # Extract layer-dependent metadata
+                    slot_mapping = attn_metadata.slot_mapping[layer_index]
+                    slot_mapping = slot_mapping[:num_prefill_tokens]
 
-                CHECKPOINTER.checkpoint('flash_attn__prefill_slot_mapping', slot_mapping)
+                    CHECKPOINTER.checkpoint('flash_attn__prefill_slot_mapping', slot_mapping)
 
-                if attn_metadata.enable_flash_kvc and FLASH_KVC_ENABLED:
-                    BENCHMARKER.start_range("flash_kvc_prefill")
-                    assert self.alibi_slopes is None, (
-                        "use of alibi with KVC is unsupported")
-                    assert self.sliding_window == (-1, -1), (
-                        "use of sliding window with KVC is unsupported")
-                    assert prefill_observed_queries <= 64, (
-                        "query range greater than query block size is not supported")
-                    assert not kv_metric_use_average, (
-                        "use_average not supported with flash-attn-kvc")
-                    BENCHMARKER.start_range("flash_attn_kvc_varlen_func")
-                    out, sm_lse, kvc_S = flash_attn_kvc_varlen_func(
-                        q=query,
-                        k=key,
-                        v=value,
-                        cu_seqlens_q=prefill_meta.seq_start_loc,
-                        cu_seqlens_k=prefill_meta.seq_start_loc,
-                        max_seqlen_q=prefill_meta.max_prefill_seq_len,
-                        max_seqlen_k=prefill_meta.max_prefill_seq_len,
-                        softmax_scale=self.scale,
-                        causal=True,
-                        window_size=self.sliding_window,
-                        alibi_slopes=self.alibi_slopes,
-                        key_attn_agg_window=prefill_observed_queries,
+                    if attn_metadata.enable_flash_kvc and FLASH_KVC_ENABLED:
+                        BENCHMARKER.start_range("flash_kvc_prefill")
+                        assert self.alibi_slopes is None, (
+                            "use of alibi with KVC is unsupported")
+                        assert self.sliding_window == (-1, -1), (
+                            "use of sliding window with KVC is unsupported")
+                        assert prefill_observed_queries <= 64, (
+                            "query range greater than query block size is not supported")
+                        assert not kv_metric_use_average, (
+                            "use_average not supported with flash-attn-kvc")
+                        BENCHMARKER.start_range("flash_attn_kvc_varlen_func")
+                        out, sm_lse, kvc_S = flash_attn_kvc_varlen_func(
+                            q=query,
+                            k=key,
+                            v=value,
+                            cu_seqlens_q=prefill_meta.seq_start_loc,
+                            cu_seqlens_k=prefill_meta.seq_start_loc,
+                            max_seqlen_q=prefill_meta.max_prefill_seq_len,
+                            max_seqlen_k=prefill_meta.max_prefill_seq_len,
+                            softmax_scale=self.scale,
+                            causal=True,
+                            window_size=self.sliding_window,
+                            alibi_slopes=self.alibi_slopes,
+                            key_attn_agg_window=prefill_observed_queries,
+                        )
+                        BENCHMARKER.end_range("flash_attn_kvc_varlen_func")
+                        BENCHMARKER.start_range("convert_kvc_S_to_attn")
+                        suffix_attn = convert_kvc_S_to_attn(
+                            kvc_S,
+                            sm_lse,
+                            prefill_observed_queries,
+                            prefill_meta.seq_start_loc,
+                            self.scale,
+                            kv_metric_buffer_len,
+                        )
+                        BENCHMARKER.end_range("convert_kvc_S_to_attn")
+                        kv_metric_out = _collect_kv_prefill_metrics(
+                            suffix_attn,
+                            kv_metric_use_l2,
+                            kv_metric_use_maxpool
+                        )
+                        BENCHMARKER.end_range("flash_kvc_prefill")
+                    else:
+                        BENCHMARKER.start_range("naive_kvc_prefill")
+                        BENCHMARKER.start_range("flash_attn_varlen_func")
+                        # out = flash_attn_varlen_func(
+                        #     q=query,
+                        #     k=key,
+                        #     v=value,
+                        #     cu_seqlens_q=prefill_meta.seq_start_loc,
+                        #     cu_seqlens_k=prefill_meta.seq_start_loc,
+                        #     max_seqlen_q=prefill_meta.max_prefill_seq_len,
+                        #     max_seqlen_k=prefill_meta.max_prefill_seq_len,
+                        #     softmax_scale=self.scale,
+                        #     causal=True,
+                        #     window_size=self.sliding_window,
+                        #     alibi_slopes=self.alibi_slopes,
+                        # )
+
+
+                        out = torch.ops.vllm.flash_attn_varlen_func(
+                            q=query,
+                            k=key,
+                            v=value,
+                            cu_seqlens_q=prefill_meta.seq_start_loc,
+                            cu_seqlens_k=prefill_meta.seq_start_loc,
+                            max_seqlen_q=prefill_meta.max_prefill_seq_len,
+                            max_seqlen_k=prefill_meta.max_prefill_seq_len,
+                            softmax_scale=self.scale,
+                            causal=True,
+                            window_size=self.sliding_window,
+                            alibi_slopes=self.alibi_slopes,
+                            softcap=self.logits_soft_cap,
+                        )
+
+                        BENCHMARKER.end_range("flash_attn_varlen_func")
+                        BENCHMARKER.start_range("repeat_kv")
+                        if self.num_kv_heads != self.num_heads:
+                            # Interleave for MQA workaround.
+                            key = self.repeat_kv(key, self.num_queries_per_kv)
+                            value = self.repeat_kv(value, self.num_queries_per_kv)
+                        BENCHMARKER.end_range("repeat_kv")
+                        _, kv_metric_out = _naive_kvc_attention(
+                            query,
+                            key,
+                            value,
+                            prefill_meta.seq_lens,
+                            self.scale,
+                            kv_metric_buffer_len,
+                            n_observed=prefill_observed_queries,
+                            max_observed_block_size=prefill_max_observed_block_size,
+                            use_l2=kv_metric_use_l2,
+                            use_average=kv_metric_use_average,
+                            use_maxpool=kv_metric_use_maxpool,
+                        )
+                        BENCHMARKER.end_range("naive_kvc_prefill")
+
+                    CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
+                    CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metric_out', kv_metric_out)
+
+                    kv_metrics.aggregate_prefill(
+                        kv_metric_out,
+                        slot_mapping,
                     )
-                    BENCHMARKER.end_range("flash_attn_kvc_varlen_func")
-                    BENCHMARKER.start_range("convert_kvc_S_to_attn")
-                    suffix_attn = convert_kvc_S_to_attn(
-                        kvc_S,
-                        sm_lse,
-                        prefill_observed_queries,
-                        prefill_meta.seq_start_loc,
-                        self.scale,
-                        kv_metric_buffer_len,
-                    )
-                    BENCHMARKER.end_range("convert_kvc_S_to_attn")
-                    kv_metric_out = _collect_kv_prefill_metrics(
-                        suffix_attn,
-                        kv_metric_use_l2,
-                        kv_metric_use_maxpool
-                    )
-                    BENCHMARKER.end_range("flash_kvc_prefill")
+
+                    CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metrics_agg', kv_metrics.metrics)
+
+                    assert output[:num_prefill_tokens].shape == out.shape
+                    output[:num_prefill_tokens] = out
+
+                    BENCHMARKER.end_range("prefill_attn_kvc")
                 else:
-                    BENCHMARKER.start_range("naive_kvc_prefill")
+                    # normal attention
+                    # When block_tables are not filled, it means q and k are the
+                    # prompt, and they have the same length.
                     BENCHMARKER.start_range("flash_attn_varlen_func")
-                    out = flash_attn_varlen_func(
+                    out = torch.ops.vllm.flash_attn_varlen_func(
                         q=query,
                         k=key,
                         v=value,
@@ -982,14 +1143,39 @@ class FlashAttentionImpl(AttentionImpl):
                         causal=True,
                         window_size=self.sliding_window,
                         alibi_slopes=self.alibi_slopes,
+                        softcap=self.logits_soft_cap,
                     )
                     BENCHMARKER.end_range("flash_attn_varlen_func")
-                    BENCHMARKER.start_range("repeat_kv")
+                    assert output[:num_prefill_tokens].shape == out.shape
+                    output[:num_prefill_tokens] = out
+            else:
+                # prefix-enabled attention
+                assert prefill_meta.seq_lens is not None
+                max_seq_len = max(prefill_meta.seq_lens)
+                if kvcompress_enabled:
+                    # Extract layer-dependent metadata
+                    slot_mapping = attn_metadata.slot_mapping[layer_index]
+                    slot_mapping = slot_mapping[:num_prefill_tokens]
+                    block_tables = prefill_meta.block_tables[layer_index]
+                    torch.zeros(1).to(0)
+                    out = torch.ops.vllm.flash_attn_varlen_func(  # noqa
+                        q=query,
+                        k=key_cache.squeeze(2),  # remove singleton head dimension
+                        v=value_cache.squeeze(2),
+                        cu_seqlens_q=prefill_meta.query_start_loc,
+                        max_seqlen_q=prefill_meta.max_query_len,
+                        cu_seqlens_k=prefill_meta.seq_start_loc,
+                        max_seqlen_k=max_seq_len,
+                        softmax_scale=self.scale,
+                        causal=True,
+                        alibi_slopes=self.alibi_slopes,
+                        block_table=block_tables,
+                        softcap=self.logits_soft_cap,
+                    )
                     if self.num_kv_heads != self.num_heads:
                         # Interleave for MQA workaround.
                         key = self.repeat_kv(key, self.num_queries_per_kv)
                         value = self.repeat_kv(value, self.num_queries_per_kv)
-                    BENCHMARKER.end_range("repeat_kv")
                     _, kv_metric_out = _naive_kvc_attention(
                         query,
                         key,
@@ -1003,98 +1189,78 @@ class FlashAttentionImpl(AttentionImpl):
                         use_average=kv_metric_use_average,
                         use_maxpool=kv_metric_use_maxpool,
                     )
-                    BENCHMARKER.end_range("naive_kvc_prefill")
-
-                CHECKPOINTER.checkpoint('flash_attn__prefill_out', out)
-                CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metric_out', kv_metric_out)
-
-                kv_metrics.aggregate_prefill(
-                    kv_metric_out,
-                    slot_mapping,
-                )
-
-                CHECKPOINTER.checkpoint('flash_attn__prefill_kv_metrics_agg', kv_metrics.metrics)
-
-                assert output[:num_prefill_tokens].shape == out.shape
-                output[:num_prefill_tokens] = out
-
-                BENCHMARKER.end_range("prefill_attn_kvc")
-            elif (kv_cache is None or prefill_meta.block_tables is None
-                    or prefill_meta.block_tables.numel() == 0):
-                # normal attention
-                # When block_tables are not filled, it means q and k are the
-                # prompt, and they have the same length.
-                BENCHMARKER.start_range("flash_attn_varlen_func")
-                out = torch.ops.vllm.flash_attn_varlen_func(
-                    q=query,
-                    k=key,
-                    v=value,
-                    cu_seqlens_q=prefill_meta.seq_start_loc,
-                    cu_seqlens_k=prefill_meta.seq_start_loc,
-                    max_seqlen_q=prefill_meta.max_prefill_seq_len,
-                    max_seqlen_k=prefill_meta.max_prefill_seq_len,
-                    softmax_scale=self.scale,
-                    causal=True,
-                    window_size=self.sliding_window,
-                    alibi_slopes=self.alibi_slopes,
-                    softcap=self.logits_soft_cap,
-                )
-                BENCHMARKER.end_range("flash_attn_varlen_func")
-                assert output[:num_prefill_tokens].shape == out.shape
-                output[:num_prefill_tokens] = out
-            else:
-                # prefix-enabled attention
-                assert prefill_meta.seq_lens is not None
-                max_seq_len = max(prefill_meta.seq_lens)
-                output[:
-                       num_prefill_tokens] = torch.ops.vllm.flash_attn_varlen_func(  # noqa
-                           q=query,
-                           k=key_cache,
-                           v=value_cache,
-                           cu_seqlens_q=prefill_meta.query_start_loc,
-                           max_seqlen_q=prefill_meta.max_query_len,
-                           cu_seqlens_k=prefill_meta.seq_start_loc,
-                           max_seqlen_k=max_seq_len,
-                           softmax_scale=self.scale,
-                           causal=True,
-                           alibi_slopes=self.alibi_slopes,
-                           block_table=prefill_meta.block_tables,
-                           softcap=self.logits_soft_cap,
-                       )
+                    kv_metrics.aggregate_prefill(
+                        kv_metric_out,
+                        slot_mapping,
+                    )
+                    assert output[:num_prefill_tokens].shape == out.shape
+                    output[:num_prefill_tokens] = out
+                else:
+                    output[:
+                        num_prefill_tokens] = torch.ops.vllm.flash_attn_varlen_func(  # noqa
+                            q=query,
+                            k=key_cache,
+                            v=value_cache,
+                            cu_seqlens_q=prefill_meta.query_start_loc,
+                            max_seqlen_q=prefill_meta.max_query_len,
+                            cu_seqlens_k=prefill_meta.seq_start_loc,
+                            max_seqlen_k=max_seq_len,
+                            softmax_scale=self.scale,
+                            causal=True,
+                            alibi_slopes=self.alibi_slopes,
+                            block_table=prefill_meta.block_tables,
+                            softcap=self.logits_soft_cap,
+                        )
 
         if decode_meta := attn_metadata.decode_metadata:
             # Decoding run.
             if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 block_tables = decode_meta.block_tables[layer_index]
-                context_lens = decode_meta.context_lens_tensor[layer_index]
-                decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
-                output[num_prefill_tokens:] = KVCAttention.forward_decode(
-                    decode_query,
-                    key_cache,
-                    value_cache,
-                    block_tables,
-                    context_lens,
-                    kv_metrics.token_positions,
-                    decode_positions,
-                    kv_metric_buffer_len,
-                    decode_meta.max_decode_seq_len,
-                    attn_metadata.kv_cache_dtype,
-                    self.num_kv_heads,
-                    self.scale,
-                    self.alibi_slopes,
-                    k_scale,
-                    v_scale,
-                    kv_metrics.temp_metrics,
-                    kv_metrics.temp_v2_metrics,
-                    kv_metrics.record_decoding_metrics,
-                )
+                seq_lens_tensor = decode_meta.seq_lens_tensor[layer_index]
+                # context_lens = decode_meta.context_lens_tensor[layer_index]
+                # decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
+                # torch.ones(1).to(0)
+                # output[num_prefill_tokens:] = KVCAttention.forward_decode(
+                #     decode_query,
+                #     key_cache,
+                #     value_cache,
+                #     block_tables,
+                #     context_lens,
+                #     kv_metrics.token_positions,
+                #     decode_positions,
+                #     kv_metric_buffer_len,
+                #     decode_meta.max_decode_seq_len,
+                #     attn_metadata.kv_cache_dtype,
+                #     self.num_kv_heads,
+                #     self.scale,
+                #     self.alibi_slopes,
+                #     k_scale,
+                #     v_scale,
+                #     kv_metrics.temp_metrics,
+                #     kv_metrics.temp_v2_metrics,
+                #     kv_metrics.record_decoding_metrics,
+                # )
+                # torch.ones(1).to(0)
 
-                CHECKPOINTER.checkpoint('flash_attn__decode_block_tables', block_tables)
-                CHECKPOINTER.checkpoint('flash_attn__decode_context_lens', context_lens)
-                CHECKPOINTER.checkpoint('flash_attn__decode_kv_positions', kv_metrics.token_positions)
-                CHECKPOINTER.checkpoint('flash_attn__decode_q_positions', decode_positions)
-                CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_block_tables', block_tables)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_context_lens', context_lens)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_kv_positions', kv_metrics.token_positions)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_q_positions', decode_positions)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
+
+                output[
+                    num_prefill_tokens:] = torch.ops.vllm.flash_attn_with_kvcache(
+                        decode_query.unsqueeze(1),
+                        key_cache.squeeze(2),  # remove singleton head dimension
+                        value_cache.squeeze(2),
+                        block_table=block_tables,
+                        cache_seqlens=seq_lens_tensor,
+                        softmax_scale=self.scale,
+                        causal=True,
+                        alibi_slopes=self.alibi_slopes,
+                        softcap=self.logits_soft_cap,
+                    ).squeeze(1)
 
             else:
                 output[

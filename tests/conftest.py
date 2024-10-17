@@ -623,10 +623,15 @@ class VllmRunner:
             for i, image in enumerate(images):
                 inputs[i]["multi_modal_data"] = {"image": image}
 
+        if reference_completions is not None:
+            for i, ref_completion in enumerate(reference_completions):
+                inputs[i]["reference_completion"] = ref_completion
+        elif reference_token_ids is not None:
+            for i, ref_token_ids in enumerate(reference_token_ids):
+                inputs[i]["reference_token_ids"] = ref_token_ids
+
         req_outputs = self.model.generate(inputs,
-                                          sampling_params=sampling_params,
-                                          reference_completions=reference_completions,
-                                          reference_token_ids=reference_token_ids)
+                                          sampling_params=sampling_params)
 
         outputs: List[Tuple[List[List[int]], List[str]]] = []
         for req_output in req_outputs:

@@ -565,8 +565,6 @@ class Scheduler:
             A tuple of remaining running queue (should be always 0) after
             scheduling and SchedulerRunningOutputs.
         """
-        assert not enable_chunking, "batched scheduling does not support chunked prefill"
-
         ret: SchedulerRunningOutputs = \
             self._scheduler_running_outputs_cache[self.cache_id].get_object()
         ret.blocks_to_swap_out.clear()
@@ -600,9 +598,8 @@ class Scheduler:
             num_running_tokens = self._get_num_new_tokens(
                 seq_group, SequenceStatus.RUNNING, enable_chunking, budget)
 
-            # We can have up to 1 running prefill at any given time in running
-            # queue, which means we can guarantee chunk size is at least 1.
-            assert num_running_tokens != 0
+            if num_running_tokens == 0:
+                break
 
             new_blocks = self.block_manager.get_new_block_count(seq_group)
             # print(f"Checking DECODE allocation: {new_blocks} blocks ({total_blocks - remaining_blocks + new_blocks} total)")
@@ -648,6 +645,9 @@ class Scheduler:
 
                 budget.add_num_batched_tokens(seq_group.request_id,
                                               num_running_tokens)
+                if enable_chunking:
+                    num_running_seqs = seq_group.get_max_num_running_seqs()
+                    budget.add_num_seqs(seq_group.request_id, num_running_seqs)
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
         # print(f"schedule_running preempted: {len(preempted)} preempted, {len(decode_seq_groups)} decode, {len(prefill_seq_groups)} prefill")
@@ -1203,9 +1203,14 @@ class Scheduler:
         swapped_in = SchedulerSwappedInOutputs.create_empty()
 
         # Decoding should be always scheduled first by fcfs.
-        running_scheduled = self._schedule_running(budget,
-                                                   curr_loras,
-                                                   enable_chunking=True)
+        if self.kvcompress_enabled:
+            running_scheduled = self._batch_schedule_running(budget,
+                                                             curr_loras,
+                                                             enable_chunking=True)
+        else:
+            running_scheduled = self._schedule_running(budget,
+                                                       curr_loras,
+                                                       enable_chunking=True)
 
         # Schedule swapped out requests.
         # If preemption happens, it means we don't have space for swap-in.
@@ -1238,6 +1243,8 @@ class Scheduler:
         self.running.extend(
             [s.seq_group for s in running_scheduled.prefill_seq_groups])
         self.running.extend([s.seq_group for s in prefills.seq_groups])
+
+        print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
         # Update swapped requests.
         self.swapped.extend(running_scheduled.swapped_out)

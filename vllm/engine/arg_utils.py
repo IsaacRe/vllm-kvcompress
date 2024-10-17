@@ -1179,6 +1179,7 @@ class EngineArgs:
                 control_layers=self.control_layers,
                 new_token_limit=self.new_token_limit,
                 enable_flash_kvc=self.enable_flash_kvc,
+                enable_chunked_prefill=self.enable_chunked_prefill,
             )
         else:
             kvcompress_config = None
