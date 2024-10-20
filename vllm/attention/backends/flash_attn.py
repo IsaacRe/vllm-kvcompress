@@ -1224,6 +1224,7 @@ class FlashAttentionImpl(AttentionImpl):
                     output[:num_prefill_tokens] = out
             else:
                 # prefix-enabled attention
+                assert False
                 assert prefill_meta.seq_lens is not None
                 max_seq_len = max(prefill_meta.seq_lens)
                 if kvcompress_enabled:
@@ -1291,57 +1292,58 @@ class FlashAttentionImpl(AttentionImpl):
             if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 block_tables = decode_meta.block_tables[layer_index]
-                context_lens = decode_meta.context_lens_tensor[layer_index]
-                decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
-                key_cache_, _ = KVCAttention.split_kv_cache(
-                    kv_cache, self.head_size)
-                num_blocks, head_size_over_x, block_size, x = key_cache_.shape
-                key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
-                                      .transpose(1, 2).contiguous())
-                value_cache = value_cache.transpose(1, 2).contiguous()
-                output[num_prefill_tokens:] = KVCAttention.forward_decode(
-                    decode_query,
-                    key_cache,
-                    value_cache,
-                    block_tables,
-                    context_lens,
-                    kv_metrics.token_positions,
-                    decode_positions,
-                    kv_metric_buffer_len,
-                    decode_meta.max_decode_seq_len,
-                    attn_metadata.kv_cache_dtype,
-                    self.num_kv_heads,
-                    self.scale,
-                    self.alibi_slopes,
-                    k_scale,
-                    v_scale,
-                    kv_metrics.temp_metrics,
-                    kv_metrics.temp_v2_metrics,
-                    kv_metrics.record_decoding_metrics,
-                )
-                torch.ones(1).to(0)
+                # context_lens = decode_meta.context_lens_tensor[layer_index]
+                # decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
+                # key_cache_, _ = KVCAttention.split_kv_cache(
+                #     kv_cache, self.head_size)
+                # num_blocks, head_size_over_x, block_size, x = key_cache_.shape
+                # key_cache_ = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
+                #                       .transpose(1, 2).contiguous())
+                # value_cache_ = value_cache.transpose(1, 2).contiguous()
+                # output[num_prefill_tokens:] = KVCAttention.forward_decode(
+                #     decode_query,
+                #     key_cache_,
+                #     value_cache_,
+                #     block_tables,
+                #     context_lens,
+                #     kv_metrics.token_positions,
+                #     decode_positions,
+                #     kv_metric_buffer_len,
+                #     decode_meta.max_decode_seq_len,
+                #     attn_metadata.kv_cache_dtype,
+                #     self.num_kv_heads,
+                #     self.scale,
+                #     self.alibi_slopes,
+                #     k_scale,
+                #     v_scale,
+                #     kv_metrics.temp_metrics,
+                #     kv_metrics.temp_v2_metrics,
+                #     kv_metrics.record_decoding_metrics,
+                # )
+                # torch.ones(1).to(0)
 
-                CHECKPOINTER.checkpoint('flash_attn__decode_block_tables', block_tables)
-                CHECKPOINTER.checkpoint('flash_attn__decode_context_lens', context_lens)
-                CHECKPOINTER.checkpoint('flash_attn__decode_kv_positions', kv_metrics.token_positions)
-                CHECKPOINTER.checkpoint('flash_attn__decode_q_positions', decode_positions)
-                CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_block_tables', block_tables)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_context_lens', context_lens)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_kv_positions', kv_metrics.token_positions)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_q_positions', decode_positions)
+                # CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
 
                 ##### UPDATE
-                # seq_lens_tensor = decode_meta.seq_lens_tensor[layer_index]
-                # output[
-                #     num_prefill_tokens:] = torch.ops.vllm.flash_attn_with_kvcache(
-                #         decode_query.unsqueeze(1),
-                #         key_cache.squeeze(2),  # remove singleton head dimension
-                #         value_cache.squeeze(2),
-                #         block_table=block_tables,
-                #         cache_seqlens=seq_lens_tensor,
-                #         softmax_scale=self.scale,
-                #         causal=True,
-                #         alibi_slopes=self.alibi_slopes,
-                #         softcap=self.logits_soft_cap,
-                #     ).squeeze(1)
+                seq_lens_tensor = decode_meta.seq_lens_tensor[layer_index]
+                output[num_prefill_tokens:] = torch.ops.vllm.flash_attn_with_kvcache(
+                        decode_query.unsqueeze(1),
+                        key_cache,
+                        value_cache,
+                        block_table=block_tables,
+                        cache_seqlens=seq_lens_tensor,
+                        softmax_scale=self.scale,
+                        causal=True,
+                        alibi_slopes=self.alibi_slopes,
+                        softcap=self.logits_soft_cap,
+                    ).squeeze(1)
                 ######
+
+                # assert torch.allclose(output[num_prefill_tokens:], out, rtol=1e-2, atol=1e-2)
 
             else:
                 output[
