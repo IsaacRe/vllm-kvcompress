@@ -947,6 +947,7 @@ class FlashAttentionImpl(AttentionImpl):
             # If kv_cache is not provided, the new key and value tensors are
             # not cached. This happens during the initial memory profiling run.
             if kvcompress_enabled:
+                ######
                 key_cache_, value_cache_ = KVCAttention.split_kv_cache(
                     kv_cache, self.head_size)
                 key_cache, value_cache = key_cache_.clone(), value_cache_.clone()
@@ -958,7 +959,7 @@ class FlashAttentionImpl(AttentionImpl):
                                                               * key_cache.shape[3])
                 # [num_blocks, head_size, block_size]
                 value_cache = value_cache.transpose(1, 2).contiguous()
-                ##### UPDATE
+                # ##### UPDATE
                 assert layer_index is not None
                 # key_cache = kv_cache[0]
                 # value_cache = kv_cache[1]
@@ -969,10 +970,19 @@ class FlashAttentionImpl(AttentionImpl):
                     # if running random-eviction baseline, randomize the metrics that
                     # were just inserted
                     kv_metrics.randomize_metric_slots(slot_mapping)
+                ######
+
+                # key_cache__ = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
+                #                       .transpose(1, 2).contiguous())
+                # value_cache__ = value_cache.transpose(1, 2).contiguous()
+                # assert (key_cache__ == key_cache_).all()
+                # assert (value_cache__ == value_cache_).all()
 
                 # We can reuse standard reshape kernel by flattening both KV caches
                 # and slot-mapping along the (tokens, num_heads) dimensions while
                 # keeping a head dimension of 1 for the KV cache.
+
+                ######
                 ops.reshape_and_cache_flash(
                     key.flatten(end_dim=1).unsqueeze(1),
                     value.flatten(end_dim=1).unsqueeze(1),
@@ -983,50 +993,53 @@ class FlashAttentionImpl(AttentionImpl):
                     k_scale,
                     v_scale,
                 )
-                # import pdb;pdb.set_trace()
                 torch.ones(1).to(0)
                 key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
                                       .transpose(1, 2).contiguous())
                 value_cache = value_cache.transpose(1, 2).contiguous()
-                key_cache__, value_cache__ = key_cache, value_cache
-                key_cache, value_cache = key_cache_, value_cache_
+                kv_cache[0] = key_cache.view(*kv_cache[0].shape)
+                kv_cache[1] = value_cache.view(*kv_cache[1].shape)
+                #####
+
+                # key_cache__, value_cache__ = key_cache, value_cache
+                # key_cache, value_cache = key_cache_, value_cache_
                 # assert (key_cache_ != key_cache__).sum() == key.numel()
                 ######
 
-                assert k_scale == v_scale
+                # assert k_scale == v_scale
                 # key_cache, value_cache = KVCAttention.split_kv_cache(
                 #     kv_cache, self.head_size)
-                assert kv_metrics
-                assert layer_index is not None
-                # Extract layer-dependent metadata
-                # TODO remove line below - we now initialize new KV's to zero
-                # and apply bias during the compression
-                kv_metric_head_bias = torch.zeros(
-                    self.num_kv_heads,
-                    dtype=torch.float,
-                    device=key.device,
-                )  #attn_metadata.kv_metric_head_bias[layer_index]
-                slot_mapping = attn_metadata.slot_mapping[layer_index]
+                # assert kv_metrics
+                # assert layer_index is not None
+                # # Extract layer-dependent metadata
+                # # TODO remove line below - we now initialize new KV's to zero
+                # # and apply bias during the compression
+                # kv_metric_head_bias = torch.zeros(
+                #     self.num_kv_heads,
+                #     dtype=torch.float,
+                #     device=key.device,
+                # )  #attn_metadata.kv_metric_head_bias[layer_index]
+                # slot_mapping = attn_metadata.slot_mapping[layer_index]
 
-                CHECKPOINTER.checkpoint('flash_attn__slot_mapping', slot_mapping)
+                # CHECKPOINTER.checkpoint('flash_attn__slot_mapping', slot_mapping)
 
-                KVCAttention.write_to_paged_cache(key, value, key_cache,
-                                                  value_cache, kv_metrics.metrics,
-                                                  slot_mapping,
-                                                  torch.zeros_like(kv_metric_head_bias),
-                                                  attn_metadata.kv_cache_dtype,
-                                                  k_scale, v_scale)
+                # KVCAttention.write_to_paged_cache(key, value, key_cache,
+                #                                   value_cache, kv_metrics.metrics,
+                #                                   slot_mapping,
+                #                                   torch.zeros_like(kv_metric_head_bias),
+                #                                   attn_metadata.kv_cache_dtype,
+                #                                   k_scale, v_scale)
 
-                CHECKPOINTER.checkpoint('flash_attn__kv_metrics', kv_metrics.metrics)
+                # CHECKPOINTER.checkpoint('flash_attn__kv_metrics', kv_metrics.metrics)
 
-                if kv_metrics.random:
-                    # if running random-eviction baseline, randomize the metrics that
-                    # were just inserted
-                    kv_metrics.randomize_metric_slots(slot_mapping)
+                # if kv_metrics.random:
+                #     # if running random-eviction baseline, randomize the metrics that
+                #     # were just inserted
+                #     kv_metrics.randomize_metric_slots(slot_mapping)
 
-                assert torch.allclose(value_cache, value_cache__, atol=1e-2, rtol=1e-2)
-                assert torch.allclose(key_cache, key_cache__, atol=1e-2, rtol=1e-2)
-                print('PASSED!!!!!')
+                # # assert torch.allclose(value_cache, value_cache__, atol=1e-2, rtol=1e-2)
+                # # assert torch.allclose(key_cache, key_cache__, atol=1e-2, rtol=1e-2)
+                # # print('PASSED!!!!!')
             else:
                 key_cache = kv_cache[0]
                 value_cache = kv_cache[1]
