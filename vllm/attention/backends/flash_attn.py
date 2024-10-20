@@ -948,21 +948,21 @@ class FlashAttentionImpl(AttentionImpl):
             # not cached. This happens during the initial memory profiling run.
             if kvcompress_enabled:
                 ######
-                key_cache_, value_cache_ = KVCAttention.split_kv_cache(
-                    kv_cache, self.head_size)
-                key_cache, value_cache = key_cache_.clone(), value_cache_.clone()
-                # [num_blocks, head_size/x, block_size, x]
-                num_blocks, head_size_over_x, block_size, x = key_cache.shape
-                key_cache = key_cache.transpose(1, 2).reshape(key_cache.shape[0],
-                                                              key_cache.shape[2],
-                                                              key_cache.shape[1]
-                                                              * key_cache.shape[3])
-                # [num_blocks, head_size, block_size]
-                value_cache = value_cache.transpose(1, 2).contiguous()
+                # key_cache_, value_cache_ = KVCAttention.split_kv_cache(
+                #     kv_cache, self.head_size)
+                # key_cache, value_cache = key_cache_.clone(), value_cache_.clone()
+                # # [num_blocks, head_size/x, block_size, x]
+                # num_blocks, head_size_over_x, block_size, x = key_cache.shape
+                # key_cache = key_cache.transpose(1, 2).reshape(key_cache.shape[0],
+                #                                               key_cache.shape[2],
+                #                                               key_cache.shape[1]
+                #                                               * key_cache.shape[3])
+                # # [num_blocks, head_size, block_size]
+                # value_cache = value_cache.transpose(1, 2).contiguous()
                 # ##### UPDATE
                 assert layer_index is not None
-                # key_cache = kv_cache[0]
-                # value_cache = kv_cache[1]
+                key_cache = kv_cache[0].squeeze(2)
+                value_cache = kv_cache[1].squeeze(2)
                 slot_mapping = attn_metadata.slot_mapping[layer_index]
                 kv_metrics.metrics.view(-1)[slot_mapping] = 0
 
@@ -997,9 +997,11 @@ class FlashAttentionImpl(AttentionImpl):
                 # key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
                 #                       .transpose(1, 2).contiguous())
                 # value_cache = value_cache.transpose(1, 2).contiguous()
-                kv_cache[0] = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
-                                      .transpose(1, 2).contiguous()).view(*kv_cache[0].shape)
-                kv_cache[1] = value_cache.transpose(1, 2).contiguous().view(*kv_cache[1].shape)
+                # kv_cache[0] = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
+                #                       .transpose(1, 2).contiguous()).view(*kv_cache[0].shape)
+                # kv_cache[1] = value_cache.transpose(1, 2).contiguous().view(*kv_cache[1].shape)
+                kv_cache[0] = key_cache.unsqueeze(2)
+                kv_cache[1] = value_cache.unsqueeze(2)
                 #####
 
                 # key_cache__, value_cache__ = key_cache, value_cache
@@ -1291,7 +1293,9 @@ class FlashAttentionImpl(AttentionImpl):
                 block_tables = decode_meta.block_tables[layer_index]
                 context_lens = decode_meta.context_lens_tensor[layer_index]
                 decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
-
+                key_cache_, _ = KVCAttention.split_kv_cache(
+                    kv_cache, self.head_size)
+                num_blocks, head_size_over_x, block_size, x = key_cache_.shape
                 key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
                                       .transpose(1, 2).contiguous())
                 value_cache = value_cache.transpose(1, 2).contiguous()
