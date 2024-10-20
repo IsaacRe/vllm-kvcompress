@@ -259,14 +259,23 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         return freed_blocks
 
     def _get_new_block_count(self, seq_id: int, token_count: int) -> int:
-        assert token_count == 1
         batch_slot_idx = self.batch_slot_mapping[seq_id]
         new_kv_count = (
             self.block_state.context_lens[:,batch_slot_idx] + token_count
         )
         return int((new_kv_count % self.block_size == 1).sum())
 
-    def _append_to_sequence_batch(self, seqs: List[Sequence], token_count: int = 1):
+    def _append_to_sequence_batch(
+        self,
+        seqs: List[Sequence],
+    ):
+        cache_slot_mapping = self.kvcompress_config.enable_chunked_prefill
+
+        token_count = torch.tensor(
+            [seq.get_num_new_tokens() for seq in seqs],
+            device=self.device,
+            dtype=torch.int,
+        )
         batch_slots_idxs = torch.tensor(
             [self.batch_slot_mapping[seq.seq_id] for seq in seqs],
             dtype=torch.long,
@@ -274,9 +283,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         )
         block_state_view = self.block_state.get_block_state_batch_view(batch_slots_idxs)
         old_mask = block_state_view.allocated_block_mask()
-        self.block_state.context_lens[:,batch_slots_idxs] += token_count
+        self.block_state.context_lens[:,batch_slots_idxs] += token_count[None,:,None]
         new_mask = block_state_view.allocated_block_mask()
         new_mask = (new_mask & ~old_mask)
+        new_seq_blocks = new_mask.sum(dim=-1).max(dim=0).values.max(dim=-1).values
         new_blocks = new_mask.sum()
 
         if new_blocks > 0:
@@ -287,11 +297,17 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             )
             tmp[new_mask] = newly_allocated
             self.block_state.block_tables[:,batch_slots_idxs] = tmp
-            metadata, _ = (
+            metadata, _, slot_mapping = (
                 self.block_state.get_block_state_batch_view(batch_slots_idxs)
-                                .get_batch_new_block_metadata([seq.data.get_len() - 1 for seq in seqs])
+                                .get_batch_new_block_metadata(
+                                    [seq.data.get_len() - 1 for seq in seqs],
+                                    new_seq_blocks,
+                                    return_slot_mapping=cache_slot_mapping,
+                                    is_prefill=[s.is_prefill() for s in seqs])
             )
             self.kv_metrics.insert_metadata(metadata)
+            if cache_slot_mapping:
+                self.block_state.cached_slot_mapping = slot_mapping
             # for seq in seqs:
             #     seq_pos = seq.data.get_len() - 1
             #     seq_index = self.batch_slot_mapping[seq.seq_id]
@@ -306,7 +322,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             #         print(f"{(self.kv_metrics.token_positions[mask_] == max_).sum()=}")
             #         raise Exception(seq_index)
 
-    def _append_to_sequence(self, seq: Sequence, token_count: int):
+    def _append_to_sequence(
+        self,
+        seq: Sequence,
+        token_count: int,
+    ):
         seq_id = seq.seq_id
         batch_slot_idx = self.batch_slot_mapping[seq_id]
 
@@ -408,7 +428,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
     def get_new_block_count(self, seq_group: SequenceGroup) -> int:
         seq = seq_group.get_seqs(status=SequenceStatus.RUNNING)[0]
-        return self._get_new_block_count(seq_id=seq.seq_id, token_count=1)
+        return self._get_new_block_count(seq_id=seq.seq_id,
+                                         token_count=seq.get_num_new_tokens())
 
     @BENCHMARKER.wrap()
     def batch_append_slots(self, seqs: List[Sequence]) -> None:

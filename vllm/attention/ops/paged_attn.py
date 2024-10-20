@@ -406,4 +406,5 @@ class KVCAttention(PagedAttention):
                 v_scale,
                 record_kv_metrics,
             )
+        torch.ones(1).to(0)
         return output

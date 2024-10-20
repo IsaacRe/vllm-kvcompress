@@ -1031,6 +1031,7 @@ class KVCompressConfig:
         control_layers: List[int],
         new_token_limit: int,
         enable_flash_kvc: bool,
+        enable_chunked_prefill: bool,
     ) -> None:
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
@@ -1058,6 +1059,7 @@ class KVCompressConfig:
         self.control_layers = control_layers
         self.new_token_limit = new_token_limit
         self.enable_flash_kvc = False
+        self.enable_chunked_prefill = enable_chunked_prefill
 
         self._verify_args()
 
