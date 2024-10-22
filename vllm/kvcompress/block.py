@@ -575,8 +575,10 @@ class BlockStateView:
         mask = last_block_mask & first_token_mask
         # assert not (mask & ~last_block_mask).any(), 'heyooo'
 
+        import pdb;pdb.set_trace()
+
         if mask.sum() == 0:
-            return None, None
+            return None, None, None
 
         exp_logical_blocks = (self.all_logical_block_nums
                               .expand_as(self.block_tables)[:,seq_indices_tensor])

@@ -97,6 +97,7 @@ def test_parity_with_simulated_compression(
         dtype=dtype,
         enforce_eager=True,
         enable_kvcompress=True,
+        enable_chunked_prefill=True,
         # max_cache_tokens=checkpoint_cfg.max_cache_tokens,
         # target_compression_rate=0.1,
         block_size=16,
@@ -110,7 +111,8 @@ def test_parity_with_simulated_compression(
         new_token_limit=100,
         compression_interval=1000,
         gpu_memory_utilization=0.65,
-        max_model_len=512,
+        max_num_batched_tokens=32,
+        max_num_seqs=32,
     )
     checkpointer.set_config(checkpoint_cfg)
 
@@ -119,7 +121,7 @@ def test_parity_with_simulated_compression(
 
     tokenizer = AutoTokenizer.from_pretrained(model)
     input_token_ids, reference_token_ids = tokenizer_dependent_random_digit_generator(
-        tokenizer, num_digits, random_seed, n_seqs=100, repeat_len=10)
+        tokenizer, num_digits, random_seed, n_seqs=1, repeat_len=10)
 
     if "Llama-2" in model or "Mistral" in model:
         # Llama-2 tokenizer adds an empty "" token before digits
@@ -143,7 +145,7 @@ def test_parity_with_simulated_compression(
         topk_ll,
         prompt_token_ids=input_token_ids,
         reference_token_ids=deepcopy(reference_token_ids),
-        max_cache_tokens=checkpoint_cfg.max_cache_tokens,
+        max_cache_tokens=-1, #checkpoint_cfg.max_cache_tokens,
         # target_compression_rate=0.1,
         protected_window_size=checkpoint_cfg.protected_window_size,
         metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,

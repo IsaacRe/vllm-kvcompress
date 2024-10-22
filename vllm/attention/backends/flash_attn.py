@@ -1224,7 +1224,6 @@ class FlashAttentionImpl(AttentionImpl):
                     output[:num_prefill_tokens] = out
             else:
                 # prefix-enabled attention
-                assert False
                 assert prefill_meta.seq_lens is not None
                 max_seq_len = max(prefill_meta.seq_lens)
                 if kvcompress_enabled:

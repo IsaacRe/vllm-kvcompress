@@ -1228,6 +1228,7 @@ class SchedulerConfig:
 
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
+        self.max_chunk_len = max_num_batched_tokens  # TODO hardcode for now for testing
         self.use_v2_block_manager = use_v2_block_manager
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
