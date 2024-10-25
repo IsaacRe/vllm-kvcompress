@@ -138,8 +138,8 @@ class CacheEngine:
     def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
         k_cache, v_cache = self.gpu_cache.unified_cache
         _execute_cache_moves(
-            k_cache=k_cache.unsqueeze(2),
-            v_cache=v_cache.unsqueeze(2),
+            k_cache=k_cache.squeeze(2),
+            v_cache=v_cache.squeeze(2),
             kv_metrics=kv_metrics.metrics,
             kv_position=kv_metrics.token_positions,
             cache_moves_indices=cache_moves.index,
