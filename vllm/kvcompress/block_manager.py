@@ -268,11 +268,15 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def _append_to_sequence_batch(
         self,
         seqs: List[Sequence],
+        chunk_size: int = -1,
     ):
         cache_slot_mapping = self.kvcompress_config.enable_chunked_prefill
 
+        new_token_counts = ([min(seq.get_num_new_tokens(), chunk_size) for seq in seqs]
+                            if chunk_size > 0 else
+                            [seq.get_num_new_tokens() for seq in seqs])
         token_count = torch.tensor(
-            [seq.get_num_new_tokens() for seq in seqs],
+            new_token_counts,
             device=self.device,
             dtype=torch.int,
         )
@@ -297,10 +301,12 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             )
             tmp[new_mask] = newly_allocated
             self.block_state.block_tables[:,batch_slots_idxs] = tmp
+            last_token_position = [seq.get_len() - seq.get_num_new_tokens() - 1
+                                   for seq in seqs]
             metadata, _, slot_mapping = (
                 self.block_state.get_block_state_batch_view(batch_slots_idxs)
                                 .get_batch_new_block_metadata(
-                                    [seq.data.get_len() - 1 for seq in seqs],
+                                    last_token_position,
                                     new_seq_blocks,
                                     return_slot_mapping=cache_slot_mapping,
                                     is_prefill=[s.is_prefill() for s in seqs])
@@ -373,7 +379,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         kv_counts = self.block_state.context_lens[:,batch_slot_idx]
         return int(((kv_counts + self.block_size - 1) // self.block_size).sum())
 
-    def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
+    def can_allocate(self,
+                     seq_group: SequenceGroup,
+                     num_new_tokens: int = -1) -> AllocStatus:
         assert (seq_group.num_seqs() <= 1
             ), "multi-child SequenceGroups are not compatible with KV-Compress"
         # FIXME(woosuk): Here we assume that all sequences in the group share
@@ -382,8 +390,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         # Assume that sequence has not been previously compressed and has same
         # context length across all layers/heads
+        if num_new_tokens <= 0:
+            num_new_tokens = seq.get_len()
         num_required_blocks = (
-            (seq.get_len() + self.block_size) // self.block_size
+            (num_new_tokens + self.block_size) // self.block_size
             * self.num_layers * self.num_kv_heads
         )
         # print(f"Checking PREFILL allocation: {num_required_blocks} blocks")
@@ -401,12 +411,16 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         else:
             return AllocStatus.LATER
 
-    def allocate(self, seq_group: SequenceGroup) -> None:
+    def allocate(self,
+                 seq_group: SequenceGroup,
+                 chunk_tokens: int = -1) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
         seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+        n_tokens = (min(seq.get_len(), chunk_tokens) if chunk_tokens > 0
+                    else seq.get_len())
 
-        self._add_sequence(seq_id=seq.seq_id, seq_len=seq.get_len())
+        self._add_sequence(seq_id=seq.seq_id, seq_len=n_tokens)
 
     @BENCHMARKER.wrap()
     def can_append_slots(self,
@@ -432,8 +446,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                          token_count=seq.get_num_new_tokens())
 
     @BENCHMARKER.wrap()
-    def batch_append_slots(self, seqs: List[Sequence]) -> None:
-        self._append_to_sequence_batch(seqs)
+    def batch_append_slots(self, seqs: List[Sequence], chunk_size: int = -1) -> None:
+        self._append_to_sequence_batch(seqs, chunk_size=chunk_size)
 
     @BENCHMARKER.wrap()
     def append_slots(

@@ -652,7 +652,11 @@ class Scheduler:
                     curr_loras.add(seq_group.lora_int_id)
         # print(f"schedule_running preempted: {len(preempted)} preempted, {len(decode_seq_groups)} decode, {len(prefill_seq_groups)} prefill")
         self._batch_preempt_by_recompute(preempted)
-        self._batch_append_slots(decode_seq_groups + prefill_seq_groups)
+        chunk_size = (self.scheduler_config.max_chunk_len
+                      if self.scheduler_config.chunked_prefill_enabled
+                      else -1)
+        self._batch_append_slots(decode_seq_groups + prefill_seq_groups,
+                                 chunk_size=chunk_size)
 
         # Make sure all queues are updated.
         assert len(running_queue) == 0
@@ -999,7 +1003,8 @@ class Scheduler:
                 continue
 
             # If the sequence group cannot be allocated, stop.
-            can_allocate = self.block_manager.can_allocate(seq_group)
+            can_allocate = self.block_manager.can_allocate(
+                seq_group, num_new_tokens=num_new_tokens)
             if can_allocate == AllocStatus.LATER:
                 break
             elif can_allocate == AllocStatus.NEVER:
@@ -1037,7 +1042,9 @@ class Scheduler:
             if curr_loras is not None and lora_int_id > 0:
                 curr_loras.add(lora_int_id)
             waiting_queue.popleft()
-            self._allocate_and_set_running(seq_group)
+            # Pass num_new_tokens as the max number of tokens to schedule
+            # when running with KV-Compress.
+            self._allocate_and_set_running(seq_group, chunk_tokens=num_new_tokens)
             seq_group.init_multi_step(
                 num_scheduler_steps=self._get_num_lookahead_slots(
                     is_prefill=True) + 1)
@@ -1244,7 +1251,7 @@ class Scheduler:
             [s.seq_group for s in running_scheduled.prefill_seq_groups])
         self.running.extend([s.seq_group for s in prefills.seq_groups])
 
-        print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
+        print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(running_scheduled.prefill_seq_groups) + len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
         # Update swapped requests.
         self.swapped.extend(running_scheduled.swapped_out)
@@ -1569,17 +1576,24 @@ class Scheduler:
         # Remove prefill lock whenever a sequence is finished
         self.lock_prefill = self.lock_prefill and not has_finished
 
-    def _allocate_and_set_running(self, seq_group: SequenceGroup) -> None:
-        self.block_manager.allocate(seq_group)
+    def _allocate_and_set_running(self,
+                                  seq_group: SequenceGroup,
+                                  chunk_tokens: int = -1) -> None:
+        if self.kvcompress_enabled:
+            self.block_manager.allocate(seq_group, chunk_tokens=chunk_tokens)
+        else:
+            self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
             seq.status = SequenceStatus.RUNNING
 
     @BENCHMARKER.wrap()
-    def _batch_append_slots(self, seq_groups: List[ScheduledSequenceGroup]) -> None:
+    def _batch_append_slots(self,
+                            seq_groups: List[ScheduledSequenceGroup],
+                            chunk_size: int = -1) -> None:
         seqs: List[Sequence] = []
         for seq_group in seq_groups:
             seqs.extend(seq_group.seq_group.get_seqs(status=SequenceStatus.RUNNING))
-        self.block_manager.batch_append_slots(seqs)
+        self.block_manager.batch_append_slots(seqs, chunk_size=chunk_size)
 
     @BENCHMARKER.wrap()
     def _append_slots(
@@ -1751,7 +1765,17 @@ class Scheduler:
         num_new_tokens = 0
         seqs = seq_group.get_seqs(status=status)
         for seq in seqs:
-            num_new_tokens += seq.get_num_new_tokens()
+            # If we can continually compress this sequence while staying
+            # within model's max len, return up to the max chunk len.
+            if (enable_chunking and self.kvcompress_enabled
+                and seq_group.sampling_params.max_cache_tokens > 0
+                and (seq_group.sampling_params.max_cache_tokens
+                    + self.scheduler_config.max_chunk_len
+                    < self.scheduler_config.max_model_len)):
+                num_new_tokens += min(seq.get_num_new_tokens(),
+                                      self.scheduler_config.max_chunk_len)
+            else:
+                num_new_tokens += seq.get_num_new_tokens()
         assert num_new_tokens > 0
         # Chunk if a running request cannot fit in the given budget.
         # If number of seq > 1, it means it is doing beam search

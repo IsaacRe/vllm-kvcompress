@@ -642,20 +642,29 @@ class FlashAttentionMetadataBuilder(
                             self.prefill_block_state_indices)
                         block_tables = prefill_block_state_view.get_block_tables()
                         context_lens_tensor = prefill_block_state_view.get_context_lens()
-                        slot_mapping_tensor = torch.cat(
-                            [block_state.get_block_state_seq_view(i)
-                                        .get_prefill_slot_mapping()
-                                for i in self.first_prefill_block_state_indices],
-                            dim=1,
+
+                        slot_mapping_tensor = (
+                            torch.cat(
+                                [block_state.get_block_state_seq_view(i)
+                                            .get_prefill_slot_mapping()
+                                    for i in self.first_prefill_block_state_indices],
+                                dim=1,
+                            )
+                            if self.first_prefill_block_state_indices else None
                         )
+
                         # Get slot_mapping for continued prefill chunks, if cached
                         cont_slot_mapping_tensor = block_state.exhaust_cached_slot_mappings()
                         if cont_slot_mapping_tensor is not None:
                             assert (self.prefill_block_state_indices[
                                 :len(self.first_prefill_block_state_indices)]
                                 == self.first_prefill_block_state_indices)
-                            slot_mapping_tensor = torch.cat([slot_mapping_tensor,
-                                                             cont_slot_mapping_tensor], dim=1)
+                            if slot_mapping_tensor is not None:
+                                slot_mapping_tensor = torch.cat([slot_mapping_tensor,
+                                                                 cont_slot_mapping_tensor],
+                                                                 dim=1)
+                            else:
+                                slot_mapping_tensor = cont_slot_mapping_tensor
                 else:
                     block_tables = make_tensor_with_pad(
                         self.block_tables,
@@ -1081,6 +1090,8 @@ class FlashAttentionImpl(AttentionImpl):
             if (kv_cache is None or prefill_meta.block_tables is None
                     or prefill_meta.block_tables.numel() == 0):
                 if kvcompress_enabled:
+                    if layer_index == 0:
+                        print("Running first prefill")
                     BENCHMARKER.start_range("prefill_attn_kvc")
 
                     # Extract layer-dependent metadata
@@ -1224,10 +1235,11 @@ class FlashAttentionImpl(AttentionImpl):
                     output[:num_prefill_tokens] = out
             else:
                 # prefix-enabled attention
-                assert False
                 assert prefill_meta.seq_lens is not None
                 max_seq_len = max(prefill_meta.seq_lens)
                 if kvcompress_enabled:
+                    if layer_index == 0:
+                        print("Running prefix prefill")
                     # Extract layer-dependent metadata
                     slot_mapping = attn_metadata.slot_mapping[layer_index]
                     slot_mapping = slot_mapping[:num_prefill_tokens]

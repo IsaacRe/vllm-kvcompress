@@ -572,11 +572,12 @@ class BlockStateView:
         )
         first_token_mask = ((self.context_lens[:,seq_indices_tensor,:,None] - 1)
                             % self.block_size == 0)
-        mask = last_block_mask & first_token_mask
+        is_prefill_tensor = torch.tensor(is_prefill, device=first_token_mask.device)
+        mask = last_block_mask & (first_token_mask | is_prefill_tensor[None,:,None,None])
         # assert not (mask & ~last_block_mask).any(), 'heyooo'
 
         if mask.sum() == 0:
-            return None, None
+            return None, None, None
 
         exp_logical_blocks = (self.all_logical_block_nums
                               .expand_as(self.block_tables)[:,seq_indices_tensor])
@@ -631,7 +632,7 @@ class BlockStateView:
                         + block_counts[:,seq_idx,None,:] - new_blocks
                     )
                     # [num_layers, num_tokens, num_heads]
-                    new_slot_mapping.append((block_nums[:,:,None] * self.block_size
+                    new_slot_mapping.append((block_nums[:,:,None].type(torch.long) * self.block_size
                                             + block_offsets[None,None,:,None]).flatten(start_dim=1, end_dim=2))
             new_slot_mapping = torch.cat(new_slot_mapping, dim=1) if new_slot_mapping else None
 
