@@ -1253,6 +1253,10 @@ class Scheduler:
 
         print(f"{len(self.running)}/{len(self.waiting)} (running/waiting) - {len(running_scheduled.prefill_seq_groups) + len(prefills.seq_groups)} prefill, {len(running_scheduled.decode_seq_groups)} decode")
 
+        self.uncompressed_prefill = (self.uncompressed_prefill
+                                     or (len(running_scheduled.prefill_seq_groups)
+                                         + len(prefills.seq_groups)) > 0)
+
         # Update swapped requests.
         self.swapped.extend(running_scheduled.swapped_out)
         return SchedulerOutputs(

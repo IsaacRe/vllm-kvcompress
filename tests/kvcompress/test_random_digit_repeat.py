@@ -67,7 +67,7 @@ def test_no_compression(
 @pytest.mark.parametrize("num_digits", [100])
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("dtype", ["half"])
-@pytest.mark.parametrize("chunk_size", [-1])  # -1 32
+@pytest.mark.parametrize("chunk_size", [32])  # -1 32
 # NOTE: Increasing this in this suite will fail CI because we currently cannot
 # reset distributed env properly. Use a value > 1 just when you test.
 def test_parity_with_simulated_compression(
@@ -113,8 +113,8 @@ def test_parity_with_simulated_compression(
         new_token_limit=100,
         compression_interval=1000,
         gpu_memory_utilization=0.65,
-        # max_num_batched_tokens=chunk_size if chunk_size > 0 else None,
-        # max_num_seqs=chunk_size if chunk_size > 0 else 256,
+        max_num_batched_tokens=chunk_size if chunk_size > 0 else None,
+        max_num_seqs=chunk_size if chunk_size > 0 else 256,
     )
     checkpointer.set_config(checkpoint_cfg)
 
