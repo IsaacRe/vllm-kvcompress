@@ -136,13 +136,10 @@ class CacheEngine:
         self.attn_backend.copy_blocks(self.gpu_cache, src_to_dsts)
 
     def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
-        kv_cache = self.gpu_cache.unified_cache
-        k_cache, v_cache = KVCAttention.split_kv_cache(self.gpu_cache.unified_cache, self.head_size)
-        key_cache, value_cache = k_cache.clone(), v_cache.clone()
-
+        k_cache, v_cache = self.gpu_cache.unified_cache
         _execute_cache_moves(
-            k_cache=k_cache,
-            v_cache=v_cache,
+            k_cache=k_cache.squeeze(2),
+            v_cache=v_cache.squeeze(2),
             kv_metrics=kv_metrics.metrics,
             kv_position=kv_metrics.token_positions,
             cache_moves_indices=cache_moves.index,
@@ -151,34 +148,6 @@ class CacheEngine:
             blocks_per_head=1,
             threads_per_head=1,
         )
-
-        # [num_blocks, head_size/x, block_size, x]
-        num_blocks, head_size_over_x, block_size, x = key_cache.shape
-        key_cache = key_cache.transpose(1, 2).reshape(key_cache.shape[0],
-                                                      key_cache.shape[2],
-                                                      key_cache.shape[1]
-                                                      * key_cache.shape[3])
-        # [num_blocks, head_size, block_size]
-        value_cache = value_cache.transpose(1, 2).contiguous()
-
-        _execute_cache_moves(
-            k_cache=key_cache,
-            v_cache=value_cache,
-            kv_metrics=kv_metrics.metrics,
-            kv_position=kv_metrics.token_positions,
-            cache_moves_indices=cache_moves.index,
-            cache_moves_count=cache_moves.count,
-            evicted_kv_offsets=cache_moves.offsets,
-            blocks_per_head=1,
-            threads_per_head=1,
-        )
-        key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
-                              .transpose(1, 2).contiguous())
-        value_cache = value_cache.transpose(1, 2).contiguous()
-        import pdb; pdb.set_trace()
-
-        kv_cache[0] = key_cache.reshape(*kv_cache[0].shape)
-        kv_cache[1] = value_cache.reshape(*kv_cache[0].shape)
 
     @staticmethod
     def get_cache_block_size(
