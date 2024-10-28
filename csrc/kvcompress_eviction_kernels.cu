@@ -434,6 +434,68 @@ __global__ void execute_cache_moves_kernel(
   }
 }
 
+// WARNING: Will fail if cache moves of different sequences/heads specify same dst indices
+template<
+  typename cache_t,
+  int HEAD_SIZE,
+  int BLOCK_SIZE>
+__global__ void execute_cache_moves_flash_kernel(
+  cache_t* __restrict__ k_cache,                  // [num_blocks, block_size, head_size]
+  cache_t* __restrict__ v_cache,                  // [num_blocks, block_size, head_size]
+  float* __restrict__ kv_metrics,                 // [num_blocks, block_size]
+  int* __restrict__ kv_position,                  // [num_blocks, block_size]
+  const int* __restrict__ cache_move_idx,         // [max_evicted_kv, 2] indexes into [num_blocks, block_size]
+  const int* __restrict__ cache_move_count,       // [num_seqs, num_layers, num_kv_heads]
+  const int* __restrict__ evicted_kv_offsets,
+  const int cache_move_count_size,
+  const int cache_move_idx_size,
+  const int kv_metrics_size,
+  const int k_cache_size) {   // [num_seqs, num_layers, num_kv_heads] (offset into cache_move_idx for each head)
+  constexpr int BLOCK_STRIDE = BLOCK_SIZE * HEAD_SIZE;
+  const int seq_layer_head_idx = blockIdx.y * blockDim.y + threadIdx.y;  // allow block-level or thread-level parallelization (or both)
+
+  // get range of src KVs that will be handled by this thread
+  // assert(seq_layer_head_idx < cache_move_count_size);
+  const int moved_kv_count = cache_move_count[seq_layer_head_idx];
+  const int moved_kv_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  const int max_parallel_kv = gridDim.x * blockDim.x;
+  const int move_table_offset = evicted_kv_offsets[seq_layer_head_idx];
+
+  for (
+    int i = move_table_offset + moved_kv_offset;
+    i < move_table_offset + moved_kv_count;
+    i += max_parallel_kv) {
+    const int move_pair_idx = i * 2;
+    // assert(move_pair_idx + 1 < cache_move_idx_size);
+    const int src_idx = cache_move_idx[move_pair_idx+1];
+    const int64_t src_block_start = static_cast<int64_t>(src_idx / BLOCK_SIZE) * BLOCK_STRIDE;
+    const int src_block_offset = src_idx % BLOCK_SIZE;
+    const int dst_idx = cache_move_idx[move_pair_idx];
+    const int64_t dst_block_start = static_cast<int64_t>(dst_idx / BLOCK_SIZE) * BLOCK_STRIDE;
+    const int dst_block_offset = dst_idx % BLOCK_SIZE;
+    const int src_offset = src_block_offset * HEAD_SIZE;
+    const int dst_offset = dst_block_offset * HEAD_SIZE;
+
+    const int64_t src_k_start = src_block_start + src_offset;
+    const int64_t src_v_start = src_block_start + src_offset;
+    const int64_t dst_k_start = dst_block_start + dst_offset;
+    const int64_t dst_v_start = dst_block_start + dst_offset;
+
+    // printf("seq_layer_head_idx: %d, move_pair_idx: %d, src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
+    //   seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
+
+    // assert(dst_idx < kv_metrics_size);
+    // assert(src_idx < kv_metrics_size);
+    kv_metrics[dst_idx] = kv_metrics[src_idx];
+    kv_position[dst_idx] = kv_position[src_idx];
+#pragma unroll
+    for (int j = 0; j < HEAD_SIZE; ++j) {
+      k_cache[dst_k_start + j] = k_cache[src_k_start + j];
+      v_cache[dst_v_start + j] = v_cache[src_v_start + j];
+    }
+  }
+}
+
 }  // namespace kvcompress
 
 #define SCHEDULE_EVICTIONS_KERNEL_BLOCK_SIZE(BLOCK_SIZE) \
@@ -855,9 +917,59 @@ kvcompress::execute_cache_moves_kernel<CACHE_T, HEAD_SIZE, VEC_SIZE, BLOCK_SIZE>
       TORCH_CHECK(false, "Unsupported head size: ", HEAD_SIZE); \
   }
 
+#define EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE_BLOCK_SIZE(HEAD_SIZE, BLOCK_SIZE) \
+kvcompress::execute_cache_moves_flash_kernel<CACHE_T, HEAD_SIZE, BLOCK_SIZE><<<grid,block,0,stream>>>(\
+  k_cache_ptr,\
+  v_cache_ptr,\
+  kv_metrics_ptr,\
+  kv_position_ptr,\
+  cache_moves_idx_ptr,\
+  cache_moves_count_ptr,\
+  evicted_kv_offsets_ptr,\
+  cache_move_count_size,\
+  cache_move_idx_size,\
+  kv_metrics_size,\
+  k_cache_size);
+
+#define EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE(HEAD_SIZE, BLOCK_SIZE) \
+  switch (BLOCK_SIZE) { \
+    case 1: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE_BLOCK_SIZE(HEAD_SIZE, 1) \
+      break; \
+    case 2: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE_BLOCK_SIZE(HEAD_SIZE, 2) \
+      break; \
+    case 4: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE_BLOCK_SIZE(HEAD_SIZE, 4) \
+      break; \
+    case 16: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE_BLOCK_SIZE(HEAD_SIZE, 16) \
+      break; \
+    default: \
+      TORCH_CHECK(false, "Unsupported block size: ", BLOCK_SIZE); \
+  }
+
+#define EXECUTE_MOVES_FLASH_KERNEL(HEAD_SIZE, BLOCK_SIZE) \
+  switch (HEAD_SIZE) { \
+    case 1: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE(1, BLOCK_SIZE) \
+      break; \
+    case 2: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE(2, BLOCK_SIZE) \
+      break; \
+    case 4: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE(4, BLOCK_SIZE) \
+      break; \
+    case 128: \
+      EXECUTE_MOVES_FLASH_KERNEL_HEAD_SIZE(128, BLOCK_SIZE) \
+      break; \
+    default: \
+      TORCH_CHECK(false, "Unsupported head size: ", HEAD_SIZE); \
+  }
+
 template<typename CACHE_T> void execute_cache_moves_launcher(
-  torch::Tensor& k_cache,               // [num_blocks, head_size/x, block_size, x]
-  torch::Tensor& v_cache,               // [num_blocks, head_size, block_size]
+  torch::Tensor& k_cache,               // [num_blocks, block_size, head_size]
+  torch::Tensor& v_cache,               // [num_blocks, block_size, head_size]
   torch::Tensor& kv_metrics,            // [num_blocks, block_size]
   torch::Tensor& kv_position,           // [num_blocks, block_size]
   torch::Tensor& cache_moves_idx,       // [max_evicted_kv, 2] indexes into [num_blocks, block_size]
@@ -865,9 +977,10 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   torch::Tensor& evicted_kv_offsets,    // [num_seqs, num_layers, num_kv_heads]
   const int blocks_per_head,
   const int threads_per_head) {
-  const int head_size = v_cache.size(1);
-  const int vec_size = k_cache.size(3);
-  const int block_size = v_cache.size(2);
+  const bool is_flash = k_cache.dim() <= 3;
+  const int head_size = (is_flash) ? v_cache.size(2) : v_cache.size(1);
+  const int block_size = (is_flash) ? v_cache.size(1) : v_cache.size(2);
+  const int vec_size = (is_flash) ? -1 : k_cache.size(3);
   const int num_seqs = cache_moves_count.size(0);
   const int num_layers = cache_moves_count.size(1);
   const int num_kv_heads = cache_moves_count.size(2);
@@ -890,7 +1003,11 @@ template<typename CACHE_T> void execute_cache_moves_launcher(
   const at::cuda::OptionalCUDAGuard device_guard(device_of(cache_moves_idx));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  EXECUTE_MOVES_KERNEL(head_size, vec_size, block_size)
+  if (is_flash) {
+    EXECUTE_MOVES_FLASH_KERNEL(head_size, block_size)
+  } else {
+    EXECUTE_MOVES_KERNEL(head_size, vec_size, block_size)
+  }
 }
 
 #define CALL_EXECUTE_CACHE_MOVES_LAUNCHER(CACHE_T) \
@@ -929,3 +1046,4 @@ void execute_cache_moves(
 }
 
 #undef DIVIDE_ROUND_UP
+
