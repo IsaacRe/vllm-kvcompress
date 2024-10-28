@@ -68,6 +68,7 @@ class CacheEngine:
             model_config.dtype,
             cache_config.cache_dtype,
             self.block_size,
+            self.cache_config.enable_kvcompress,
         )
 
         # Initialize the cache. KV-Compress uses a unified KV cache where

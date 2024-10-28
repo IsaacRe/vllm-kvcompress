@@ -26,6 +26,9 @@ class _Backend(enum.Enum):
     IPEX = enum.auto()
 
 
+KVC_SUPPORTED_BACKENDS = [_Backend.FLASH_ATTN]
+
+
 def backend_name_to_enum(backend_name: str) -> _Backend:
     assert backend_name is not None
 
@@ -96,6 +99,7 @@ def get_attn_backend(
     kv_cache_dtype: Optional[str],
     block_size: int,
     is_blocksparse: bool = False,
+    enable_kvcompress: bool = False,
 ) -> Type[AttentionBackend]:
     """Selects which attention backend to use and lazily imports it."""
 
@@ -107,7 +111,7 @@ def get_attn_backend(
 
     backend = which_attn_to_use(num_heads, head_size, num_kv_heads,
                                 sliding_window, dtype, kv_cache_dtype,
-                                block_size)
+                                block_size, enable_kvcompress)
     if backend == _Backend.FLASH_ATTN:
         from vllm.attention.backends.flash_attn import (  # noqa: F401
             FlashAttentionBackend)
@@ -158,6 +162,7 @@ def which_attn_to_use(
     dtype: torch.dtype,
     kv_cache_dtype: Optional[str],
     block_size: int,
+    enable_kvcompress: bool = False,
 ) -> _Backend:
     """Returns which flash attention backend to use."""
     # Default case.
@@ -261,6 +266,10 @@ def which_attn_to_use(
                 "vllm_flash_attn package is not found. "
                 "`pip install vllm-flash-attn` for better performance.")
             selected_backend = _Backend.XFORMERS
+
+    if enable_kvcompress and selected_backend not in KVC_SUPPORTED_BACKENDS:
+        raise ValueError(f"selected backend {selected_backend.name} is not "
+                         "compatible with KV-Compress.")
 
     return selected_backend
 
