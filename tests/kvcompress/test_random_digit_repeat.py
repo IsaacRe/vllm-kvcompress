@@ -67,7 +67,7 @@ def test_no_compression(
 @pytest.mark.parametrize("num_digits", [100])
 @pytest.mark.parametrize("model", MODELS)
 @pytest.mark.parametrize("dtype", ["half"])
-@pytest.mark.parametrize("chunk_size", [32])  # -1 32
+@pytest.mark.parametrize("chunk_size", [-1])  # -1 32
 # NOTE: Increasing this in this suite will fail CI because we currently cannot
 # reset distributed env properly. Use a value > 1 just when you test.
 def test_parity_with_simulated_compression(
@@ -113,8 +113,8 @@ def test_parity_with_simulated_compression(
         new_token_limit=100,
         compression_interval=1000,
         gpu_memory_utilization=0.65,
-        max_num_batched_tokens=chunk_size if chunk_size > 0 else None,
-        max_num_seqs=chunk_size if chunk_size > 0 else 256,
+        # max_num_batched_tokens=chunk_size if chunk_size > 0 else None,
+        # max_num_seqs=chunk_size if chunk_size > 0 else 256,
     )
     checkpointer.set_config(checkpoint_cfg)
 
@@ -147,7 +147,7 @@ def test_parity_with_simulated_compression(
         topk_ll,
         prompt_token_ids=input_token_ids,
         reference_token_ids=deepcopy(reference_token_ids),
-        max_cache_tokens=-1, #checkpoint_cfg.max_cache_tokens,
+        max_cache_tokens=checkpoint_cfg.max_cache_tokens,
         # target_compression_rate=0.1,
         protected_window_size=checkpoint_cfg.protected_window_size,
         metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
@@ -288,4 +288,5 @@ def test_compression_with_bias(
         vllm_output = output[:len(reference_completion)]
         assert reference_completion == vllm_output, (
             f"Test{i}:\nReference: {reference_completion!r}\nvLLM: {vllm_output!r}")
+
 

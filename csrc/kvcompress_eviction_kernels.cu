@@ -473,11 +473,13 @@ __global__ void execute_cache_moves_flash_kernel(
     const int dst_idx = cache_move_idx[move_pair_idx];
     const int64_t dst_block_start = static_cast<int64_t>(dst_idx / BLOCK_SIZE) * BLOCK_STRIDE;
     const int dst_block_offset = dst_idx % BLOCK_SIZE;
+    const int src_offset = src_block_offset * HEAD_SIZE;
+    const int dst_offset = dst_block_offset * HEAD_SIZE;
 
-    const int64_t src_k_start = src_block_start + src_block_offset * HEAD_SIZE;
-    const int64_t src_v_start = src_block_start + src_block_offset;
-    const int64_t dst_k_start = dst_block_start + dst_block_offset * HEAD_SIZE;
-    const int64_t dst_v_start = dst_block_start + dst_block_offset;
+    const int64_t src_k_start = src_block_start + src_offset;
+    const int64_t src_v_start = src_block_start + src_offset;
+    const int64_t dst_k_start = dst_block_start + dst_offset;
+    const int64_t dst_v_start = dst_block_start + dst_offset;
 
     // printf("seq_layer_head_idx: %d, move_pair_idx: %d, src: %d, dst: %d, src_blk_start: %d, dst_blk_start: %d, src_k_start: %d, src_v_start: %d, dst_k_start: %d, dst_v_start: %d\n",
     //   seq_layer_head_idx, move_pair_idx, src_idx, dst_idx, src_block_start, dst_block_start, src_k_start, src_v_start, dst_k_start, dst_v_start);
@@ -1044,3 +1046,4 @@ void execute_cache_moves(
 }
 
 #undef DIVIDE_ROUND_UP
+
