@@ -1786,7 +1786,8 @@ class Scheduler:
         # in a decode phase. Do not chunk.
         if enable_chunking and len(seqs) == 1:
             remaining_token_budget = budget.remaining_token_budget()
-            if self.cache_config.enable_prefix_caching:
+            if (self.cache_config.enable_prefix_caching
+                or self.cache_config.enable_kvcompress):
                 # When prefix caching is enabled, we always allocate
                 # the number of new tokens that is dividable by the block size
                 # to avoid partial block matching.
@@ -1799,9 +1800,10 @@ class Scheduler:
                                      "block size, but got chunk_size "
                                      f"({budget.token_budget}) % block_size "
                                      f"({block_size}) = {reminder}")
-                if remaining_token_budget < num_new_tokens:
-                    num_new_tokens = (remaining_token_budget //
-                                      block_size) * block_size
+            if (self.cache_config.enable_prefix_caching
+                and remaining_token_budget < num_new_tokens):
+                num_new_tokens = (remaining_token_budget //
+                                  block_size) * block_size
             else:
                 num_new_tokens = min(num_new_tokens, remaining_token_budget)
         return num_new_tokens

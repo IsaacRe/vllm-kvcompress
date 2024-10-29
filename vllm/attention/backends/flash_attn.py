@@ -785,7 +785,8 @@ class FlashAttentionMetadataBuilder(
             num_prefill_tokens=self.num_prefill_tokens,
             num_decode_tokens=num_decode_tokens,
             kv_cache_dtype=self.runner.kv_cache_dtype,
-            seq_lens=seq_lens,
+            # KV-Compress uses new token length when computing prefill metrics
+            seq_lens=query_lens if self.runner.kvcompress_config else seq_lens,
             seq_lens_tensor=seq_lens_tensor,
             max_query_len=max_query_len,
             max_prefill_seq_len=max_prefill_seq_len,
@@ -1235,9 +1236,9 @@ class FlashAttentionImpl(AttentionImpl):
                     output[:num_prefill_tokens] = out
             else:
                 # prefix-enabled attention
-                assert prefill_meta.seq_lens is not None
-                max_seq_len = max(prefill_meta.seq_lens)
                 if kvcompress_enabled:
+                    assert prefill_meta.context_lens_tensor is not None
+                    max_seq_len = prefill_meta.context_lens_tensor.max().item()
                     if layer_index == 0:
                         print("Running prefix prefill")
                     # Extract layer-dependent metadata
@@ -1283,6 +1284,8 @@ class FlashAttentionImpl(AttentionImpl):
                     assert output[:num_prefill_tokens].shape == out.shape
                     output[:num_prefill_tokens] = out
                 else:
+                    assert prefill_meta.seq_lens is not None
+                    max_seq_len = max(prefill_meta.seq_lens)
                     output[:
                         num_prefill_tokens] = torch.ops.vllm.flash_attn_varlen_func(  # noqa
                             q=query,
