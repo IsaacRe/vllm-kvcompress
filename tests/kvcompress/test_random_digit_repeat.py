@@ -114,7 +114,7 @@ def test_parity_with_simulated_compression(
         compression_interval=1000,
         gpu_memory_utilization=0.65,
         max_num_batched_tokens=chunk_size if chunk_size > 0 else None,
-        max_num_seqs=chunk_size if chunk_size > 0 else 256,
+        max_num_seqs=min(256, chunk_size) if chunk_size > 0 else 256,
     )
     checkpointer.set_config(checkpoint_cfg)
 
@@ -151,6 +151,7 @@ def test_parity_with_simulated_compression(
         # target_compression_rate=0.1,
         protected_window_size=checkpoint_cfg.protected_window_size,
         metric_collection_buffer_size=checkpoint_cfg.metric_collection_buffer_size,
+        compress_once=False,
     )
     del vllm_model
     print(f"TOTAL TOKENS = {sum([len(i) + len(r) for i, r in zip(input_token_ids, reference_token_ids)])}")
