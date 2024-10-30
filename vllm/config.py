@@ -1008,6 +1008,7 @@ class KVCompressConfig:
     """
     def __init__(
         self,
+        block_size: int,
         target_compression_rate: float,
         max_cache_tokens: int,
         compression_interval: int,
@@ -1033,6 +1034,7 @@ class KVCompressConfig:
         enable_flash_kvc: bool,
         enable_chunked_prefill: bool,
     ) -> None:
+        self.block_size = block_size
         self.target_compression_rate = target_compression_rate
         self.max_cache_tokens = max_cache_tokens
         self.compression_interval = compression_interval

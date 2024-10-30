@@ -1155,6 +1155,7 @@ class EngineArgs:
             num_layers = model_config.get_num_layers(parallel_config)
             num_kv_heads = model_config.get_total_num_kv_heads()
             kvcompress_config = KVCompressConfig(
+                block_size=self.block_size,
                 target_compression_rate=self.target_compression_rate,
                 max_cache_tokens=self.max_cache_tokens,
                 compression_interval=self.compression_interval,

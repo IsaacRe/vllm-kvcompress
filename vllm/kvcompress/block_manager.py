@@ -268,13 +268,20 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     def _append_to_sequence_batch(
         self,
         seqs: List[Sequence],
-        chunk_size: int = -1,
+        chunk_size: Optional[List[int]] = None,
     ):
         cache_slot_mapping = self.kvcompress_config.enable_chunked_prefill
+        if chunk_size is None:
+            chunk_size = [-1 for _ in seqs]
 
-        new_token_counts = ([min(seq.get_num_new_tokens(), chunk_size) for seq in seqs]
-                            if chunk_size > 0 else
-                            [seq.get_num_new_tokens() for seq in seqs])
+        assert len(seqs) == len(chunk_size)
+
+        # new_token_counts = ([min(seq.get_num_new_tokens(), chunk_size) for seq in seqs]
+        #                     if chunk_size > 0 else
+        #                     [seq.get_num_new_tokens() for seq in seqs])
+        new_token_counts = [min(seq.get_num_new_tokens(), s)
+                            if s > 0 else seq.get_num_new_tokens()
+                            for seq, s in zip(seqs, chunk_size)]
         token_count = torch.tensor(
             new_token_counts,
             device=self.device,
@@ -446,7 +453,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                          token_count=seq.get_num_new_tokens())
 
     @BENCHMARKER.wrap()
-    def batch_append_slots(self, seqs: List[Sequence], chunk_size: int = -1) -> None:
+    def batch_append_slots(self,
+                           seqs: List[Sequence],
+                           chunk_size: Optional[List[int]] = None) -> None:
         self._append_to_sequence_batch(seqs, chunk_size=chunk_size)
 
     @BENCHMARKER.wrap()

@@ -1362,8 +1362,11 @@ class LLMEngine:
                 output = [outputs_by_sequence_group[0][i]]
 
             if not is_async:
+                observation_ctx_size = (
+                    scheduled_seq_group.seq_group.sampling_params
+                                       .observation_context_len)
                 seq_group.update_num_computed_tokens(
-                    scheduled_seq_group.token_chunk_size)
+                    scheduled_seq_group.token_chunk_size - observation_ctx_size)
 
             if outputs:
                 for o in outputs:

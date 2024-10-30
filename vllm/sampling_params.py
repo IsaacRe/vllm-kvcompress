@@ -150,6 +150,7 @@ class SamplingParams(
 
     # KV-Compress config
     protected_window_size: int = 100
+    observation_context_len: int = 128
     target_compression_rate: float = 1.0
     max_cache_tokens: int = -1
     metric_collection_buffer_size: int = 0
@@ -190,6 +191,7 @@ class SamplingParams(
         truncate_prompt_tokens: Optional[Annotated[int,
                                                    msgspec.Meta(ge=1)]] = None,
         protected_window_size: int = 100,
+        observation_context_len: int = 128,
         target_compression_rate: float = 1.0,
         max_cache_tokens: int = -1,
         metric_collection_buffer_size: int = 0,
@@ -226,6 +228,7 @@ class SamplingParams(
             logits_processors=logits_processors,
             truncate_prompt_tokens=truncate_prompt_tokens,
             protected_window_size=protected_window_size,
+            observation_context_len=observation_context_len,
             target_compression_rate=target_compression_rate,
             max_cache_tokens=max_cache_tokens,
             metric_collection_buffer_size=metric_collection_buffer_size,

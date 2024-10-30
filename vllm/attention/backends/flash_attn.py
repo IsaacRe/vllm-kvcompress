@@ -274,6 +274,11 @@ class FlashAttentionMetadata(AttentionMetadata):
     kv_metric_use_average: bool = False
     # If true, use maxpool over KV metrics along sequence dimension
     kv_metric_use_maxpool: bool = True
+    # Defines token length of suffix context for observation window used
+    # during prefill metric calculation.
+    kv_metric_observation_context_len: Optional[List[int]] = None
+    # Masks away input tokens correspoding to the observation context
+    kv_metric_observation_context_mask: Optional[torch.Tensor] = None
     # Use modified flash_attn implementation that returns attention values for
     # KV metric initialization without requiring an additional call to
     # _naive_kvc_attention.
@@ -341,6 +346,7 @@ class FlashAttentionMetadata(AttentionMetadata):
             kv_metric_use_l2=self.kv_metric_use_l2,
             kv_metric_use_average=self.kv_metric_use_average,
             kv_metric_use_maxpool=self.kv_metric_use_maxpool,
+            kv_metric_observation_context_len=self.kv_metric_observation_context_len,
         )
         return self._cached_prefill_metadata
 
@@ -457,6 +463,7 @@ class FlashAttentionMetadataBuilder(
         self.first_prefill_block_state_indices: List[int] = []
         self.decode_block_state_indices: List[int] = []
         self.kv_metric_buffer_lens: List[int] = []
+        self.kv_metric_observation_context_lens: List[int] = []
 
         self.num_prefills = 0
         self.num_prefill_tokens = 0
@@ -484,6 +491,8 @@ class FlashAttentionMetadataBuilder(
                  inter_data.orig_seq_lens, inter_data.seq_lens,
                  inter_data.query_lens, inter_data.context_lens):
             self.kv_metric_buffer_lens.append(inter_data.kv_metric_buffer_lens[0])
+            self.kv_metric_observation_context_lens.append(
+                inter_data.kv_metric_observation_context_lens[0])
 
             # Used during prompt itertations
             self.block_tables.append([])
@@ -731,11 +740,25 @@ class FlashAttentionMetadataBuilder(
 
         assert device is not None
 
-        kv_metric_buffer_len = token_positions = None
+        kv_metric_observation_context_len = kv_metric_buffer_len = None
+        token_positions = kv_metric_observation_context_mask = None
         if use_kvcompress:
             kv_metric_buffer_len = async_tensor_h2d(self.kv_metric_buffer_lens,
                                                     torch.int, device,
                                                     self.runner.pin_memory)
+            kv_metric_observation_context_len = async_tensor_h2d(
+                self.kv_metric_observation_context_lens,
+                torch.int, device,
+                self.runner.pin_memory)
+            kv_metric_observation_context_mask = torch.ones((sum(query_lens),),
+                                                            dtype=torch.bool,
+                                                            device=device)
+            obs_end = 0
+            for l, obs_l in zip(query_lens,
+                                self.kv_metric_observation_context_lens):
+                obs_end += l
+                obs_start = obs_end - obs_l
+                kv_metric_observation_context_mask[obs_start:obs_end] = False
             token_positions = async_tensor_h2d(self.token_positions,
                                                torch.int, device,
                                                self.runner.pin_memory)
@@ -813,6 +836,8 @@ class FlashAttentionMetadataBuilder(
                                   if self.runner.kvcompress_config else None,
             kv_metric_use_maxpool=self.runner.kvcompress_config.kv_metric_use_maxpool
                                   if self.runner.kvcompress_config else None,
+            kv_metric_observation_context_len=kv_metric_observation_context_len,
+            kv_metric_observation_context_mask=kv_metric_observation_context_mask,
             enable_flash_kvc=self.runner.kvcompress_config.enable_flash_kvc
                              if self.runner.kvcompress_config else None,
         )
@@ -993,9 +1018,11 @@ class FlashAttentionImpl(AttentionImpl):
                 # keeping a head dimension of 1 for the KV cache.
 
                 ######
+                # TODO how does this work with differently-sized slot mapping?
+                obs_mask = attn_metadata.kv_metric_observation_context_mask
                 ops.reshape_and_cache_flash(
-                    key.flatten(end_dim=1).unsqueeze(1),
-                    value.flatten(end_dim=1).unsqueeze(1),
+                    key[obs_mask].flatten(end_dim=1).unsqueeze(1),
+                    value[obs_mask].flatten(end_dim=1).unsqueeze(1),
                     key_cache.unsqueeze(2),
                     value_cache.unsqueeze(2),
                     slot_mapping.flatten(),
@@ -1276,6 +1303,8 @@ class FlashAttentionImpl(AttentionImpl):
                         use_l2=kv_metric_use_l2,
                         use_average=kv_metric_use_average,
                         use_maxpool=kv_metric_use_maxpool,
+                        obs_ctx_len=prefill_meta.kv_metric_observation_context_len,
+                        layer_index=layer_index,
                     )
                     kv_metrics.aggregate_prefill(
                         kv_metric_out,
@@ -1395,24 +1424,33 @@ def _naive_kvc_attention(
     use_l2: bool = True,
     use_average: bool = False,
     use_maxpool: bool = True,
+    obs_ctx_len: Optional[torch.Tensor] = None,
+    layer_index: int = 0,
 ) -> torch.Tensor:
+    obs_ctx_len = ([0] * len(prompt_lens)
+                   if obs_ctx_len is None
+                   else obs_ctx_len.cpu().numpy().tolist())
     # output = torch.empty_like(query)
     seq_len, num_heads, _ = key.shape
-    kv_metric_output = torch.empty(
-        (seq_len, num_heads),
+    kv_metric_output = torch.zeros(
+        (seq_len - sum(obs_ctx_len), num_heads),
         dtype=torch.float,
         device=key.device,
     )
-    start = 0
-    for i, prompt_len in enumerate(prompt_lens):
+    # if layer_index == 0:
+    #     import pdb;pdb.set_trace()
+    start = total_obs_ctx = 0
+    for i, (prompt_len, obs_ctx) in enumerate(zip(
+        prompt_lens, obs_ctx_len)):
         end = start + prompt_len
         start_trunc = end - min(prompt_len, n_observed)
-        kv_metric_output[start:end].fill_(0)
+        out_end = end - obs_ctx
+        kv_metric_output[start:out_end].fill_(0)
         for l in range(start_trunc, end, max_observed_block_size):
             _, kv_metrics = _naive_kvc_masked_attention(
                 query[l:min(l+max_observed_block_size, end)],
-                key[start:end],
-                value[start:end],
+                key[start:out_end],
+                value[start:out_end],
                 scale,
                 kv_metric_buffer_len[i],
                 use_l2,
@@ -1422,8 +1460,10 @@ def _naive_kvc_attention(
             )
             # TODO(woosuk): Unnecessary copy. Optimize.
             # output[start:end].copy_(out)
-            kv_metric_output[start:end] += kv_metrics.T
+            kv_metric_output[start-total_obs_ctx
+                             :out_end-total_obs_ctx] += kv_metrics.T
         start += prompt_len
+        total_obs_ctx += obs_ctx
 
     return None, kv_metric_output
 

@@ -657,7 +657,6 @@ class CompressionMetrics:
                 curr_seq_logical_indices[:,blocks_to_evict_per_head:] = MAX_INT
 
                 if not profile:
-                    # import pdb; pdb.set_trace()
                     assert (sorted_masked_metric_blocks[offset:end_offset].view(total_heads, -1)[:,:blocks_to_evict_per_head] < float('inf')).all()
 
                 # Remap eviction mask into sorted_masked_logical_indices
@@ -790,9 +789,6 @@ class CompressionMetrics:
             (evicted_block_count - 1) * self.block_size + hanging_token_count,
             0,
         )
-        if not profile:
-            # import pdb; pdb.set_trace()
-            pass
 
         if not profile:
             assert (context_lens.transpose(0, 1) >= evicted_kv_count).all()
