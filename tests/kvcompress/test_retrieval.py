@@ -68,15 +68,15 @@ def test_needle_in_haystack(
     split_sample = trunc_sample.split(".")
     haystack = ".".join(split_sample[:len(split_sample) // 2] + [NEEDLE] + split_sample[len(split_sample) // 2:])
 
-    formatted = ("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-                 "You will be given a body of text and a question to answer about it. "
-                 "Answer the question as reliably as possible.<|eot_id|>\n"
-                 "<|start_header_id|>user<|end_header_id|>\n\n"
-                 f"{haystack}\n\n{QUESTION}<|eot_id|>\n"
-                 "<|start_header_id|>assistant<|end_header_id|>\n\n"
-                 f"{ANSWER_PREFIX}")
+    # formatted = ("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+    #              "You will be given a body of text and a question to answer about it. "
+    #              "Answer the question as reliably as possible.<|eot_id|>\n"
+    #              "<|start_header_id|>user<|end_header_id|>\n\n"
+    #              f"{haystack}\n\n{QUESTION}<|eot_id|>\n"
+    #              "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    #              f"{ANSWER_PREFIX}")
 
-    # formatted = f"{haystack}\n\n{QUESTION}\n\nThe best thing to do in San Francisco is"
+    formatted = f"{haystack}\n\n{QUESTION}\n\nThe best thing to do in San Francisco is"
 
     input_token_ids = tokenizer.encode(formatted)
 
@@ -85,10 +85,10 @@ def test_needle_in_haystack(
         max_out_tokens,
         0,
         prompt_token_ids=[input_token_ids],
-        max_cache_tokens=100,
+        max_cache_tokens=10000,
         protected_window_size=32,
         metric_collection_buffer_size=0,
-        compress_once=False,
+        compress_once=True,
     )
 
     response = vllm_outputs[0][1]

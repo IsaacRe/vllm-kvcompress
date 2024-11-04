@@ -519,7 +519,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                 # We use metric_collection_buffer_size = 0 as a proxy for
                 # whether compression with an observation window is enabled.
                 if (params.observation_context_len > 0
-                    and params.max_cache_tokens > 0):
+                    and params.max_cache_tokens > 0
+                    and context_len + token_chunk_size < seq_len):
                     if (remainder := params.observation_context_len
                         % self.kvcompress_config.block_size) != 0:
                         raise RuntimeError("got observation_context_len % "
@@ -541,6 +542,9 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                     obs_tokens = tokens[-params.observation_context_len:]
                     tokens = non_obs_tokens + obs_tokens
                 else:
+                    print(f"Processing next {seq_len - context_len} tokens "
+                          f"for total chunk size of {token_chunk_size} "
+                          f"({params.observation_context_len=})")
                     tokens = tokens[context_len:seq_len]
                 # if not all(t == 0 for t in seq_data.get_token_ids()):
                 #     import pdb;pdb.set_trace()
@@ -564,6 +568,8 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         else:
             inter_data.input_positions[seq_idx].extend(
                 range(context_len, seq_len))
+            # if len(inter_data.input_positions[0]) > 4:
+            #     import pdb;pdb.set_trace()
 
         inter_data.query_lens[
             seq_idx] = seq_len - context_len if inter_data.is_prompt else 1
@@ -722,9 +728,24 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         # Note: for KV-Compress we assume one sequence per group
         inter_data.kv_metric_buffer_lens = [
             seq_group_metadata.sampling_params.metric_collection_buffer_size]
-        inter_data.kv_metric_observation_context_lens = [
-            seq_group_metadata.sampling_params.observation_context_len
-            if seq_group_metadata.is_prompt else 0]
+        if self.kvcompress_config:
+            obs_ctx_len = (seq_group_metadata.sampling_params
+                                             .observation_context_len)
+            if obs_ctx_len > 0 and seq_group_metadata.is_prompt:
+                # Assume a single sequence per group.
+                seq_data, = seq_group_metadata.seq_data.values()
+                uncomputed_tokens = (seq_data.get_prompt_len()
+                                     - seq_data.get_num_computed_tokens())
+                # When uncomputed_tokens <= chunk_size the observation
+                # context will be processed as part of the final chunk's
+                # prefill so we don't need to set it explicitly.
+                if uncomputed_tokens <= seq_group_metadata.token_chunk_size:
+                    obs_ctx_len = 0
+            inter_data.kv_metric_observation_context_lens = [obs_ctx_len]
+        else:
+            inter_data.kv_metric_observation_context_lens = [0]
+        # if not all(a == 0 for a in list(seq_group_metadata.seq_data.values())[0].prompt_token_ids):
+        #     import pdb;pdb.set_trace()
 
     def add_seq_group(self, seq_group_metadata: SequenceGroupMetadata):
         """Add a sequence group to the builder."""

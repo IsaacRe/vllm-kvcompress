@@ -113,7 +113,9 @@ class CompressionScheduler:
         if compress_once and seq.compressed:
             return 0, 0
 
-        seq.compressed = True
+        if len(seq.get_output_token_ids()):
+            assert not seq.is_prefill()
+            seq.compressed = True
 
         # Round up to nearest block to avoid freeing blocks with KVs below max.
         if max_cache_tokens > 0:

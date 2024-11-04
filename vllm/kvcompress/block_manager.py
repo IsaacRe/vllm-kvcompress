@@ -315,6 +315,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                 .get_batch_new_block_metadata(
                                     last_token_position,
                                     new_seq_blocks,
+                                    new_token_counts,
                                     return_slot_mapping=cache_slot_mapping,
                                     is_prefill=[s.is_prefill() for s in seqs])
             )

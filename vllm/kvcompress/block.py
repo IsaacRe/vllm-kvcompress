@@ -524,6 +524,7 @@ class BlockStateView:
         self,
         last_token_position: List[int],
         new_block_count: List[int],
+        new_token_count: List[int],
         return_slot_mapping: bool = False,
         is_prefill: List[bool] = [],
     ) -> Optional[BlockMetadata]:
@@ -621,7 +622,8 @@ class BlockStateView:
             new_slot_mapping = []
             block_counts = self.get_block_counts()
             new_blocks_tensor = torch.arange(max(new_block_count), device=device)
-            for seq_idx, prefill, new_blocks in zip(self.seq_indices, is_prefill, new_block_count):
+            for seq_idx, prefill, new_blocks, new_tokens in zip(self.seq_indices, is_prefill,
+                                                                new_block_count, new_token_count):
                 if prefill:
                     # Get last new_blocks blocks along each layer and head for this sequence.
                     # Note: there may not be alignment across layers/heads since the sequence
@@ -632,10 +634,11 @@ class BlockStateView:
                         + block_counts[:,seq_idx,None,:] - new_blocks
                     )
                     # [num_layers, num_tokens, num_heads]
-                    new_slot_mapping.append((block_nums[:,:,None].type(torch.long) * self.block_size
-                                            + block_offsets[None,None,:,None]).flatten(start_dim=1, end_dim=2))
-            new_slot_mapping = torch.cat(new_slot_mapping, dim=1) if new_slot_mapping else None
+                    seq_slot_mapping = (block_nums[:,:,None].type(torch.long) * self.block_size
+                                        + block_offsets[None,None,:,None]).flatten(start_dim=1, end_dim=2)
+                    new_slot_mapping.append(seq_slot_mapping[:,:new_tokens])
 
+            new_slot_mapping = torch.cat(new_slot_mapping, dim=1) if new_slot_mapping else None
         # # should have same number of allocated KVs per layer
         # # randomly sample to make check less time-consuming
         # check_idx = np.random.randint(num_layers)
