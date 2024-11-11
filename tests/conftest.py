@@ -747,7 +747,8 @@ class VllmRunner:
         target_compression_rate: float = 1.0,
         max_cache_tokens: int = -1,
         metric_collection_buffer_size: int = 10,
-        compress_once: bool = True
+        compress_once: bool = True,
+        **sampling_params,
     ) -> List[Tuple[List[int], str, Optional[SampleLogprobs]]]:
         greedy_logprobs_params = SamplingParams(temperature=0.0,
                                                 max_tokens=max_tokens,
@@ -757,7 +758,8 @@ class VllmRunner:
                                                 target_compression_rate=target_compression_rate,
                                                 max_cache_tokens=max_cache_tokens,
                                                 metric_collection_buffer_size=metric_collection_buffer_size,
-                                                compress_once=compress_once)
+                                                compress_once=compress_once,
+                                                **sampling_params)
         outputs = self.generate_w_logprobs(greedy_logprobs_params,
                                            prompts=prompts,
                                            images=images,
