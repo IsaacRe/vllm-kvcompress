@@ -520,7 +520,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                 # whether compression with an observation window is enabled.
                 if (params.observation_context_len > 0
                     and params.max_cache_tokens > 0
-                    and context_len + token_chunk_size < seq_len):
+                    and context_len + token_chunk_size < len(tokens)):
                     if (remainder := params.observation_context_len
                         % self.kvcompress_config.block_size) != 0:
                         raise RuntimeError("got observation_context_len % "
@@ -540,6 +540,14 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
                           f"({params.observation_context_len=})")
                     non_obs_tokens = tokens[context_len:chunk_end]
                     obs_tokens = tokens[-params.observation_context_len:]
+                    ntok = 2
+                    str_tok = list(map(str, tokens))
+                    print(f"Input token ids: [ ... {', '.join(str_tok[max(0, context_len - ntok):context_len])} ]"
+                          f" {', '.join(str_tok[context_len:min(context_len + ntok, chunk_end)])} ..."
+                          f" {', '.join(str_tok[max(context_len, chunk_end - ntok):chunk_end])}"
+                          f" [ {', '.join(str_tok[chunk_end:chunk_end + ntok])} ... ]"
+                          f" {', '.join(str_tok[max(0, len(str_tok) - params.observation_context_len):max(0, len(str_tok) - params.observation_context_len) + ntok])} ..."
+                          f" {', '.join(str_tok[max(0, len(str_tok) - ntok):])}")
                     tokens = non_obs_tokens + obs_tokens
                 else:
                     print(f"Processing next {seq_len - context_len} tokens "
@@ -573,6 +581,10 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
 
         inter_data.query_lens[
             seq_idx] = seq_len - context_len if inter_data.is_prompt else 1
+
+        ntok = 2
+        print(f"Final input tokens: {inter_data.input_tokens[seq_idx][:ntok]} ... {inter_data.input_tokens[seq_idx][-ntok:]}")
+        print(f"Final input positions: {inter_data.input_positions[seq_idx][:ntok]} ... {inter_data.input_positions[seq_idx][-ntok:]}")
 
     def _compute_for_prefix_cache_hit(
             self, inter_data: InterDataForSeqGroup, seq_idx: int,
@@ -728,7 +740,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         # Note: for KV-Compress we assume one sequence per group
         inter_data.kv_metric_buffer_lens = [
             seq_group_metadata.sampling_params.metric_collection_buffer_size]
-        if self.kvcompress_config:
+        if self.kvcompress_config and seq_group_metadata.is_prompt:
             obs_ctx_len = (seq_group_metadata.sampling_params
                                              .observation_context_len)
             if obs_ctx_len > 0 and seq_group_metadata.is_prompt:

@@ -1020,6 +1020,14 @@ class FlashAttentionImpl(AttentionImpl):
                 ######
                 # TODO how does this work with differently-sized slot mapping?
                 obs_mask = attn_metadata.kv_metric_observation_context_mask
+                # if layer_index == 0:
+                #     import pdb;pdb.set_trace()
+                CHECKPOINTER.checkpoint('flash_prefix_cache_k', key[:880], max_save_iters=60)
+                CHECKPOINTER.checkpoint('flash_prefix_cache_v', value[:880], max_save_iters=60)
+                CHECKPOINTER.checkpoint('flash_prefix_slot_mapping', slot_mapping[:880], max_save_iters=60)
+
+                key_cache_ = key_cache.clone()
+
                 ops.reshape_and_cache_flash(
                     key[obs_mask].flatten(end_dim=1).unsqueeze(1),
                     value[obs_mask].flatten(end_dim=1).unsqueeze(1),
@@ -1031,6 +1039,9 @@ class FlashAttentionImpl(AttentionImpl):
                     v_scale,
                 )
                 torch.ones(1).to(0)
+
+                cache_diff = torch.stack(torch.where(key_cache_ != key_cache), dim=0)
+                CHECKPOINTER.checkpoint('flash_prefix_cache_diff', cache_diff, max_save_iters=60)
                 # key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
                 #                       .transpose(1, 2).contiguous())
                 # value_cache = value_cache.transpose(1, 2).contiguous()
@@ -1272,6 +1283,10 @@ class FlashAttentionImpl(AttentionImpl):
                     slot_mapping = attn_metadata.slot_mapping[layer_index]
                     slot_mapping = slot_mapping[:num_prefill_tokens]
                     block_tables = prefill_meta.block_tables[layer_index]
+
+
+                    CHECKPOINTER.checkpoint("flash_prefix_q", query[:880], max_save_iters=60)
+
                     torch.zeros(1).to(0)
                     out = torch.ops.vllm.flash_attn_varlen_func(  # noqa
                         q=query,
@@ -1287,6 +1302,9 @@ class FlashAttentionImpl(AttentionImpl):
                         block_table=block_tables,
                         softcap=self.logits_soft_cap,
                     )
+
+                    CHECKPOINTER.checkpoint("flash_prefix_out", out[:880], max_save_iters=60)
+
                     if self.num_kv_heads != self.num_heads:
                         # Interleave for MQA workaround.
                         key = self.repeat_kv(key, self.num_queries_per_kv)
@@ -1385,6 +1403,7 @@ class FlashAttentionImpl(AttentionImpl):
                         alibi_slopes=self.alibi_slopes,
                         softcap=self.logits_soft_cap,
                     ).squeeze(1)
+                CHECKPOINTER.checkpoint('flash_prefix_decode', output[num_prefill_tokens:])
                 ######
 
                 # assert torch.allclose(output[num_prefill_tokens:], out, rtol=1e-2, atol=1e-2)

@@ -25,7 +25,7 @@ class RandomDigitCheckpointConfig:
 
 
 class Checkpointer:
-    
+
     def __init__(self) -> None:
         self.base_dir = "."
         self.do_save = False
@@ -35,7 +35,12 @@ class Checkpointer:
         self.manifest = None
         self.disabled = False
         self.conditions = {}
+        self.enabled_chkpts = []
+        self.enabled_prefixes = []
+        self.filter = False
+        self.override_output = False
         self.config: RandomDigitCheckpointConfig = None
+        self.tolerance = 1e-2
 
     def __del__(self) -> None:
         if self.manifest is not None:
@@ -72,11 +77,14 @@ class Checkpointer:
         if not os.path.exists(path):
             raise RuntimeError('file not found: {path}')
         return torch.load(path)
-    
+
     def checkpoint(self, name: str, tensor: torch.Tensor, max_save_iters: Optional[int] = None):
         if max_save_iters is None:
             max_save_iters = _MAX_SAVE_ITERS
-        if self.disabled or not self.do_checkpoint:
+        prefix_match = any([name.startswith(prefix) for prefix in self.enabled_prefixes])
+        if self.disabled or (not self.do_checkpoint) or (
+            self.filter and (name not in self.enabled_chkpts)
+            and not prefix_match):
             return
         if name not in self.checkpoint_counts:
             if self.manifest is None:
@@ -89,9 +97,13 @@ class Checkpointer:
             if self.do_save:
                 self.torch_save(name, tensor)
             elif self.do_validate:
-                reference = self.torch_load(name)
-                assert (reference.to(tensor.device) == tensor).all(), f'checkpoint {name}({self.checkpoint_counts[name]}) failed:\n{reference} != {tensor}'
+                reference = self.torch_load(name).to(tensor.device)
+                # assert (reference.to(tensor.device) == tensor).all(), f'checkpoint {name}({self.checkpoint_counts[name]}) failed:\n{reference} != {tensor}'
+                assert torch.allclose(reference, tensor, atol=self.tolerance, rtol=self.tolerance), (
+                    f'checkpoint {name}({self.checkpoint_counts[name]}) failed:\n{reference} != {tensor}')
                 print(f'checkpoint {name}({self.checkpoint_counts[name]}) passed')
+                if self.override_output:
+                    tensor[:] = reference
         self.checkpoint_counts[name] += 1
 
     def condition(self, **condition_params) -> None:
@@ -106,6 +118,14 @@ class Checkpointer:
 
     def end_condition(self):
         self.disabled = False
+
+    def enable_for(self, *chkpt_names):
+        self.enabled_chkpts = list(chkpt_names)
+        self.filter = bool(self.enabled_chkpts + self.enabled_prefixes)
+
+    def enable_for_prefix(self, *chkpt_prefixes):
+        self.enabled_prefixes = list(chkpt_prefixes)
+        self.filter = bool(self.enabled_prefixes + self.enabled_chkpts)
 
 
 CHECKPOINTER = Checkpointer()

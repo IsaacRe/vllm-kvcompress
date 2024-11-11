@@ -615,6 +615,7 @@ class BlockStateView:
         )
         layer_indices, _, head_indices, _ = torch.where(mask)
 
+        # import pdb;pdb.set_trace()
 
         new_slot_mapping = None
         if return_slot_mapping:
@@ -653,6 +654,11 @@ class BlockStateView:
         #     mask_ = seq_indices == seq_index
         #     assert (token_positions[mask_] == token_positions[mask_][0:1]).all()
         #     assert (token_positions[mask_][:,0] == last_pos).all(), (token_positions[mask_][:,0], last_pos)
+        if new_slot_mapping is not None:
+            x = (torch.cat([new_slot_mapping, new_slot_mapping[:,-1:,:]
+                    .repeat(1, new_block_count[0] * 16 - new_token_count[0], 1)], dim=1))
+            x = x.transpose(1, 2).flatten().reshape(physical_blocks.shape[0], -1)
+            assert (x[:,0] // 16 == physical_blocks).all()
 
         return BlockMetadata(
             physical_blocks=physical_blocks,

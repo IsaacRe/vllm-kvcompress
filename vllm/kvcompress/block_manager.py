@@ -310,6 +310,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             self.block_state.block_tables[:,batch_slots_idxs] = tmp
             last_token_position = [seq.get_len() - seq.get_num_new_tokens() - 1
                                    for seq in seqs]
+            print(f'Heyoooo: is_prefill={seqs[0].is_prefill()}')
             metadata, _, slot_mapping = (
                 self.block_state.get_block_state_batch_view(batch_slots_idxs)
                                 .get_batch_new_block_metadata(
