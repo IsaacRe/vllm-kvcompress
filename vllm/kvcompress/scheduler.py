@@ -104,6 +104,7 @@ class CompressionScheduler:
         max_cache_tokens: int,
         protected_window_size: int,
         compress_once: bool,
+        compress_chunks: bool,
     ) -> Tuple[int, int]:
         """Return the number of this sequence's blocks to be freed during
         the next compression iteration.
@@ -111,6 +112,10 @@ class CompressionScheduler:
         # If sequence was configured to be compressed exactly once after prefill
         # and this compression has already occurred then return
         if compress_once and seq.compressed:
+            return 0, 0
+
+        # If compress_chunks is false, we wait until prefill is done to compress.
+        if seq.is_prefill() and not compress_chunks:
             return 0, 0
 
         if len(seq.get_output_token_ids()):
@@ -205,10 +210,13 @@ class CompressionScheduler:
                 max_cache_tokens=sample_params.max_cache_tokens,
                 protected_window_size=sample_params.protected_window_size,
                 compress_once=sample_params.compress_once,
+                compress_chunks=sample_params.compress_chunks,
             )
             if evicted_block_count == 0:
                 # print(f"Skipping compression for sequence {seq.seq_id}")
                 continue
+
+            # import pdb;pdb.set_trace()
 
             # Stop once we reach the maximum number of KVs to compress.
             total_kv_count += self.block_manager.get_sequence_block_count(seq) * self.block_size
@@ -249,7 +257,7 @@ class CompressionScheduler:
         )
 
         slot_indices = [self.block_manager.get_slot_index(seq) for seq in seqs_to_compress]
-        seq_lens = [seq.data.get_len() for seq in seqs_to_compress]
+        seq_lens = [seq.data.get_num_computed_tokens() for seq in seqs_to_compress]
 
         CHECKPOINTER.checkpoint('schedule_compression__evicted_blocks_per_seq', evicted_blocks_per_seq)
         CHECKPOINTER.checkpoint('schedule_compression__slot_indices', torch.tensor(slot_indices))
@@ -504,6 +512,39 @@ class CompressionScheduler:
             BENCHMARKER.end_range("schedule_evictions_v2")
 
         #######
+
+        # if CHECKPOINTER.do_validate:
+        #     ref_evicted_logical_indices = torch.load('checkpoints/compression_evicted_logical_indices__0').to(evicted_block_count.device)
+        #     ref_evicted_kv_count = torch.load('checkpoints/compression_evicted_kv_count__0').to(evicted_block_count.device)
+        #     ref_evicted_block_count = torch.load('checkpoints/compression_evicted_block_count__0').to(evicted_block_count.device)
+        #     ref_evicted_kv_offsets = torch.load('checkpoints/compression_evicted_kv_offsets__0').to(evicted_block_count.device)
+
+        #     print("Evaluating eviction equivalence")
+        #     unmatched_evictions = torch.zeros_like(evicted_kv_count[0])
+        #     for layer in range(32):
+        #         for head in range(8):
+        #             offset = evicted_kv_offsets[0, layer, head]
+        #             count = evicted_kv_count[0, layer, head]
+        #             evicted_kvs = list(map(int, evicted_logical_indices[offset:offset+count]))
+
+        #             ref_offset = ref_evicted_kv_offsets[0, layer, head]
+        #             ref_count = ref_evicted_kv_count[0, layer, head]
+        #             ref_evicted_kvs = set(map(int, ref_evicted_logical_indices[ref_offset:ref_offset+ref_count]))
+
+        #             unmatched_count = 0
+        #             for evicted_kv in evicted_kvs:
+        #                 if evicted_kv not in ref_evicted_kvs:
+        #                     unmatched_count += 1
+
+        #             unmatched_evictions[layer, head] = unmatched_count
+
+        #     assert unmatched_evictions.sum() == 0
+
+
+        # CHECKPOINTER.checkpoint("compression_evicted_logical_indices", evicted_logical_indices, max_save_iters=1)
+        # CHECKPOINTER.checkpoint("compression_evicted_kv_count", evicted_kv_count, max_save_iters=1)
+        # CHECKPOINTER.checkpoint("compression_evicted_block_count", evicted_block_count, max_save_iters=1)
+        # CHECKPOINTER.checkpoint("compression_evicted_kv_offsets", evicted_kv_offsets, max_save_iters=1)
 
         ######
 

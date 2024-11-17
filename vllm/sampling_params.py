@@ -155,6 +155,7 @@ class SamplingParams(
     max_cache_tokens: int = -1
     metric_collection_buffer_size: int = 0
     compress_once: bool = True
+    compress_chunks: bool = True
 
     # The below fields are not supposed to be used as an input.
     # They are set in post_init.
@@ -196,6 +197,7 @@ class SamplingParams(
         max_cache_tokens: int = -1,
         metric_collection_buffer_size: int = 0,
         compress_once: bool = True,
+        compress_chunks: bool = True,
     ) -> "SamplingParams":
         return SamplingParams(
             n=1 if n is None else n,
@@ -233,6 +235,7 @@ class SamplingParams(
             max_cache_tokens=max_cache_tokens,
             metric_collection_buffer_size=metric_collection_buffer_size,
             compress_once=compress_once,
+            compress_chunks=compress_chunks,
         )
 
     def __post_init__(self) -> None:

@@ -604,6 +604,9 @@ class CompressionMetrics:
         sorted_masked_logical_indices = (
             masked_logical_block_indices.flatten()[sorted_indices].view(-1, self.block_size)
         )
+        sorted_masked_token_position = (
+            masked_token_position.flatten()[sorted_indices].view(-1, self.block_size)
+        )
         total_blocks_per_seq = (
             (context_lens + self.block_size - 1) // self.block_size
         ).sum(dim=0).sum(dim=-1)
@@ -793,6 +796,48 @@ class CompressionMetrics:
         if not profile:
             assert (context_lens.transpose(0, 1) >= evicted_kv_count).all()
             print(f"Max context length after compression: {(context_lens.transpose(0, 1) - evicted_kv_count).max()}")
+
+        # import pdb;pdb.set_trace()
+
+        # DEBUG
+        # if CHECKPOINTER.do_validate:
+        #     ref_evicted_logical_indices = torch.load('checkpoints/schedule_evictions_sorted_masked_logical_indices__0').to(evicted_block_count.device)
+        #     ref_evicted_token_position = torch.load('checkpoints/schedule_evictions_sorted_masked_token_position__0').to(evicted_block_count.device)
+        #     ref_evicted_kv_count = torch.load('checkpoints/schedule_evictions_kv_count__0').to(evicted_block_count.device)
+        #     ref_evicted_kv_offsets = torch.load('checkpoints/schedule_evictions_kv_offsets__0').to(evicted_block_count.device)
+
+        #     print("Evaluating eviction equivalence")
+        #     unmatched_evictions = torch.zeros_like(evicted_kv_count[0])
+        #     for layer in range(32):
+        #         for head in range(8):
+        #             offset = evicted_kv_offsets[0, layer, head]
+        #             count = evicted_kv_count[0, layer, head]
+        #             evicted_kvs = list(map(int, sorted_masked_logical_indices[offset:offset+count]))
+        #             evicted_pos = sorted_masked_token_position.flatten()[offset:offset+count]
+        #             evicted_pos_list = list(map(int, evicted_pos))
+
+        #             ref_offset = ref_evicted_kv_offsets[0, layer, head]
+        #             ref_count = ref_evicted_kv_count[0, layer, head]
+        #             ref_evicted_kvs = set(map(int, ref_evicted_logical_indices[ref_offset:ref_offset+ref_count]))
+        #             ref_evicted_pos = set(map(int, ref_evicted_token_position.flatten()[ref_offset:ref_offset+ref_count]))
+
+        #             # unmatched_count = 0
+        #             # for evicted_kv in evicted_kvs:
+        #             #     if evicted_kv not in ref_evicted_kvs:
+        #             #         unmatched_count += 1
+
+        #             unmatched_mask = torch.tensor([p not in ref_evicted_pos for p in evicted_pos_list], dtype=torch.bool).to(0)
+        #             if unmatched_mask.sum() > 0:
+        #                 import pdb;pdb.set_trace()
+
+        #             unmatched_evictions[layer, head] = unmatched_mask.sum()
+
+        #     assert unmatched_evictions.sum() == 0
+
+        # CHECKPOINTER.checkpoint("schedule_evictions_sorted_masked_logical_indices", sorted_masked_logical_indices)
+        # CHECKPOINTER.checkpoint("schedule_evictions_sorted_masked_token_position", sorted_masked_token_position)
+        # CHECKPOINTER.checkpoint("schedule_evictions_kv_count", evicted_kv_count)
+        # CHECKPOINTER.checkpoint("schedule_evictions_kv_offsets", evicted_kv_offsets)
 
         # assert (debug['kv_count'] == evicted_kv_count).all()
 

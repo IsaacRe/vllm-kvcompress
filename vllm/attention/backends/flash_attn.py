@@ -1026,7 +1026,7 @@ class FlashAttentionImpl(AttentionImpl):
                 CHECKPOINTER.checkpoint('flash_prefix_cache_v', value[:880], max_save_iters=60)
                 CHECKPOINTER.checkpoint('flash_prefix_slot_mapping', slot_mapping[:880], max_save_iters=60)
 
-                key_cache_ = key_cache.clone()
+                # key_cache_ = key_cache.clone()
 
                 ops.reshape_and_cache_flash(
                     key[obs_mask].flatten(end_dim=1).unsqueeze(1),
@@ -1040,8 +1040,8 @@ class FlashAttentionImpl(AttentionImpl):
                 )
                 torch.ones(1).to(0)
 
-                cache_diff = torch.stack(torch.where(key_cache_ != key_cache), dim=0)
-                CHECKPOINTER.checkpoint('flash_prefix_cache_diff', cache_diff, max_save_iters=60)
+                # cache_diff = torch.stack(torch.where(key_cache_ != key_cache), dim=0)
+                # CHECKPOINTER.checkpoint('flash_prefix_cache_diff', cache_diff, max_save_iters=60)
                 # key_cache = (key_cache.view(num_blocks, block_size, head_size_over_x, x)
                 #                       .transpose(1, 2).contiguous())
                 # value_cache = value_cache.transpose(1, 2).contiguous()
@@ -1287,6 +1287,13 @@ class FlashAttentionImpl(AttentionImpl):
 
                     CHECKPOINTER.checkpoint("flash_prefix_q", query[:880], max_save_iters=60)
 
+                    seq_start_loc = prefill_meta.seq_start_loc
+                    # if query.shape[0] > 880:
+                    #     seq_start_loc[1] = 880
+
+                    # if layer_index == 0 and query.shape[0] < 880:
+                    #     import pdb;pdb.set_trace()
+
                     torch.zeros(1).to(0)
                     out = torch.ops.vllm.flash_attn_varlen_func(  # noqa
                         q=query,
@@ -1294,7 +1301,7 @@ class FlashAttentionImpl(AttentionImpl):
                         v=value_cache.squeeze(2),
                         cu_seqlens_q=prefill_meta.query_start_loc,
                         max_seqlen_q=prefill_meta.max_query_len,
-                        cu_seqlens_k=prefill_meta.seq_start_loc,
+                        cu_seqlens_k=seq_start_loc,
                         max_seqlen_k=max_seq_len,
                         softmax_scale=self.scale,
                         causal=True,
@@ -1391,6 +1398,8 @@ class FlashAttentionImpl(AttentionImpl):
                 # CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
 
                 ##### UPDATE
+                # if layer_index == 0:
+                #     import pdb;pdb.set_trace()
                 seq_lens_tensor = decode_meta.seq_lens_tensor[layer_index]
                 output[num_prefill_tokens:] = torch.ops.vllm.flash_attn_with_kvcache(
                         decode_query.unsqueeze(1),
