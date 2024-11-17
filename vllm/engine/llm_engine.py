@@ -1639,6 +1639,8 @@ class LLMEngine:
                 # Aggregate KV metrics that were collected to be used in sorting during
                 # later iterations.
                 self.kvcompress_state.kv_metrics.aggregate_decode()
+                # Free temporary cache blocks used for processing observation tokens
+                self.scheduler[0].block_manager.free_observation_blocks()
 
             # We need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.

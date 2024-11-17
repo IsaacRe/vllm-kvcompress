@@ -176,6 +176,12 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.free_batch_slots = set(range(self.block_state.max_num_seqs))
         self.batch_slot_mapping = {}
 
+        # Track mask of allocated observation tokens to be freed after the
+        # current model iteration.
+        self.current_observation_mask = None
+        self.current_batch_indices = None
+        self.current_observation_tokens = None
+
     def reinit(self):
         self.gpu_allocator.free_all()
         self.block_state.clear()
@@ -193,13 +199,16 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             print(f'{failing_blocks=}')
         assert not failing_blocks
 
-    def _add_sequence(self, seq_id: int, seq_len: int) -> None:
+    def _add_sequence(self, seq_id: int, seq_len: int,
+                      observation_len: int = 0) -> None:
         # Currently only support insertion of sequences
         # with same number of KVs across all heads/layers
         # (ie no swap-in of swapped-out, compressed sequences).
         assert len(self.free_batch_slots) > 0
         # If we just filled a block, update the block count to add tokens
         # that will be generated during the next decoding step.
+        # seq_block_count = (seq_len - observation_len + self.block_size
+        #                    - 1) // self.block_size
         seq_block_count = (seq_len + self.block_size - 1) // self.block_size
         total_blocks = self.num_layers * self.num_kv_heads * seq_block_count
         # self._validate_allocator()
@@ -208,6 +217,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         seq_blocks = block_numbers.reshape(
             self.num_layers, self.num_kv_heads, seq_block_count
         ).type(torch.int).to(self.device)
+
+        # Should always be a multiple of block size
+        seq_obs_block_count = observation_len // self.block_size
+
         batch_slot_idx = self.free_batch_slots.pop()
         self.batch_slot_mapping[seq_id] = batch_slot_idx
         self.block_state.context_lens[:,batch_slot_idx] = seq_len
@@ -215,6 +228,35 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.block_tables[:,batch_slot_idx,:,:seq_block_count] = seq_blocks
         # self.block_state._validate()
         # self._validate_allocator()
+
+        # TODO optimize
+        seq_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
+        obs_mask = (
+            ((seq_view.all_logical_block_nums >= seq_block_count - seq_obs_block_count)
+             & (seq_view.all_logical_block_nums < seq_block_count))
+            .expand_as(self.block_state.block_tables[:,:1])
+        )
+        self.current_observation_mask = (torch.cat([self.current_observation_mask,
+                                                    obs_mask], dim=1)
+                                         if self.current_observation_mask is not None else
+                                         obs_mask)
+        self.current_batch_indices = torch.cat([self.current_batch_indices
+                                                if self.current_batch_indices is not None
+                                                else torch.tensor([],
+                                                                  device=self.device,
+                                                                  dtype=torch.long),
+                                                torch.tensor([batch_slot_idx],
+                                                             device=self.device,
+                                                             dtype=torch.long)])
+        self.current_observation_tokens = torch.cat([self.current_observation_tokens
+                                                     if self.current_observation_tokens
+                                                     is not None else
+                                                     torch.tensor([],
+                                                                  device=self.device,
+                                                                  dtype=torch.int),
+                                                     torch.tensor([observation_len],
+                                                                  device=self.device,
+                                                                  dtype=torch.int)])
 
         # Add metric metadata associated with the newly added sequence blocks
         block_state_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
@@ -258,6 +300,23 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idxs] = 0
         return freed_blocks
 
+    def _free_observation_blocks(self) -> Optional[torch.Tensor]:
+        if self.current_observation_mask is not None:
+            freed_blocks = (
+                self.block_state
+                    .block_tables[:,self.current_batch_indices]
+                    [self.current_observation_mask]
+                    .type(torch.long)
+                    .to(self.gpu_allocator.device)
+            )
+            self.gpu_allocator.free(freed_blocks)
+            # import pdb;pdb.set_trace()
+            self.block_state.context_lens[:,self.current_batch_indices] -= \
+                self.current_observation_tokens[None,:,None]
+            self.current_batch_indices = self.current_observation_mask = \
+                self.current_observation_tokens = None
+            return freed_blocks
+
     def _get_new_block_count(self, seq_id: int, token_count: int) -> int:
         batch_slot_idx = self.batch_slot_mapping[seq_id]
         new_kv_count = (
@@ -269,21 +328,48 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self,
         seqs: List[Sequence],
         chunk_size: Optional[List[int]] = None,
+        observation_len: Optional[List[int]] = None,
     ):
+        # Allocate space for both chunk context and observation tokens.
+        # Record blocks allocated to observation tokens so they can be
+        # immediately freed during next scheduling step.
         cache_slot_mapping = self.kvcompress_config.enable_chunked_prefill
         if chunk_size is None:
             chunk_size = [-1 for _ in seqs]
+        if chunk_size is None or observation_len is None:
+            observation_len = [0 for _ in seqs]
 
         assert len(seqs) == len(chunk_size)
 
         # new_token_counts = ([min(seq.get_num_new_tokens(), chunk_size) for seq in seqs]
         #                     if chunk_size > 0 else
         #                     [seq.get_num_new_tokens() for seq in seqs])
-        new_token_counts = [min(seq.get_num_new_tokens(), s)
-                            if s > 0 else seq.get_num_new_tokens()
-                            for seq, s in zip(seqs, chunk_size)]
+
+        # Count of new context tokens to be cached until compression-determined eviction.
+        new_token_counts = []
+        # Count of new observation tokens to be cached temporarily during the next forward
+        # pass before immediate freeing.
+        new_obs_token_counts = []
+        for seq, s, s_obs in zip(seqs, chunk_size, observation_len):
+            s_new = seq.get_num_new_tokens()
+            if s > 0:
+                if s_new > s:
+                    new_token_counts.append(s - s_obs)
+                    new_obs_token_counts.append(s_obs)
+                else:
+                    new_token_counts.append(s_new)
+                    new_obs_token_counts.append(0)
+            else:
+                new_token_counts.append(s_new)
+                new_obs_token_counts.append(0)
+
         token_count = torch.tensor(
             new_token_counts,
+            device=self.device,
+            dtype=torch.int,
+        )
+        obs_token_count = torch.tensor(
+            new_obs_token_counts,
             device=self.device,
             dtype=torch.int,
         )
@@ -295,10 +381,16 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         block_state_view = self.block_state.get_block_state_batch_view(batch_slots_idxs)
         old_mask = block_state_view.allocated_block_mask()
         self.block_state.context_lens[:,batch_slots_idxs] += token_count[None,:,None]
-        new_mask = block_state_view.allocated_block_mask()
-        new_mask = (new_mask & ~old_mask)
+        new_mask_ = block_state_view.allocated_block_mask()
+        new_mask = (new_mask_ & ~old_mask)
         new_seq_blocks = new_mask.sum(dim=-1).max(dim=0).values.max(dim=-1).values
         new_blocks = new_mask.sum()
+
+        self.block_state.context_lens[:,batch_slots_idxs] += obs_token_count[None,:,None]
+        new_obs_mask = block_state_view.allocated_block_mask()
+        new_obs_mask = (new_obs_mask & ~new_mask_)
+        new_seq_obs_blocks = new_obs_mask.sum(dim=-1).max(dim=0).values.max(dim=-1).values
+        new_obs_blocks = new_obs_mask.sum()
 
         if new_blocks > 0:
             # print(f"DECODE ALLOCATION: {new_blocks} blocks")
@@ -307,6 +399,17 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                 self.gpu_allocator.allocate(new_blocks).to(self.device).type(torch.int)
             )
             tmp[new_mask] = newly_allocated
+
+            # Temporary allocation of observation context tokens
+            newly_allocated_obs = (
+               self.gpu_allocator.allocate(new_obs_blocks).to(self.device).type(torch.int)
+            )
+            tmp[new_obs_mask] = newly_allocated_obs
+            # Store observation context mask for later deallocation
+            self.current_observation_mask = new_obs_mask
+            self.current_batch_indices = batch_slots_idxs
+            self.current_observation_tokens = obs_token_count
+
             self.block_state.block_tables[:,batch_slots_idxs] = tmp
             last_token_position = [seq.get_len() - seq.get_num_new_tokens() - 1
                                    for seq in seqs]
@@ -317,6 +420,7 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                     last_token_position,
                                     new_seq_blocks,
                                     new_token_counts,
+                                    new_obs_block_count=new_seq_obs_blocks,
                                     return_slot_mapping=cache_slot_mapping,
                                     is_prefill=[s.is_prefill() for s in seqs])
             )
@@ -425,11 +529,21 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                  chunk_tokens: int = -1) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
+        observation_len = (seq_group.sampling_params.observation_context_len
+                           if chunk_tokens > 0 else 0)
+
         seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
         n_tokens = (min(seq.get_len(), chunk_tokens) if chunk_tokens > 0
                     else seq.get_len())
 
-        self._add_sequence(seq_id=seq.seq_id, seq_len=n_tokens)
+        seq_len = seq.get_len()
+        if observation_len and chunk_tokens > 0 and seq_len > chunk_tokens:
+            seq_len = chunk_tokens
+        else:
+            observation_len = 0
+
+        self._add_sequence(seq_id=seq.seq_id, seq_len=n_tokens,
+                           observation_len=observation_len)
 
     @BENCHMARKER.wrap()
     def can_append_slots(self,
@@ -457,8 +571,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     @BENCHMARKER.wrap()
     def batch_append_slots(self,
                            seqs: List[Sequence],
-                           chunk_size: Optional[List[int]] = None) -> None:
-        self._append_to_sequence_batch(seqs, chunk_size=chunk_size)
+                           chunk_size: Optional[List[int]] = None,
+                           observation_len: Optional[List[int]] = None) -> None:
+        self._append_to_sequence_batch(seqs, chunk_size=chunk_size,
+                                       observation_len=observation_len)
 
     @BENCHMARKER.wrap()
     def append_slots(
@@ -507,6 +623,9 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
     @BENCHMARKER.wrap()
     def free_batch(self, seqs: List[Sequence]) -> Optional[torch.Tensor]:
         return self._remove_sequence_batch(seqs)
+
+    def free_observation_blocks(self) -> Optional[torch.Tensor]:
+        return self._free_observation_blocks()
 
     @BENCHMARKER.wrap()
     def free_compressed_blocks(self, freed_block_count: FreedBlockCounts) -> torch.Tensor:

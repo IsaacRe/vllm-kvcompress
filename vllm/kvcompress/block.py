@@ -307,10 +307,8 @@ class BlockStateView:
                 .gather(dim=1, index=logical_blocks.type(torch.int64))
                 .type(torch.int64)
         )
+        # import pdb;pdb.set_trace()
         return block_numbers * self.block_size + offsets
-
-    def get_chunked_prefill_slot_mapping(self) -> torch.Tensor:
-        return self.ma
 
     def get_decode_slot_mapping(self) -> torch.Tensor:
         """Return the slot mapping for each KV head of each layer at the next
@@ -525,6 +523,7 @@ class BlockStateView:
         last_token_position: List[int],
         new_block_count: List[int],
         new_token_count: List[int],
+        new_obs_block_count: List[int] = [],
         return_slot_mapping: bool = False,
         is_prefill: List[bool] = [],
     ) -> Optional[BlockMetadata]:
@@ -620,8 +619,14 @@ class BlockStateView:
         new_slot_mapping = None
         if return_slot_mapping:
             assert len(is_prefill) == len(self.seq_indices) == len(new_block_count)
+            # Only the slot_mapping should include observation tokens.
+            # Block metadata should include only tokens from the current chunk.
+            if new_obs_block_count:
+                assert len(new_obs_block_count) == len(new_block_count)
+                new_block_count = [c + c_obs for c, c_obs in zip(new_block_count, new_obs_block_count)]
             new_slot_mapping = []
             block_counts = self.get_block_counts()
+            print(f'BLOCK_COUNTS: {block_counts.max()=}, {block_counts.min()=}')
             new_blocks_tensor = torch.arange(max(new_block_count), device=device)
             for seq_idx, prefill, new_blocks, new_tokens in zip(self.seq_indices, is_prefill,
                                                                 new_block_count, new_token_count):
@@ -629,15 +634,18 @@ class BlockStateView:
                     # Get last new_blocks blocks along each layer and head for this sequence.
                     # Note: there may not be alignment across layers/heads since the sequence
                     # may have been compressed.
-                    block_nums = self.block_tables[:,seq_idx].transpose(1, 2).gather(
+                    gather_inp = self.block_tables[:,seq_idx].transpose(1, 2)
+                    gather_idx = (new_blocks_tensor[None,:new_blocks,None]
+                        + block_counts[:,seq_idx,None,:] - new_blocks)
+                    assert gather_inp.size(1) > gather_idx.max()
+                    block_nums = gather_inp.gather(
                         dim=1,
-                        index=new_blocks_tensor[None,:new_blocks,None]
-                        + block_counts[:,seq_idx,None,:] - new_blocks
+                        index=gather_idx,
                     )
                     # [num_layers, num_tokens, num_heads]
                     seq_slot_mapping = (block_nums[:,:,None].type(torch.long) * self.block_size
                                         + block_offsets[None,None,:,None]).flatten(start_dim=1, end_dim=2)
-                    new_slot_mapping.append(seq_slot_mapping[:,:new_tokens])
+                    new_slot_mapping.append(seq_slot_mapping)
 
             new_slot_mapping = torch.cat(new_slot_mapping, dim=1) if new_slot_mapping else None
         # # should have same number of allocated KVs per layer
@@ -654,11 +662,11 @@ class BlockStateView:
         #     mask_ = seq_indices == seq_index
         #     assert (token_positions[mask_] == token_positions[mask_][0:1]).all()
         #     assert (token_positions[mask_][:,0] == last_pos).all(), (token_positions[mask_][:,0], last_pos)
-        if new_slot_mapping is not None:
-            x = (torch.cat([new_slot_mapping, new_slot_mapping[:,-1:,:]
-                    .repeat(1, new_block_count[0] * 16 - new_token_count[0], 1)], dim=1))
-            x = x.transpose(1, 2).flatten().reshape(physical_blocks.shape[0], -1)
-            assert (x[:,0] // 16 == physical_blocks).all()
+        # if new_slot_mapping is not None:
+        #     x = (torch.cat([new_slot_mapping, new_slot_mapping[:,-1:,:]
+        #             .repeat(1, new_block_count[0] * 16 - new_token_count[0], 1)], dim=1))
+        #     x = x.transpose(1, 2).flatten().reshape(physical_blocks.shape[0], -1)
+        #     assert (x[:,0] // 16 == physical_blocks).all()
 
         return BlockMetadata(
             physical_blocks=physical_blocks,

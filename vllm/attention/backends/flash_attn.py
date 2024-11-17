@@ -700,6 +700,7 @@ class FlashAttentionMetadataBuilder(
                                 for i in self.prefill_block_state_indices],
                             dim=1,
                         )
+                        import pdb;pdb.set_trace()
             if self.decode_block_state_indices:
                 decode_block_state_view = block_state.get_block_state_batch_view(
                     self.decode_block_state_indices)
@@ -972,6 +973,7 @@ class FlashAttentionImpl(AttentionImpl):
         kv_metric_use_maxpool = attn_metadata.kv_metric_use_maxpool
         prefill_observed_queries = attn_metadata.prefill_kv_metric_window_size
         prefill_max_observed_block_size = attn_metadata.prefill_kv_metric_block_size
+        obs_mask = attn_metadata.kv_metric_observation_context_mask
 
         CHECKPOINTER.checkpoint('flash_attn__query', query)
         CHECKPOINTER.checkpoint('flash_attn__key', key)
@@ -1019,7 +1021,6 @@ class FlashAttentionImpl(AttentionImpl):
 
                 ######
                 # TODO how does this work with differently-sized slot mapping?
-                obs_mask = attn_metadata.kv_metric_observation_context_mask
                 # if layer_index == 0:
                 #     import pdb;pdb.set_trace()
                 CHECKPOINTER.checkpoint('flash_prefix_cache_k', key[:880], max_save_iters=60)
@@ -1027,10 +1028,16 @@ class FlashAttentionImpl(AttentionImpl):
                 CHECKPOINTER.checkpoint('flash_prefix_slot_mapping', slot_mapping[:880], max_save_iters=60)
 
                 # key_cache_ = key_cache.clone()
+                cache_key = key
+                cache_value = value
+                if cache_key.size(0) > slot_mapping.size(0):
+                    cache_key = cache_key[obs_mask]
+                    cache_value = cache_value[obs_mask]
 
+                # import pdb;pdb.set_trace()
                 ops.reshape_and_cache_flash(
-                    key[obs_mask].flatten(end_dim=1).unsqueeze(1),
-                    value[obs_mask].flatten(end_dim=1).unsqueeze(1),
+                    key.flatten(end_dim=1).unsqueeze(1),
+                    value.flatten(end_dim=1).unsqueeze(1),
                     key_cache.unsqueeze(2),
                     value_cache.unsqueeze(2),
                     slot_mapping.flatten(),
@@ -1333,7 +1340,7 @@ class FlashAttentionImpl(AttentionImpl):
                     )
                     kv_metrics.aggregate_prefill(
                         kv_metric_out,
-                        slot_mapping,
+                        slot_mapping[obs_mask],
                     )
                     assert output[:num_prefill_tokens].shape == out.shape
                     output[:num_prefill_tokens] = out

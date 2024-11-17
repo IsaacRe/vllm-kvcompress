@@ -655,6 +655,7 @@ class Scheduler:
         chunk_size = (self.scheduler_config.max_chunk_len
                       if self.scheduler_config.chunked_prefill_enabled
                       else -1)
+        # TODO can we skip if this is an empty list
         self._batch_append_slots(decode_seq_groups + prefill_seq_groups,
                                  chunk_size=chunk_size)
 
@@ -1587,9 +1588,7 @@ class Scheduler:
             # When using KV-Compress with chunked-prefill the last
             # observation_context_len tokens will not be cached as they are only
             # used to compute metrics for cache evictions following each prefill.
-            tokens_to_cache = (chunk_tokens
-                               - seq_group.sampling_params.observation_context_len)
-            self.block_manager.allocate(seq_group, chunk_tokens=tokens_to_cache)
+            self.block_manager.allocate(seq_group, chunk_tokens=chunk_tokens)
         else:
             self.block_manager.allocate(seq_group)
         for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
@@ -1601,14 +1600,23 @@ class Scheduler:
                             chunk_size: int = -1) -> None:
         seqs: List[Sequence] = []
         chunk_sizes = []
+        observation_context_lens = []
         for seq_group in seq_groups:
             if chunk_size > 0:
                 n_seqs = len(seq_group.seq_group.get_seqs())
-                chunk_sizes.extend([
-                    chunk_size - seq_group.seq_group.sampling_params
-                                          .observation_context_len] * n_seqs)
+                # chunk_sizes.extend([
+                #     chunk_size - seq_group.seq_group.sampling_params
+                #                           .observation_context_len] * n_seqs)
+                chunk_sizes.extend([chunk_size] * n_seqs)
+                observation_context_lens.extend([seq_group.seq_group.sampling_params
+                                                          .observation_context_len]
+                                                 * n_seqs)
+
             seqs.extend(seq_group.seq_group.get_seqs(status=SequenceStatus.RUNNING))
-        self.block_manager.batch_append_slots(seqs, chunk_size=chunk_sizes or None)
+        self.block_manager.batch_append_slots(seqs,
+                                              chunk_size=chunk_sizes or None,
+                                              observation_len=observation_context_lens
+                                              or None)
 
     @BENCHMARKER.wrap()
     def _append_slots(
