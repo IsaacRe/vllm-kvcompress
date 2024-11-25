@@ -260,7 +260,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
 
         # Add metric metadata associated with the newly added sequence blocks
         block_state_view = self.block_state.get_block_state_seq_view(batch_slot_idx)
-        metadata = block_state_view.get_allocated_block_metadata()
+        metadata = block_state_view.get_allocated_block_metadata(
+            first_n_blocks=(seq_len - observation_len) // self.block_size)
+        # import pdb;pdb.set_trace()
+        print(f'HIIIII: {(self.kv_metrics.seq_index_by_block == 0).sum() / 32 / 8 * 16}')
         self.kv_metrics.insert_metadata(metadata)
 
     def _remove_sequence(self, seq_id: int) -> torch.Tensor:
@@ -309,6 +312,11 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                     .type(torch.long)
                     .to(self.gpu_allocator.device)
             )
+
+            # debug
+            alloc_mask = self.kv_metrics.seq_index_by_block >= 0
+            assert not alloc_mask[freed_blocks].any()
+
             self.gpu_allocator.free(freed_blocks)
             # import pdb;pdb.set_trace()
             self.block_state.context_lens[:,self.current_batch_indices] -= \
@@ -411,6 +419,18 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             self.current_observation_tokens = obs_token_count
 
             self.block_state.block_tables[:,batch_slots_idxs] = tmp
+
+            # debug
+            temp_blocks = (
+                self.block_state
+                    .block_tables[:,self.current_batch_indices]
+                    [self.current_observation_mask]
+                    .type(torch.long)
+                    .to(self.gpu_allocator.device)
+            )
+            alloc_mask = self.kv_metrics.seq_index_by_block >= 0
+            assert not alloc_mask[temp_blocks].any()
+
             last_token_position = [seq.get_len() - seq.get_num_new_tokens() - 1
                                    for seq in seqs]
             print(f'Heyoooo: is_prefill={seqs[0].is_prefill()}')
@@ -424,7 +444,22 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                                     return_slot_mapping=cache_slot_mapping,
                                     is_prefill=[s.is_prefill() for s in seqs])
             )
+            # import pdb;pdb.set_trace()
+            # thing = (self.kv_metrics.seq_index_by_block == 0).sum() / 32/ 8 * 16
+            # if hasattr(self, "last_thing"):
+            #     assert self.last_thing + 880 == thing
+            # self.last_thing = thing
+            print(f'HIIIII: {(self.kv_metrics.seq_index_by_block == 0).sum() / 32 / 8 * 16}')
+
             self.kv_metrics.insert_metadata(metadata)
+
+            # debug
+            # alloc_mask = self.kv_metrics.seq_index_by_block >= 0
+            # assert not alloc_mask[temp_blocks].any()
+
+            # new_thing = (self.kv_metrics.seq_index_by_block == 0).sum() / 32/ 8 * 16
+            # assert self.last_thing + 880 == new_thing
+
             if cache_slot_mapping:
                 self.block_state.cached_slot_mapping = slot_mapping
             # for seq in seqs:

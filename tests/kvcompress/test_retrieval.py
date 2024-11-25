@@ -93,7 +93,7 @@ def test_needle_in_haystack(
 
     input_token_ids = tokenizer.encode(formatted)
 
-    import pdb;pdb.set_trace()
+    # import pdb;pdb.set_trace()
 
     max_out_tokens = 20
     vllm_outputs = vllm_model.generate_greedy_logprobs(

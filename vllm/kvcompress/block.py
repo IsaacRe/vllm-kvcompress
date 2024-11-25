@@ -371,17 +371,38 @@ class BlockStateView:
         out = self.all_logical_block_nums < block_counts[...,None]
         return self._squeeze_out(out) if squeeze else out
 
+    def first_n_allocated_block_mask(self, n: Union[int, torch.Tensor]) -> torch.Tensor:
+        """Returns a mask of the first n allocated blocks per head.
+        """
+        block_counts = self.get_block_counts(increment_on_full=False, squeeze=False)
+        if isinstance(n, int):
+            n = torch.tensor(n, dtype=torch.int, device=block_counts.device)
+        n = n.expand_as(block_counts)
+
+        out = (
+            (self.all_logical_block_nums < block_counts[...,None])
+            & (self.all_logical_block_nums < n[...,None])
+        )
+
+        return out
+
     @BENCHMARKER.wrap()
-    def last_n_allocated_block_mask(self, n: Union[int, torch.Tensor], squeeze: bool = True, benchmark: bool = False) -> torch.Tensor:
+    def last_n_allocated_block_mask(self,
+                                    n: Union[int, torch.Tensor],
+                                    observation_window: Union[int, torch.Tensor] = 0,
+                                    squeeze: bool = True,
+                                    benchmark: bool = False) -> torch.Tensor:
         """Returns a mask of the last n allocated blocks per head
         starting from the last block with at least one KV.
         """
         block_counts = self.get_block_counts(increment_on_full=False, squeeze=False, benchmark=benchmark)
         if isinstance(n, torch.Tensor):
             n = n.expand_as(block_counts)
+        if isinstance(observation_window, torch.Tensor):
+            observation_window = observation_window.expand_as(block_counts)
 
         out = (
-            (self.all_logical_block_nums < block_counts[...,None])
+            (self.all_logical_block_nums < (block_counts - observation_window)[...,None])
             & (self.all_logical_block_nums >= (block_counts - n)[...,None])
         )
         return self._squeeze_out(out) if squeeze else out
@@ -419,14 +440,15 @@ class BlockStateView:
         mask = self.last_n_allocated_block_mask(n, squeeze=False, benchmark=True)
         return self.block_tables[:,self.seq_indices][mask], mask
 
-    def get_allocated_block_metadata(self) -> BlockMetadata:
+    def get_allocated_block_metadata(self, first_n_blocks: int = 0) -> BlockMetadata:
         """Returns block metadata for all allocated blocks.
         WARNING: currently assumes that token position is aligned with logical
         index and will cause issues if sequences in this view have been compressed
         already.
         """
         assert not self.is_batch_view
-        mask = self.allocated_block_mask(squeeze=False)
+        mask = (self.first_n_allocated_block_mask(first_n_blocks)
+                if first_n_blocks else self.allocated_block_mask(squeeze=False))
         logical_blocks = (
             self.all_logical_block_nums
                 .expand_as(self.block_tables)[:,self.seq_indices][mask]
@@ -540,11 +562,16 @@ class BlockStateView:
         new_block_count_tensor = torch.tensor(new_block_count,
                                               dtype=torch.int,
                                               device=device)
+        observation_len_tensor = torch.tensor(new_obs_block_count,
+                                              dtype=torch.int,
+                                              device=device)
         # last_token_position = itertools.chain.from_iterable(
         #     [t - i * self.block_size for i in range(nb)]
         #     for t, nb in zip(last_token_position, new_block_count))
         last_block_mask = self.last_n_allocated_block_mask(
-            new_block_count_tensor[None,:,None], squeeze=False)
+            (new_block_count_tensor + observation_len_tensor)[None,:,None],
+            observation_window=observation_len_tensor[None,:,None],
+            squeeze=False)
 
         block_offsets = torch.arange(self.block_size,
                                      dtype=torch.int,
@@ -628,8 +655,7 @@ class BlockStateView:
             block_counts = self.get_block_counts()
             print(f'BLOCK_COUNTS: {block_counts.max()=}, {block_counts.min()=}')
             new_blocks_tensor = torch.arange(max(new_block_count), device=device)
-            for seq_idx, prefill, new_blocks, new_tokens in zip(self.seq_indices, is_prefill,
-                                                                new_block_count, new_token_count):
+            for seq_idx, prefill, new_blocks in zip(self.seq_indices, is_prefill, new_block_count):
                 if prefill:
                     # Get last new_blocks blocks along each layer and head for this sequence.
                     # Note: there may not be alignment across layers/heads since the sequence

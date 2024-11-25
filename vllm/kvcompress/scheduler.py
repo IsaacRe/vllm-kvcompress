@@ -554,6 +554,18 @@ class CompressionScheduler:
             dtype=torch.int,
             device=self.device,
         )
+        # use_ref = False
+        # if last_token_positions[0] > 4000:
+        #     use_ref = True
+        #     import pdb;pdb.set_trace()
+        num_kvs = []
+        offsets = evicted_kv_offsets.flatten()
+        for i in range(len(offsets) - 1):
+            num_kvs.append(offsets[i+1] - offsets[i])
+        num_kvs.append(torch.tensor(50000, dtype=torch.float, device=0))
+        num_kvs = torch.stack(num_kvs).view(1, 32, 8)
+        assert (evicted_kv_count <= num_kvs).all()
+
         schedule_cache_moves(
             self.cache_move_indices,
             cache_moves_count,

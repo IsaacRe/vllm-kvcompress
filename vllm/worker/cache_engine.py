@@ -137,6 +137,8 @@ class CacheEngine:
 
     def execute_cache_moves(self, cache_moves: CacheMoves, kv_metrics: CompressionMetrics) -> None:
         k_cache, v_cache = self.gpu_cache.unified_cache
+        cache_moves_cnt = cache_moves.count.clone().cpu()
+        cache_moves_idx = cache_moves.index.clone().cpu()
         _execute_cache_moves(
             k_cache=k_cache.squeeze(2),
             v_cache=v_cache.squeeze(2),
@@ -148,6 +150,7 @@ class CacheEngine:
             blocks_per_head=1,
             threads_per_head=16,
         )
+        torch.ones(1).to(0)
 
     @staticmethod
     def get_cache_block_size(
