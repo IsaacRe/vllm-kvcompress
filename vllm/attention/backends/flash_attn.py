@@ -700,7 +700,6 @@ class FlashAttentionMetadataBuilder(
                                 for i in self.prefill_block_state_indices],
                             dim=1,
                         )
-                        import pdb;pdb.set_trace()
             if self.decode_block_state_indices:
                 decode_block_state_view = block_state.get_block_state_batch_view(
                     self.decode_block_state_indices)
@@ -793,9 +792,11 @@ class FlashAttentionMetadataBuilder(
                                                num_seqs * num_kv_heads + 1),
                                               dtype=seq_start_loc.dtype,
                                               device=device)
-            cache_seq_start_loc[:,1:] = (context_lens_tensor
-                                         .flatten(start_dim=1)
-                                         .cumsum(dim=-1))
+            ctx_len_cumsum = (
+                context_lens_tensor.flatten().cumsum(dim=0)
+                .view(context_lens_tensor.size(0), -1))
+            cache_seq_start_loc[:,1:] = ctx_len_cumsum
+            cache_seq_start_loc[1:,0] = ctx_len_cumsum[:-1,-1]
         else:
             cache_seq_start_loc = seq_start_loc.clone()
         torch.cumsum(query_lens_tensor,
@@ -1028,11 +1029,11 @@ class FlashAttentionImpl(AttentionImpl):
                 CHECKPOINTER.checkpoint('flash_prefix_slot_mapping', slot_mapping[:880], max_save_iters=60)
 
                 # key_cache_ = key_cache.clone()
-                cache_key = key
-                cache_value = value
-                if cache_key.size(0) > slot_mapping.size(0):
-                    cache_key = cache_key[obs_mask]
-                    cache_value = cache_value[obs_mask]
+                # cache_key = key
+                # cache_value = value
+                # if cache_key.size(0) > slot_mapping.size(0):
+                #     cache_key = cache_key[obs_mask]
+                #     cache_value = cache_value[obs_mask]
 
                 # import pdb;pdb.set_trace()
                 ops.reshape_and_cache_flash(
@@ -1294,7 +1295,7 @@ class FlashAttentionImpl(AttentionImpl):
 
                     CHECKPOINTER.checkpoint("flash_prefix_q", query[:880], max_save_iters=60)
 
-                    seq_start_loc = prefill_meta.seq_start_loc
+                    seq_start_loc = prefill_meta.cache_seq_start_loc[layer_index]
                     # if query.shape[0] > 880:
                     #     seq_start_loc[1] = 880
 
@@ -1316,6 +1317,7 @@ class FlashAttentionImpl(AttentionImpl):
                         block_table=block_tables,
                         softcap=self.logits_soft_cap,
                     )
+                    torch.zeros(1).to(0)
 
                     CHECKPOINTER.checkpoint("flash_prefix_out", out[:880], max_save_iters=60)
 
