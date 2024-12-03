@@ -155,15 +155,14 @@ class CompressionScheduler:
                 (protected_window_size + self.block_size - 1) // self.block_size
                 * self.block_size
             )
-            compressible_token_count = (seq.data.get_len() - protected_tokens)
-            if compressible_token_count <= 0:
-                return 0, 0
+            protected_kv = protected_tokens * total_kv_heads
+            compressed_kv_count = self.block_manager.get_sequence_kv_count(seq)
             # Total count of KVs in compressible range if this sequence had never
             # been compressed
-            compressible_kv_count = compressible_token_count * total_kv_heads
+            compressible_kv_count = compressed_kv_count - protected_kv
+            if compressible_kv_count <= 0:
+                return 0, 0
             # Actual count of KVs currently in cache within compressible range
-            compressed_kv_count = self.block_manager.get_sequence_kv_count(seq)
-            protected_kv = protected_tokens * total_kv_heads
             # Target count of KVs in compressible range that will yield the
             # desired compression rate
             target_kv_count = (
@@ -215,8 +214,6 @@ class CompressionScheduler:
             if evicted_block_count == 0:
                 # print(f"Skipping compression for sequence {seq.seq_id}")
                 continue
-
-            # import pdb;pdb.set_trace()
 
             # Stop once we reach the maximum number of KVs to compress.
             total_kv_count += self.block_manager.get_sequence_block_count(seq) * self.block_size
@@ -558,13 +555,13 @@ class CompressionScheduler:
         # if last_token_positions[0] > 4000:
         #     use_ref = True
         #     import pdb;pdb.set_trace()
-        num_kvs = []
-        offsets = evicted_kv_offsets.flatten()
-        for i in range(len(offsets) - 1):
-            num_kvs.append(offsets[i+1] - offsets[i])
-        num_kvs.append(torch.tensor(50000, dtype=torch.float, device=0))
-        num_kvs = torch.stack(num_kvs).view(1, 32, 8)
-        assert (evicted_kv_count <= num_kvs).all()
+        # num_kvs = []
+        # offsets = evicted_kv_offsets.flatten()
+        # for i in range(len(offsets) - 1):
+        #     num_kvs.append(offsets[i+1] - offsets[i])
+        # num_kvs.append(torch.tensor(50000, dtype=torch.float, device=0))
+        # num_kvs = torch.stack(num_kvs).view(1, 32, 8)
+        # assert (evicted_kv_count <= num_kvs).all()
 
         schedule_cache_moves(
             self.cache_move_indices,
