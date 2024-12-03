@@ -717,7 +717,7 @@ class CompressionMetrics:
                 #         slh_idx = i * 32 * 8 + l * 8 + h
                 #         block_count = (seq_sorted_seq_layer_head_idx[offset:unevicted_offset] == slh_idx).sum()
                 #         assert block_count == debug['block_count'].view(-1)[slh_idx], f'{block_count=}, {debug["block_count"].view(-1)[slh_idx]=}, {debug["kv_count"].view(-1)[slh_idx]=}, {hanging_token_count[i,l,h]=}'
-                evicted_infs, = torch.where(seq_sorted_masked_metric_blocks[:unevicted_offset] == float('inf'))
+                evicted_infs, = torch.where(seq_sorted_masked_metric_blocks[offset:unevicted_offset] == float('inf'))
                 num_evicted_infs = len(evicted_infs)
                 if num_evicted_infs > 0:
                     unevicted_offset -= num_evicted_infs
