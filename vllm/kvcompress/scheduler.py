@@ -65,11 +65,11 @@ class CompressionScheduler:
                          dtype=torch.int)
             if self.config.control_layers else None
         )
-        # Mapping: seq_id -> num iters
-        self._iters_since_compression: Dict[int, int] = {}
+        # Mapping: seq_id -> num uncompressed tokens
         self.total_evicted_kvs = {}
-        self.total_evicted_blocks = {}
         self.total_evicted = 0
+
+        self.total_kv_heads = config.num_layers * config.num_kv_heads
 
         # Allocate workspace for compression
         self.evicted_head_indices = torch.empty(
@@ -87,14 +87,8 @@ class CompressionScheduler:
 
     def complete_seqs(self, completed_seqs: List[Sequence]) -> None:
         for seq in completed_seqs:
-            if seq.seq_id in self._iters_since_compression:
-                del self._iters_since_compression[seq.seq_id]
-
-    def _increment_iters_since_compression(self, compressed_seqs: List[Sequence]) -> None:
-        for seq_id in self._iters_since_compression:
-            self._iters_since_compression[seq_id] += 1
-        for seq in compressed_seqs:
-            self._iters_since_compression[seq.seq_id] = 0
+            if seq.seq_id in self.total_evicted_kvs:
+                del self.total_evicted_kvs[seq.seq_id]
 
     @BENCHMARKER.wrap()
     def _schedule_seq_evictions(
@@ -132,7 +126,7 @@ class CompressionScheduler:
             raise RuntimeError("both compression_rate and max_cache_tokens "
                                "specified during compression")
 
-        total_kv_heads = self.config.num_layers * self.config.num_kv_heads
+        total_kv_heads = self.total_kv_heads
 
         max_cache_kv = protected_window_size * total_kv_heads
         evict_kv_count = max(
@@ -198,8 +192,11 @@ class CompressionScheduler:
         seqs_to_compress: List[Sequence] = []
         protected_window_sizes: List[int] = []
         evicted_blocks_per_seq = []
-        for _, _, seq, sample_params in sorted(
-            [(self._iters_since_compression.get(s.seq_id, 0), s.seq_id, s, sp) for s, sp in zip(seqs, sampling_params)],
+        for _, _, seq, sample_params in sorted(  # Sort by number of KVs to compress
+            [(s.data.get_num_computed_tokens() * self.total_kv_heads
+              - self.total_evicted_kvs.get(s.seq_id, 0) - sp.max_cache_tokens,
+              s.seq_id, s, sp)
+             for s, sp in zip(seqs, sampling_params)],
             reverse=True,
         ):
             # If sequence is not long enough for compression, skip.
@@ -224,7 +221,8 @@ class CompressionScheduler:
             seqs_to_compress.append(seq)
             protected_window_sizes.append(sample_params.protected_window_size)
             evicted_blocks_per_seq.append(evicted_block_count)
-            self._iters_since_compression[seq] = 0
+
+            print(f"Seq {seq.seq_id} with {seq.data.get_num_computed_tokens()}/{seq.data.get_num_computed_tokens() - self.total_evicted_kvs.get(seq.seq_id, 0) / self.total_kv_heads}/{sample_params.max_cache_tokens} computed/remaining/max_cache tokens scheduled to evict {evicted_block_count} blocks ({evicted_block_count * self.block_size / self.total_kv_heads} tokens)")
 
         if not seqs_to_compress:
             return
@@ -585,21 +583,20 @@ class CompressionScheduler:
             for seq, freed_blocks in zip(seqs_to_compress, evicted_block_count)
         }
 
-        for seq in seqs_to_compress:
-            populated_slots = seq.data.get_len() % self.block_size
-            populated_slots = self.block_size if populated_slots == 0 else populated_slots
-            empty_slots = self.block_size - populated_slots
-            self.total_evicted_kvs[seq.seq_id] = (
-                self.total_evicted_kvs.get(seq.seq_id, 0) + (torch.clamp(freed_block_count[seq.seq_id] * self.block_size - empty_slots, min=0)).sum().item()
-            )
+        evicted_empty_slot_count = (torch.clamp(evicted_block_count, max=1)
+                                    * (self.block_size - hanging_token_count))
+        total_evicted_seq_kvs = (evicted_block_count * self.block_size
+                                 - evicted_empty_slot_count).sum(dim=-1).sum(dim=-1)
+
+        for seq, evicted_kvs in zip(seqs_to_compress, total_evicted_seq_kvs):
+            self.total_evicted_kvs[seq.seq_id] = (self.total_evicted_kvs.get(seq.seq_id, 0)
+                                                  + evicted_kvs.item())
             seq_evicted_kvs = self.total_evicted_kvs[seq.seq_id]
-            print(f'Seq {seq.seq_id} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.config.num_kv_heads / self.config.num_layers} tokens) so far')
+            print(f'Seq {seq.seq_id} evicted {seq_evicted_kvs} KVs (~{seq_evicted_kvs / self.total_kv_heads} tokens) so far')
 
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_indices', self.cache_move_indices)
         CHECKPOINTER.checkpoint('schedule_compression__cache_moves_count', cache_moves_count)
         CHECKPOINTER.checkpoint('schedule_compression__freed_block_count', evicted_block_count)
-
-        self._increment_iters_since_compression(seqs_to_compress)
 
         # Free blocks that were removed by compression
         freed_blocks = self.block_manager.free_compressed_blocks(freed_block_count)
