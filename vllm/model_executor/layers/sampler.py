@@ -1048,6 +1048,9 @@ def get_logprobs(
     ref_token_seq_indices = []
     seq_id_to_ref_seq_index = {}
 
+    token_positions = []
+    seq_ids_ = []
+
     # Select indices to compute logprob from, ranks of token ids, and the top
     # k token ids from logprobs.
     for (seq_group, sample_result) in zip(sampling_metadata.seq_groups,
@@ -1101,6 +1104,8 @@ def get_logprobs(
                 ref_token_seq_indices.append(sample_idx)
                 seq_id_to_ref_seq_index[seq_ids[0]] = reference_sample_idx
                 reference_sample_idx += 1
+                seq_ids_.append(list(seq_group.seq_data.keys())[0])
+                token_positions.append(list(seq_group.seq_data.values())[0].get_num_computed_tokens())
 
         assert len(next_token_ids) == len(query_indices)
 
@@ -1152,6 +1157,7 @@ def get_logprobs(
             torch.tensor(next_ref_token_ids, device=logprobs.device),
         ]]
         reference_logprobs = reference_logprobs.to('cpu')
+        print(f'REFERENCE_LOGPROBS: {reference_logprobs}, pos: {token_positions}, ids: {seq_ids_}')
 
     # Find prompt/sample logprobs.
     prompt_logprobs_per_seq_group: List[Optional[PromptLogprobs]] = []

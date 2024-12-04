@@ -750,12 +750,14 @@ class FlashAttentionMetadataBuilder(
                 self.kv_metric_observation_context_lens,
                 torch.int, device,
                 self.runner.pin_memory)
-            kv_metric_observation_context_mask = torch.ones((sum(query_lens),),
-                                                            dtype=torch.bool,
-                                                            device=device)
+            kv_metric_observation_context_mask = torch.ones(
+                (sum(query_lens[:self.num_prefills]),),
+                dtype=torch.bool,
+                device=device)
             obs_end = 0
-            for l, obs_l in zip(query_lens,
-                                self.kv_metric_observation_context_lens):
+            for l, obs_l in zip(
+                query_lens[:self.num_prefills],
+                self.kv_metric_observation_context_lens[:self.num_prefills]):
                 obs_end += l
                 obs_start = obs_end - obs_l
                 kv_metric_observation_context_mask[obs_start:obs_end] = False
@@ -976,9 +978,10 @@ class FlashAttentionImpl(AttentionImpl):
         prefill_max_observed_block_size = attn_metadata.prefill_kv_metric_block_size
         obs_mask = attn_metadata.kv_metric_observation_context_mask
 
-        CHECKPOINTER.checkpoint('flash_attn__query', query)
-        CHECKPOINTER.checkpoint('flash_attn__key', key)
-        CHECKPOINTER.checkpoint('flash_attn__value', value)
+        if attn_metadata.num_decode_tokens > 0:
+            CHECKPOINTER.checkpoint('flash_attn__query', query[attn_metadata.num_prefill_tokens:], override=True)
+            CHECKPOINTER.checkpoint('flash_attn__key', key[attn_metadata.num_prefill_tokens:], override=True)
+            CHECKPOINTER.checkpoint('flash_attn__value', value[attn_metadata.num_prefill_tokens:], override=True)
 
         if kv_cache is not None:
             # Reshape the input keys and values and store them in the cache.
@@ -1024,9 +1027,13 @@ class FlashAttentionImpl(AttentionImpl):
                 # TODO how does this work with differently-sized slot mapping?
                 # if layer_index == 0:
                 #     import pdb;pdb.set_trace()
-                CHECKPOINTER.checkpoint('flash_prefix_cache_k', key[:880], max_save_iters=60)
-                CHECKPOINTER.checkpoint('flash_prefix_cache_v', value[:880], max_save_iters=60)
-                CHECKPOINTER.checkpoint('flash_prefix_slot_mapping', slot_mapping[:880], max_save_iters=60)
+                # CHECKPOINTER.checkpoint('flash_prefix_cache_k', key[:880], max_save_iters=60)
+                # CHECKPOINTER.checkpoint('flash_prefix_cache_v', value[:880], max_save_iters=60)
+                # CHECKPOINTER.checkpoint('flash_prefix_slot_mapping', slot_mapping[:880], max_save_iters=60)
+
+                if attn_metadata.num_decode_tokens > 0:
+                    CHECKPOINTER.checkpoint('flash_prefix_cache_k', key_cache, override=True)
+                    CHECKPOINTER.checkpoint('flash_prefix_cache_v', value_cache, override=True)
 
                 # key_cache_ = key_cache.clone()
                 # cache_key = key
@@ -1370,6 +1377,7 @@ class FlashAttentionImpl(AttentionImpl):
             if kvcompress_enabled:
                 # Extract layer-dependent metadata
                 block_tables = decode_meta.block_tables[layer_index]
+                slot_mapping = attn_metadata.slot_mapping[layer_index][num_prefill_tokens:]
                 # context_lens = decode_meta.context_lens_tensor[layer_index]
                 # decode_positions = attn_metadata.token_positions[num_prefill_tokens:]
                 # key_cache_, _ = KVCAttention.split_kv_cache(
@@ -1407,9 +1415,9 @@ class FlashAttentionImpl(AttentionImpl):
                 # CHECKPOINTER.checkpoint('flash_attn__decode_temp_kv_metrics', kv_metrics.temp_metrics)
 
                 ##### UPDATE
-                # if layer_index == 0:
-                #     import pdb;pdb.set_trace()
+                CHECKPOINTER.checkpoint('flash_prefix_decode__block_tables', block_tables, max_save_iters=10)
                 seq_lens_tensor = decode_meta.seq_lens_tensor[layer_index]
+                CHECKPOINTER.checkpoint('flash_prefix_decode__seq_lens', seq_lens_tensor, max_save_iters=10)
                 output[num_prefill_tokens:] = torch.ops.vllm.flash_attn_with_kvcache(
                         decode_query.unsqueeze(1),
                         key_cache,
@@ -1421,7 +1429,8 @@ class FlashAttentionImpl(AttentionImpl):
                         alibi_slopes=self.alibi_slopes,
                         softcap=self.logits_soft_cap,
                     ).squeeze(1)
-                CHECKPOINTER.checkpoint('flash_prefix_decode', output[num_prefill_tokens:])
+                CHECKPOINTER.checkpoint('flash_prefix_decode__query', decode_query, max_save_iters=10)
+                CHECKPOINTER.checkpoint('flash_prefix_decode', output[num_prefill_tokens:], max_save_iters=10)
                 ######
 
                 # assert torch.allclose(output[num_prefill_tokens:], out, rtol=1e-2, atol=1e-2)

@@ -652,12 +652,9 @@ class Scheduler:
                     curr_loras.add(seq_group.lora_int_id)
         # print(f"schedule_running preempted: {len(preempted)} preempted, {len(decode_seq_groups)} decode, {len(prefill_seq_groups)} prefill")
         self._batch_preempt_by_recompute(preempted)
-        chunk_size = (self.scheduler_config.max_chunk_len
-                      if self.scheduler_config.chunked_prefill_enabled
-                      else -1)
         # TODO can we skip if this is an empty list
         self._batch_append_slots(decode_seq_groups + prefill_seq_groups,
-                                 chunk_size=chunk_size)
+                                 do_chunk=self.scheduler_config.chunked_prefill_enabled)
 
         # Make sure all queues are updated.
         assert len(running_queue) == 0
@@ -1597,17 +1594,17 @@ class Scheduler:
     @BENCHMARKER.wrap()
     def _batch_append_slots(self,
                             seq_groups: List[ScheduledSequenceGroup],
-                            chunk_size: int = -1) -> None:
+                            do_chunk: bool = False) -> None:
         seqs: List[Sequence] = []
         chunk_sizes = []
         observation_context_lens = []
         for seq_group in seq_groups:
-            if chunk_size > 0:
+            if do_chunk and seq_group.token_chunk_size > 0:
                 n_seqs = len(seq_group.seq_group.get_seqs())
                 # chunk_sizes.extend([
                 #     chunk_size - seq_group.seq_group.sampling_params
                 #                           .observation_context_len] * n_seqs)
-                chunk_sizes.extend([chunk_size] * n_seqs)
+                chunk_sizes.extend([seq_group.token_chunk_size] * n_seqs)
                 observation_context_lens.extend([seq_group.seq_group.sampling_params
                                                           .observation_context_len]
                                                  * n_seqs)
@@ -1819,7 +1816,8 @@ class Scheduler:
                                      "block size, but got chunk_size "
                                      f"({budget.token_budget}) % block_size "
                                      f"({block_size}) = {reminder}")
-            if (self.cache_config.enable_prefix_caching
+            if ((self.cache_config.enable_prefix_caching
+                 or self.cache_config.enable_kvcompress)
                 and remaining_token_budget < num_new_tokens):
                 num_new_tokens = (remaining_token_budget //
                                   block_size) * block_size

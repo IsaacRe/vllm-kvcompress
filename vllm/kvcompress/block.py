@@ -648,21 +648,21 @@ class BlockStateView:
             assert len(is_prefill) == len(self.seq_indices) == len(new_block_count)
             # Only the slot_mapping should include observation tokens.
             # Block metadata should include only tokens from the current chunk.
-            if new_obs_block_count:
+            if sum(new_obs_block_count) > 0:
                 assert len(new_obs_block_count) == len(new_block_count)
                 new_block_count = [c + c_obs for c, c_obs in zip(new_block_count, new_obs_block_count)]
             new_slot_mapping = []
             block_counts = self.get_block_counts()
             print(f'BLOCK_COUNTS: {block_counts.max()=}, {block_counts.min()=}')
             new_blocks_tensor = torch.arange(max(new_block_count), device=device)
-            for seq_idx, prefill, new_blocks in zip(self.seq_indices, is_prefill, new_block_count):
+            for i, (seq_idx, prefill, new_blocks) in enumerate(zip(self.seq_indices, is_prefill, new_block_count)):
                 if prefill:
                     # Get last new_blocks blocks along each layer and head for this sequence.
                     # Note: there may not be alignment across layers/heads since the sequence
                     # may have been compressed.
                     gather_inp = self.block_tables[:,seq_idx].transpose(1, 2)
                     gather_idx = (new_blocks_tensor[None,:new_blocks,None]
-                        + block_counts[:,seq_idx,None,:] - new_blocks)
+                        + block_counts[:,i,None,:] - new_blocks)
                     assert gather_inp.size(1) > gather_idx.max()
                     block_nums = gather_inp.gather(
                         dim=1,

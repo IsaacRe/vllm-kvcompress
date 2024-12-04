@@ -1053,7 +1053,7 @@ def ref_count_block_evictions(
                 end_evict = start + evicted_kvs
                 evicted_logical_indices[end_evict-block_size+hanging_token_count[s,l,h]:end_evict] = null_value
 
-                if s == l == h == 0 and block_size - hanging_token_count[s,l,h] > 0:
+                if debug_logical_indices is not None and s == l == h == 0 and block_size - hanging_token_count[s,l,h] > 0:
                     print(f'heyo {(debug_logical_indices != evicted_logical_indices).any()=}\n{evicted_logical_indices[min(end-block_size*2,0):end]}')
                     assert (evicted_logical_indices != debug_logical_indices).any()
         assert evicted_block_count[s].sum() == evicted_blocks_per_seq[s]
@@ -1070,6 +1070,7 @@ def count_block_evictions(
     block_size: int,
     null_value: int,
     evicted_blocks_per_seq: Optional[torch.Tensor] = None,
+    is_profile: bool = False,
 ):
     # evicted_block_count_kernel = evicted_block_count.clone()
     # evicted_logical_indices_kernel = evicted_logical_indices.contiguous().clone()

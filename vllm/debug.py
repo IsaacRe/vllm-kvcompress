@@ -78,7 +78,7 @@ class Checkpointer:
             raise RuntimeError('file not found: {path}')
         return torch.load(path)
 
-    def checkpoint(self, name: str, tensor: torch.Tensor, max_save_iters: Optional[int] = None):
+    def checkpoint(self, name: str, tensor: torch.Tensor, max_save_iters: Optional[int] = None, override: bool = False):
         if max_save_iters is None:
             max_save_iters = _MAX_SAVE_ITERS
         prefix_match = any([name.startswith(prefix) for prefix in self.enabled_prefixes])
@@ -99,7 +99,8 @@ class Checkpointer:
             elif self.do_validate:
                 reference = self.torch_load(name).to(tensor.device)
                 # assert (reference.to(tensor.device) == tensor).all(), f'checkpoint {name}({self.checkpoint_counts[name]}) failed:\n{reference} != {tensor}'
-                assert torch.allclose(reference, tensor, atol=self.tolerance, rtol=self.tolerance), (
+                if not override:
+                    assert torch.allclose(reference, tensor, atol=self.tolerance, rtol=self.tolerance), (
                     f'checkpoint {name}({self.checkpoint_counts[name]}) failed:\n{reference} != {tensor}')
                 print(f'checkpoint {name}({self.checkpoint_counts[name]}) passed')
                 if self.override_output:
