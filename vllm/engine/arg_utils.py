@@ -173,6 +173,7 @@ class EngineArgs:
     control_layers: List[int] = field(default_factory=list)
     new_token_limit: int = -1
     enable_flash_kvc: bool = False
+    max_chunk_len: int = -1
 
     # Checkpointing (for debugging purposes)
     save_checkpoint_dir: str = ""
@@ -914,6 +915,12 @@ class EngineArgs:
                             'that is used to compute initial KV metrics '
                             'during prefill.')
 
+        parser.add_argument('--max-chunk-len',
+                            type=int,
+                            default=-1,
+                            help='Configure the maximum chunk length for '
+                            'chunked-prefill with inter-chunk-compression.')
+
         # Checkpointing
         parser.add_argument('--save-checkpoint-dir',
                             type=str,
@@ -1109,6 +1116,7 @@ class EngineArgs:
             num_scheduler_steps=self.num_scheduler_steps,
             send_delta_data=(envs.VLLM_USE_RAY_SPMD_WORKER
                              and parallel_config.use_ray),
+            max_chunk_len=self.max_chunk_len,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,

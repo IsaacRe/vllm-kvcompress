@@ -1197,7 +1197,8 @@ class SchedulerConfig:
                  is_multimodal_model: bool = False,
                  preemption_mode: Optional[str] = None,
                  num_scheduler_steps: int = 1,
-                 send_delta_data: bool = False) -> None:
+                 send_delta_data: bool = False,
+                 max_chunk_len: int = -1) -> None:
         if max_num_batched_tokens is None:
             if enable_chunked_prefill:
                 # It is the values that have the best balance between ITL
@@ -1230,7 +1231,8 @@ class SchedulerConfig:
 
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
-        self.max_chunk_len = max_num_batched_tokens  # TODO hardcode for now for testing
+        self.max_chunk_len = (max_num_batched_tokens
+                              if max_chunk_len <= 0 else max_chunk_len)
         self.use_v2_block_manager = use_v2_block_manager
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
@@ -1269,6 +1271,12 @@ class SchedulerConfig:
                 "num_scheduler_steps "
                 f"({self.num_scheduler_steps}) must be greater than or "
                 "equal to 1.")
+
+        if self.max_chunk_len > self.max_num_batched_tokens:
+            raise ValueError(
+                f"max_chunk_len ({self.max_chunk_len}) must be less than or equal "
+                f"to max_num_batched_tokens ({self.max_num_batched_tokens})."
+            )
 
     @property
     def is_multi_step(self) -> bool:

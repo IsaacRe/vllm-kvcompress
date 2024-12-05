@@ -1110,9 +1110,10 @@ def get_logprobs(
         assert len(next_token_ids) == len(query_indices)
 
     if len(query_indices) == 0:
-        empty_sampled_logprob: SampleLogprobs = []
-        empty_prompt_logprob: Optional[PromptLogprobs] = None
-        return [empty_prompt_logprob], [empty_sampled_logprob]
+        n_groups = len(sampling_metadata.seq_groups)
+        empty_sampled_logprob: SampleLogprobs = [[] for _ in range(n_groups)]
+        empty_prompt_logprob: Optional[PromptLogprobs] = [None for _ in range(n_groups)]
+        return empty_prompt_logprob, empty_sampled_logprob
 
     selected_logprobs, ranks = None, None
     top_logprobs, top_token_ids = None, None
