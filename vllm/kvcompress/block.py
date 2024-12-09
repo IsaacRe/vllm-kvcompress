@@ -655,7 +655,8 @@ class BlockStateView:
             block_counts = self.get_block_counts()
             print(f'BLOCK_COUNTS: {block_counts.max()=}, {block_counts.min()=}')
             new_blocks_tensor = torch.arange(max(new_block_count), device=device)
-            for i, (seq_idx, prefill, new_blocks) in enumerate(zip(self.seq_indices, is_prefill, new_block_count)):
+            for i, (seq_idx, prefill, new_blocks, new_tokens, new_obs_blocks) in enumerate(
+                zip(self.seq_indices, is_prefill, new_block_count, new_token_count, new_obs_block_count)):
                 if prefill:
                     # Get last new_blocks blocks along each layer and head for this sequence.
                     # Note: there may not be alignment across layers/heads since the sequence
@@ -671,7 +672,9 @@ class BlockStateView:
                     # [num_layers, num_tokens, num_heads]
                     seq_slot_mapping = (block_nums[:,:,None].type(torch.long) * self.block_size
                                         + block_offsets[None,None,:,None]).flatten(start_dim=1, end_dim=2)
-                    new_slot_mapping.append(seq_slot_mapping)
+                    # Discard slot mappings for any empty slots in the last block (when processing last chunk)
+                    total_new_tokens = new_tokens + new_obs_blocks * self.block_size
+                    new_slot_mapping.append(seq_slot_mapping[:,:total_new_tokens])
 
             new_slot_mapping = torch.cat(new_slot_mapping, dim=1) if new_slot_mapping else None
         # # should have same number of allocated KVs per layer

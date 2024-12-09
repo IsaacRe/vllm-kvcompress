@@ -1222,6 +1222,9 @@ class SchedulerConfig:
                     _MULTIMODAL_MODEL_MAX_NUM_BATCHED_TOKENS,
                 )
 
+            if max_chunk_len > 0:
+                max_num_batched_tokens = max(max_num_batched_tokens, max_chunk_len)
+
         self.max_num_batched_tokens = max_num_batched_tokens
 
         if enable_chunked_prefill:
