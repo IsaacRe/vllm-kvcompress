@@ -657,7 +657,7 @@ class VllmRunner:
 
     def generate_w_logprobs(
         self,
-        sampling_params: SamplingParams,
+        sampling_params: Union[SamplingParams,List[SamplingParams]],
         images: Optional[PromptImageInput] = None,
         audios: Optional[PromptAudioInput] = None,
         prompts: Optional[List[str]] = None,
@@ -665,7 +665,9 @@ class VllmRunner:
         reference_completions: Optional[List[str]] = None,
         reference_token_ids: Optional[List[List[int]]] = None,
     ) -> List[Tuple[List[int], str, Optional[SampleLogprobs]]]:
-        assert sampling_params.logprobs is not None
+        assert (sampling_params[0].logprobs is not None
+                if isinstance(sampling_params, list) else
+                sampling_params.logprobs is not None)
 
         n_prompts = len(prompts if prompts is not None else prompt_token_ids)
         if images is not None:
@@ -734,8 +736,8 @@ class VllmRunner:
 
     def generate_greedy_logprobs(
         self,
-        max_tokens: int,
-        num_logprobs: int,
+        max_tokens: int = 16,
+        num_logprobs: int = 0,
         prompts: Optional[List[str]] = None,
         images: Optional[PromptImageInput] = None,
         audios: Optional[PromptAudioInput] = None,
@@ -748,18 +750,22 @@ class VllmRunner:
         max_cache_tokens: int = -1,
         metric_collection_buffer_size: int = 10,
         compress_once: bool = True,
+        sampling_param_list: List[SamplingParams] = [],
         **sampling_params,
     ) -> List[Tuple[List[int], str, Optional[SampleLogprobs]]]:
-        greedy_logprobs_params = SamplingParams(temperature=0.0,
-                                                max_tokens=max_tokens,
-                                                logprobs=num_logprobs,
-                                                stop_token_ids=stop_token_ids,
-                                                protected_window_size=protected_window_size,
-                                                target_compression_rate=target_compression_rate,
-                                                max_cache_tokens=max_cache_tokens,
-                                                metric_collection_buffer_size=metric_collection_buffer_size,
-                                                compress_once=compress_once,
-                                                **sampling_params)
+        if sampling_param_list:
+            greedy_logprobs_params = sampling_param_list
+        else:
+            greedy_logprobs_params = SamplingParams(temperature=0.0,
+                                                    max_tokens=max_tokens,
+                                                    logprobs=num_logprobs,
+                                                    stop_token_ids=stop_token_ids,
+                                                    protected_window_size=protected_window_size,
+                                                    target_compression_rate=target_compression_rate,
+                                                    max_cache_tokens=max_cache_tokens,
+                                                    metric_collection_buffer_size=metric_collection_buffer_size,
+                                                    compress_once=compress_once,
+                                                    **sampling_params)
         outputs = self.generate_w_logprobs(greedy_logprobs_params,
                                            prompts=prompts,
                                            images=images,
