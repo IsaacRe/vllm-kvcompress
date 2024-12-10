@@ -101,28 +101,14 @@ class BlockState:
              self.num_kv_heads),
             dtype=torch.int,
             device="cuda:0")
-        if self.use_tiered_block_tables:
-            self.block_tables = torch.empty(
-                (self.num_layers,
-                 self.max_num_seqs,
-                 self.max_num_blocks_per_head),
-                dtype=torch.int,
-                device="cuda:0")
-            self.t2_block_tables = torch.empty(
-                (self.num_layers,
-                 self.max_num_t1_blocks,
-                 self.num_kv_heads),
-                dtype=torch.int,
-                device="cuda:0")
-        else:
-            print(f"Allocating block table - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
-            self.block_tables = torch.empty(
-                (self.num_layers,
-                 self.max_num_seqs,
-                 self.num_kv_heads,
-                 self.max_num_blocks_per_head),
-                dtype=torch.int,
-                device="cuda:0")
+        print(f"Allocating block table - Mem: {torch.cuda.memory_allocated(0) * 1e-9}")
+        self.block_tables = torch.empty(
+            (self.num_layers,
+                self.max_num_seqs,
+                self.num_kv_heads,
+                self.max_num_blocks_per_head),
+            dtype=torch.int,
+            device="cuda:0")
         self.block_table_indices = (
             torch.arange(self.block_tables.size(-1))[None,None,None].to("cuda:0")
         )
@@ -134,6 +120,9 @@ class BlockState:
         assert all_allocated_blocks.unique().numel() == all_allocated_blocks.numel(), "invalid block_state"
 
     def clear(self) -> None:
+        self.block_tables = None
+        self.context_lens = None
+        self.block_table_indices = None
         self._initialize()
 
     def exhaust_cached_slot_mappings(self) -> Optional[torch.Tensor]:
