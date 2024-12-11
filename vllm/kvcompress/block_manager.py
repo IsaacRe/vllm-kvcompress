@@ -552,7 +552,6 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         if (self.num_total_gpu_blocks - num_required_blocks <
                 self.watermark_blocks):
             print(f"{self.num_total_gpu_blocks=}, {num_required_blocks=}, {self.num_total_gpu_blocks - num_required_blocks=}")
-            raise Exception("Input length too long!")
             return AllocStatus.NEVER
         if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
             return AllocStatus.OK

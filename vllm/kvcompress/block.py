@@ -120,10 +120,12 @@ class BlockState:
         assert all_allocated_blocks.unique().numel() == all_allocated_blocks.numel(), "invalid block_state"
 
     def clear(self) -> None:
-        self.block_tables = None
-        self.context_lens = None
-        self.block_table_indices = None
-        self._initialize()
+        self.block_tables.zero_()
+        self.context_lens.zero_()
+        # self.block_tables = None
+        # self.context_lens = None
+        # self.block_table_indices = None
+        # self._initialize()
 
     def exhaust_cached_slot_mappings(self) -> Optional[torch.Tensor]:
         ret = self.cached_slot_mapping
