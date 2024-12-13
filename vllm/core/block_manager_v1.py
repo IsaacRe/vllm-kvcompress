@@ -281,7 +281,9 @@ class BlockSpaceManagerV1(BlockSpaceManager):
     def _get_seq_num_required_blocks(self, seq: Optional[Sequence]) -> int:
         return 0 if seq is None else seq.n_blocks
 
-    def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
+    def can_allocate(self,
+                     seq_group: SequenceGroup,
+                     num_new_tokens: int = -1) -> AllocStatus:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
 

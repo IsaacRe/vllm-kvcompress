@@ -44,7 +44,9 @@ class BlockSpaceManager(ABC):
         raise ValueError(f"Unknown version {version=}")
 
     @abstractmethod
-    def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
+    def can_allocate(self,
+                     seq_group: SequenceGroup,
+                     num_new_tokens: int = -1) -> AllocStatus:
         pass
 
     @abstractmethod

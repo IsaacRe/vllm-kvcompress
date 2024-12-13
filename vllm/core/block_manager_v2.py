@@ -107,7 +107,9 @@ class BlockSpaceManagerV2(BlockSpaceManager):
         self._last_access_blocks_tracker = LastAccessBlocksTracker(
             self.block_allocator)
 
-    def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
+    def can_allocate(self,
+                     seq_group: SequenceGroup,
+                     num_new_tokens: int = -1) -> AllocStatus:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
 
@@ -335,12 +337,12 @@ class BlockSpaceManagerV2(BlockSpaceManager):
 
     def can_swap_in(self, seq_group: SequenceGroup,
                     num_lookahead_slots: int) -> AllocStatus:
-        """Returns the AllocStatus for the given sequence_group 
+        """Returns the AllocStatus for the given sequence_group
         with num_lookahead_slots.
 
         Args:
             sequence_group (SequenceGroup): The sequence group to swap in.
-            num_lookahead_slots (int): Number of lookahead slots used in 
+            num_lookahead_slots (int): Number of lookahead slots used in
                 speculative decoding, default to 0.
 
         Returns:
@@ -357,7 +359,7 @@ class BlockSpaceManagerV2(BlockSpaceManager):
             seq_group (SequenceGroup): The sequence group to swap in.
 
         Returns:
-            List[Tuple[int, int]]: The mapping of swapping block from CPU 
+            List[Tuple[int, int]]: The mapping of swapping block from CPU
                 to GPU.
         """
         physical_block_id_mapping = []
@@ -387,12 +389,12 @@ class BlockSpaceManagerV2(BlockSpaceManager):
         return physical_block_id_mapping
 
     def can_swap_out(self, seq_group: SequenceGroup) -> bool:
-        """Returns whether we can swap out the given sequence_group 
+        """Returns whether we can swap out the given sequence_group
         with num_lookahead_slots.
 
         Args:
             seq_group (SequenceGroup): The sequence group to swap in.
-            num_lookahead_slots (int): Number of lookahead slots used in 
+            num_lookahead_slots (int): Number of lookahead slots used in
                 speculative decoding, default to 0.
 
         Returns:
@@ -412,7 +414,7 @@ class BlockSpaceManagerV2(BlockSpaceManager):
             sequence_group (SequenceGroup): The sequence group to swap in.
 
         Returns:
-            List[Tuple[int, int]]: The mapping of swapping block from 
+            List[Tuple[int, int]]: The mapping of swapping block from
                 GPU to CPU.
         """
         physical_block_id_mapping = []
@@ -455,7 +457,7 @@ class BlockSpaceManagerV2(BlockSpaceManager):
                   device: Device,
                   status: SequenceStatus,
                   num_lookahead_slots: int = 0) -> AllocStatus:
-        """Returns the AllocStatus for swapping in/out the given sequence_group 
+        """Returns the AllocStatus for swapping in/out the given sequence_group
         on to the 'device'.
 
         Args:
@@ -463,11 +465,11 @@ class BlockSpaceManagerV2(BlockSpaceManager):
             device (Device): device to swap the 'seq_group' on.
             status (SequenceStatus): The status of sequence which is needed
                 for action. RUNNING for swap out and SWAPPED for swap in
-            num_lookahead_slots (int): Number of lookahead slots used in 
+            num_lookahead_slots (int): Number of lookahead slots used in
                 speculative decoding, default to 0.
 
         Returns:
-            AllocStatus: The AllocStatus for swapping in/out the given 
+            AllocStatus: The AllocStatus for swapping in/out the given
                 sequence_group on to the 'device'.
         """
         blocks = self._get_blocks_for_swap(seq_group, status)
@@ -488,12 +490,12 @@ class BlockSpaceManagerV2(BlockSpaceManager):
     def _get_blocks_for_swap(self, seq_group: SequenceGroup,
                              status: SequenceStatus) -> List[Block]:
         """Returns the list of blocks those are touched by the seq_group
-        
+
         Args:
             sequence_group (SequenceGroup): The sequence group to swap in.
             status (SequenceStatus): The status of sequence which is needed
                 for action. RUNNING for swap out and SWAPPED for swap in
-        
+
         Returns:
             The list of blocks those are touched by the seq_group.
         """

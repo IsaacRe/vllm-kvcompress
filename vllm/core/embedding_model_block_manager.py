@@ -21,7 +21,9 @@ class EmbeddingModelBlockSpaceManager(BlockSpaceManager):
     ) -> None:
         pass
 
-    def can_allocate(self, seq_group: SequenceGroup) -> AllocStatus:
+    def can_allocate(self,
+                     seq_group: SequenceGroup,
+                     num_new_tokens: int = -1) -> AllocStatus:
         # Always return OK for dummy purposes
         return AllocStatus.OK
 
