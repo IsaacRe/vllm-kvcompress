@@ -433,10 +433,10 @@ class CompressionMetrics:
         """
         if self.random or not self.record_decoding_metrics:
             return  # keep random metrics when doing random eviction
-        temp_metrics = (self.temp_metrics ** 2 if self.use_l2
-                        else self.temp_metrics)
+        if self.use_l2:
+            self.temp_metrics **= 2
 
-        self.metrics += temp_metrics.sum(dim=-1)
+        self.metrics += self.temp_metrics.sum(dim=-1)
 
     def schedule_evictions(
         self,
