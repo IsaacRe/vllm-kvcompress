@@ -280,9 +280,27 @@ class Worker(LocalOrDistributedWorkerBase):
 
         This also warms up the model, which may record CUDA graphs.
         """
-        raise_if_cache_size_invalid(num_gpu_blocks,
-                                    self.cache_config.block_size,
-                                    self.model_config.max_model_len)
+        # If running KV-Compress with chunked-prefill, the sequence
+        # can be processed in chunks, compressing down to a fixed
+        # footprint as we go. In this case we need only ensure that
+        # the chunk size is small enough
+        if self.kvcompress_config:
+            if self.kvcompress_config.enable_chunked_prefill:
+                raise_if_cache_size_invalid_kvc(num_gpu_blocks,
+                                                self.cache_config.block_size,
+                                                self.kvcompress_config.num_layers,
+                                                self.kvcompress_config.num_kv_heads,
+                                                self.scheduler_config.max_chunk_len)
+            else:
+                raise_if_cache_size_invalid_kvc(num_gpu_blocks,
+                                                self.cache_config.block_size,
+                                                self.kvcompress_config.num_layers,
+                                                self.kvcompress_config.num_kv_heads,
+                                                self.model_config.max_model_len)
+        else:
+            raise_if_cache_size_invalid(num_gpu_blocks,
+                                        self.cache_config.block_size,
+                                        self.model_config.max_model_len)
 
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks
@@ -504,6 +522,23 @@ def raise_if_cache_size_invalid(num_gpu_blocks, block_size,
                          "Try increasing `gpu_memory_utilization` when "
                          "initializing the engine.")
     max_seq_len = block_size * num_gpu_blocks
+    if max_model_len > max_seq_len:
+        raise ValueError(
+            f"The model's max seq len ({max_model_len}) "
+            "is larger than the maximum number of tokens that can be "
+            f"stored in KV cache ({max_seq_len}). Try increasing "
+            "`gpu_memory_utilization` or decreasing `max_model_len` when "
+            "initializing the engine.")
+
+
+def raise_if_cache_size_invalid_kvc(num_gpu_blocks, block_size,
+                                    num_layers, num_kv_heads,
+                                    max_model_len) -> None:
+    if num_gpu_blocks <= 0:
+        raise ValueError("No available memory for the cache blocks. "
+                         "Try increasing `gpu_memory_utilization` when "
+                         "initializing the engine.")
+    max_seq_len = block_size * num_gpu_blocks // num_layers // num_kv_heads
     if max_model_len > max_seq_len:
         raise ValueError(
             f"The model's max seq len ({max_model_len}) "
