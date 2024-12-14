@@ -76,7 +76,7 @@ class BlockState:
         num_kv_heads: int,
         max_num_seqs: int,
         max_num_blocks_per_head: int,
-        max_num_t1_blocks: int,
+        max_num_blocks: int,
         use_tiered_block_tables: bool,
     ) -> None:
         self.block_size = block_size
@@ -84,10 +84,9 @@ class BlockState:
         self.num_kv_heads = num_kv_heads
         self.max_num_seqs = max_num_seqs
         self.max_num_blocks_per_head = max_num_blocks_per_head
-        self.max_num_t1_blocks = max_num_t1_blocks
+        self.max_num_blocks = max_num_blocks
         self.use_tiered_block_tables = use_tiered_block_tables
         self.block_tables = None
-        self.t2_block_tables = None
         self.context_lens = None
         self.block_table_indices = None
         self.cached_slot_mapping = None
@@ -141,7 +140,6 @@ class BlockState:
             seq_indices=list(range(self.block_tables.size(1))),
             use_tiered_block_tables=self.use_tiered_block_tables,
             block_tables=self.block_tables,
-            t2_block_tables=self.t2_block_tables,
             context_lens=self.context_lens,
             is_batch_view=True,
         )
@@ -154,7 +152,6 @@ class BlockState:
             seq_indices=seq_indices,
             use_tiered_block_tables=self.use_tiered_block_tables,
             block_tables=self.block_tables,
-            t2_block_tables=self.t2_block_tables,
             context_lens=self.context_lens,
             is_batch_view=True,
             all_logical_block_nums=self.block_table_indices,
@@ -168,7 +165,6 @@ class BlockState:
             seq_indices=[seq_index],
             use_tiered_block_tables=self.use_tiered_block_tables,
             block_tables=self.block_tables,
-            t2_block_tables=self.t2_block_tables,
             context_lens=self.context_lens,
             is_batch_view=False,
         )
@@ -243,7 +239,6 @@ class BlockStateView:
         seq_indices: List[int],
         use_tiered_block_tables: bool,
         block_tables: torch.Tensor,
-        t2_block_tables: torch.Tensor,
         context_lens: torch.Tensor,
         is_batch_view: bool,
         all_logical_block_nums: Optional[torch.Tensor] = None,
@@ -254,7 +249,6 @@ class BlockStateView:
         self.block_size = block_size
         self.use_tiered_block_tables = use_tiered_block_tables
         self.block_tables = block_tables
-        self.t2_block_tables = t2_block_tables
         self.context_lens = context_lens
         self.all_logical_block_nums = (
             torch.arange(block_tables.size(-1))[None,None,None]

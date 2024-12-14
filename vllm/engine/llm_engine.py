@@ -319,7 +319,7 @@ class LLMEngine:
                     num_kv_heads=self.kvcompress_config.num_kv_heads,
                     max_num_seqs=self.scheduler_config.max_num_seqs,
                     max_num_blocks_per_head=self.kvcompress_config.max_num_blocks_per_head,
-                    max_num_t1_blocks=self.kvcompress_config.max_num_blocks_per_head,
+                    max_num_blocks=self.kvcompress_config.max_num_blocks_per_head,
                     use_tiered_block_tables=False,
                 ),
                 kv_metrics=CompressionMetrics(
