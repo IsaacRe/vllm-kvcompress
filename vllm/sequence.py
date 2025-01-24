@@ -432,6 +432,7 @@ class Sequence:
 
         # For tracking KV cache compression status
         self.compressed = False
+        self.prefill_compressed = False
 
     @property
     def n_blocks(self) -> int:

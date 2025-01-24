@@ -971,6 +971,7 @@ class Scheduler:
         """
         ignored_seq_groups: List[SequenceGroup] = []
         seq_groups: List[ScheduledSequenceGroup] = []
+        # unaccounted_future_prefill_tokens = 0
 
         waiting_queue = self.waiting
 
@@ -979,6 +980,7 @@ class Scheduler:
             seq_group = waiting_queue[0]
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
+            seq_len = waiting_seqs[0].get_len()
             assert len(waiting_seqs) == 1, (
                 "Waiting sequence group should have only one prompt "
                 "sequence.")
@@ -986,11 +988,11 @@ class Scheduler:
                                                       SequenceStatus.WAITING,
                                                       enable_chunking, budget)
             if not enable_chunking:
-                num_prompt_tokens = waiting_seqs[0].get_len()
+                num_prompt_tokens = seq_len
                 assert num_new_tokens == num_prompt_tokens
 
             prompt_limit = self._get_prompt_limit(seq_group)
-            if num_new_tokens > prompt_limit:
+            if seq_len > prompt_limit:
                 logger.warning(
                     "Input prompt (%d tokens) is too long"
                     " and exceeds limit of %d", num_new_tokens, prompt_limit)
@@ -1000,9 +1002,37 @@ class Scheduler:
                 waiting_queue.popleft()
                 continue
 
+            # num_tokens_to_allocate = num_new_tokens
+            # if (self.kvcompress_enabled
+            #     and seq_group.sampling_params.max_cache_tokens > 0
+            #     and seq_group.sampling_params.compress_chunks):
+            #     # We need to check that we have space for the maximum number of
+            #     # KVs that will be cached for this sequence at any point during
+            #     # its prefill. A reasonable upper bound for this is its
+            #     # configured max_cache_tokens plus the chunk size.
+            #     # TODO: (errorif) a sequence fails to schedule for compression
+            #     # and exceeds the upper bound as a result. Or if cached decoding
+            #     # tokens fill up watermark space (though this should be handled
+            #     # by preemption already).
+
+            #     # Upper bound of total compressed tokens that will be cached
+            #     # for this sequence during prefill.
+            #     num_tokens_to_allocate = min(
+            #         seq_len,
+            #         seq_group.sampling_params.max_cache_tokens
+            #         + self.scheduler_config.max_chunk_len)
+
+            #     # Account for unallocated future tokens of other prefill sequences
+            #     seq_unaccounted_future_prefill_tokens = (num_tokens_to_allocate
+            #                                              - num_new_tokens)
             # If the sequence group cannot be allocated, stop.
             can_allocate = self.block_manager.can_allocate(
                 seq_group, num_new_tokens=num_new_tokens)
+
+            # # Increment count of unaccounted prefill tokens by the initial
+            # # upper bound.
+            # unaccounted_future_prefill_tokens += seq_unaccounted_future_prefill_tokens
+
             if can_allocate == AllocStatus.LATER:
                 break
             elif can_allocate == AllocStatus.NEVER:
@@ -1785,17 +1815,48 @@ class Scheduler:
         num_new_tokens = 0
         seqs = seq_group.get_seqs(status=status)
         for seq in seqs:
+            new_seq_tokens = seq.get_num_new_tokens()
             # If we can continually compress this sequence while staying
             # within model's max len, return up to the max chunk len.
-            if (enable_chunking and self.kvcompress_enabled
-                and seq_group.sampling_params.max_cache_tokens > 0
-                and (seq_group.sampling_params.max_cache_tokens
-                    + self.scheduler_config.max_chunk_len
-                    < self.scheduler_config.max_model_len)):
-                num_new_tokens += min(seq.get_num_new_tokens(),
-                                      self.scheduler_config.max_chunk_len)
+            if enable_chunking and self.kvcompress_enabled:
+                # If sequence input is too long to fit in cache
+                # reconfigure to enable chunked compression.
+                if self.block_manager.max_allocable_tokens < new_seq_tokens:
+                    warn_string = []
+                    if not seq_group.sampling_params.compress_chunks:
+                        warn_string.append("compress_chunks=True")
+                        seq_group.sampling_params.compress_chunks = True
+                    min_valid_compression = (
+                        self.block_manager.max_allocable_tokens
+                        - self.block_manager.watermark_blocks
+                        - self.scheduler_config.max_chunk_len)
+                    if (seq_group.sampling_params.max_cache_tokens
+                        > min_valid_compression
+                        or seq_group.sampling_params.max_cache_tokens
+                        <= 0):
+                        seq_group.sampling_params.max_cache_tokens = (
+                            min_valid_compression)
+                        warn_string.append(
+                            f"max_cache_tokens={min_valid_compression}")
+                    if warn_string:
+                        print(f"WARNING: set {','.join(warn_string)} for "
+                              f"sequence {seq.seq_id} to make decoding possible "
+                              "under limited cache availability.")
+
+                # If sequence is configured to allow chunked compression
+                # allocate for size of next chunk.
+                if (seq_group.sampling_params.max_cache_tokens > 0
+                    # TODO: test that compress_chunks=False still works as expected
+                    and seq_group.sampling_params.compress_chunks
+                    and (seq_group.sampling_params.max_cache_tokens
+                         + self.scheduler_config.max_chunk_len
+                         < self.block_manager.max_allocable_tokens)):
+                    num_new_tokens += min(new_seq_tokens,
+                                          self.scheduler_config.max_chunk_len)
+                else:
+                    num_new_tokens += new_seq_tokens
             else:
-                num_new_tokens += seq.get_num_new_tokens()
+                num_new_tokens += new_seq_tokens
         assert num_new_tokens > 0
         # Chunk if a running request cannot fit in the given budget.
         # If number of seq > 1, it means it is doing beam search

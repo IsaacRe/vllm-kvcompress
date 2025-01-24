@@ -1189,6 +1189,7 @@ class EngineArgs:
                 new_token_limit=self.new_token_limit,
                 enable_flash_kvc=self.enable_flash_kvc,
                 enable_chunked_prefill=self.enable_chunked_prefill,
+                max_chunk_len=self.max_chunk_len,
             )
         else:
             kvcompress_config = None

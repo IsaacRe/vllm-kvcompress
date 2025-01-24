@@ -1033,6 +1033,7 @@ class KVCompressConfig:
         new_token_limit: int,
         enable_flash_kvc: bool,
         enable_chunked_prefill: bool,
+        max_chunk_len: int,
     ) -> None:
         self.block_size = block_size
         self.target_compression_rate = target_compression_rate
@@ -1062,6 +1063,7 @@ class KVCompressConfig:
         self.new_token_limit = new_token_limit
         self.enable_flash_kvc = False
         self.enable_chunked_prefill = enable_chunked_prefill
+        self.max_chunk_len = max_chunk_len
 
         self._verify_args()
 

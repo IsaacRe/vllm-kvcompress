@@ -128,11 +128,11 @@ class CompressionScheduler:
 
         total_kv_heads = self.total_kv_heads
 
-        max_cache_kv = protected_window_size * total_kv_heads
-        evict_kv_count = max(
-            0,
-            self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
-        )
+        # max_cache_kv = protected_window_size * total_kv_heads
+        # evict_kv_count = max(
+        #     0,
+        #     self.block_manager.get_sequence_kv_count(seq) - max_cache_kv,
+        # )
         if max_cache_tokens >= 0:
             # Evict by max number of KV per sequence.
             max_cache_kv = max_cache_tokens * total_kv_heads
@@ -177,6 +177,9 @@ class CompressionScheduler:
             0,
         )
 
+        if evict_block_count > 0:
+            seq.prefill_compressed = True
+
         evict_kv_count = evict_block_count * self.block_size
         return evict_kv_count, evict_block_count
 
@@ -208,6 +211,9 @@ class CompressionScheduler:
                 compress_once=sample_params.compress_once,
                 compress_chunks=sample_params.compress_chunks,
             )
+            if seq.seq_id in self.block_manager.remaining_prefill_blocks_by_seq:
+                self.block_manager.update_remaining_prefill_blocks(seq, self.config.max_chunk_len,
+                                                                   sample_params.max_cache_tokens)
             if evicted_block_count == 0:
                 # print(f"Skipping compression for sequence {seq.seq_id}")
                 continue

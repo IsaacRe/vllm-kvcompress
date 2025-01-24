@@ -97,7 +97,7 @@ class ParallelBlockAllocator(BlockAllocatorBase):
 
         # Initialize the free blocks.
         self.block_numbers = torch.arange(
-            num_blocks, device=device
+            num_blocks, device=device, dtype=torch.int
         )
         self.free_mask = torch.ones(
             (num_blocks,), dtype=torch.bool, device=device
@@ -167,7 +167,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.watermark_blocks = int(watermark * num_gpu_blocks)
 
         # No swapping with KV-Compress so we only use a GPU allocator
-        self.gpu_allocator = ParallelBlockAllocator(num_gpu_blocks)
+        self.gpu_allocator = ParallelBlockAllocator(num_gpu_blocks,
+                                                    device=device)
 
         # KV-Compress uses pre-allocated block tables that are shared between
         # the model executor and scheduler/block manager
@@ -181,6 +182,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.current_observation_mask = None
         self.current_batch_indices = None
         self.current_observation_tokens = None
+
+        self.max_allocable_tokens = (
+            (self.num_total_gpu_blocks - self.watermark_blocks)
+             * self.block_size // self.num_layers // self.num_kv_heads)
+
+        self.remaining_prefill_blocks_by_seq: Dict[int, int] = {}
+        self.total_remaining_prefill_blocks: int = 0
 
     def reinit(self):
         self.gpu_allocator.free_all()
@@ -280,6 +288,10 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         self.block_state.context_lens[:,batch_slot_idx] = 0
         assert seq_id not in self.batch_slot_mapping
         # self.block_state._validate()
+
+        # Clear remaining prefill blocks if not already done
+        if seq_id in self.remaining_prefill_blocks_by_seq:
+            self.clear_remaining_prefill_blocks(seq_id)
 
         return freed_blocks
 
@@ -404,13 +416,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
             # print(f"DECODE ALLOCATION: {new_blocks} blocks")
             tmp = self.block_state.block_tables[:,batch_slots_idxs]
             newly_allocated = (
-                self.gpu_allocator.allocate(new_blocks).to(self.device).type(torch.int)
+                self.gpu_allocator.allocate(new_blocks)
             )
             tmp[new_mask] = newly_allocated
 
             # Temporary allocation of observation context tokens
             newly_allocated_obs = (
-               self.gpu_allocator.allocate(new_obs_blocks).to(self.device).type(torch.int)
+               self.gpu_allocator.allocate(new_obs_blocks)
             )
             tmp[new_obs_mask] = newly_allocated_obs
             # Store observation context mask for later deallocation
@@ -491,10 +503,8 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         new_mask = (new_mask & ~old_mask)
         new_blocks = new_mask.sum()
         if new_blocks > 0:
-            self.block_state.block_tables[:,batch_slot_idx][new_mask] = (self.gpu_allocator
-                                                        .allocate(new_blocks)
-                                                        .to(self.device)
-                                                        .type(torch.int))
+            self.block_state.block_tables[:,batch_slot_idx][new_mask] = (
+                self.gpu_allocator.allocate(new_blocks))
 
             # Add metric metadata associated with the newly allocated blocks
             metadata, mask = block_state_view.get_new_block_metadata(
@@ -527,31 +537,82 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         kv_counts = self.block_state.context_lens[:,batch_slot_idx]
         return int(((kv_counts + self.block_size - 1) // self.block_size).sum())
 
+    def clear_remaining_prefill_blocks(self,
+                                       seq_id: int):
+        self.total_remaining_prefill_blocks -= (
+            self.remaining_prefill_blocks_by_seq[seq_id])
+        del self.remaining_prefill_blocks_by_seq[seq_id]
+
+    def update_remaining_prefill_blocks(self, seq: Sequence, chunk_size: int,
+                                        max_cache_tokens: int):
+        seq_blocks = self.get_sequence_block_count(seq)
+        chunk_blocks = (chunk_size * self.num_layers * self.num_kv_heads
+                        // self.block_size)
+        max_cache_blocks = (max_cache_tokens * self.num_layers * self.num_kv_heads
+                            // self.block_size)
+        remaining_blocks = max_cache_blocks + chunk_blocks - seq_blocks
+        self.total_remaining_prefill_blocks += (
+            remaining_blocks - self.remaining_prefill_blocks_by_seq[seq.seq_id])
+        self.remaining_prefill_blocks_by_seq[seq.seq_id] = remaining_blocks
+
+    def decrement_remaining_prefill_blocks(self,
+                                           seq_id: int,
+                                           chunk_size: int):
+        print(self.remaining_prefill_blocks_by_seq[seq_id] * self.block_size // self.num_layers // self.num_kv_heads)
+        chunk_blocks = (chunk_size * self.num_layers * self.num_kv_heads
+                        // self.block_size)
+        assert chunk_blocks <= self.remaining_prefill_blocks_by_seq[seq_id]
+        self.total_remaining_prefill_blocks -= chunk_blocks
+        self.remaining_prefill_blocks_by_seq[seq_id] -= chunk_blocks
+
+    def set_remaining_prefill_blocks(self,
+                                     seq_id: int,
+                                     max_cache_tokens: int,
+                                     chunk_size: int):
+        assert seq_id not in self.remaining_prefill_blocks_by_seq
+        num_prefill_blocks = ((max_cache_tokens + chunk_size + self.block_size - 1)
+                               * self.num_layers * self.num_kv_heads // self.block_size)
+        print(num_prefill_blocks * self.block_size // self.num_layers // self.num_kv_heads)
+        self.remaining_prefill_blocks_by_seq[seq_id] = num_prefill_blocks
+        self.total_remaining_prefill_blocks += num_prefill_blocks
+
     def can_allocate(self,
                      seq_group: SequenceGroup,
                      num_new_tokens: int = -1) -> AllocStatus:
+        """Determine whether allocation is possible.
+        total_compressed_tokens: upper bound number of total compressed tokens
+            that will need to be allocated for this sequence during prefill.
+        """
         assert (seq_group.num_seqs() <= 1
             ), "multi-child SequenceGroups are not compatible with KV-Compress"
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
-        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
 
         # Assume that sequence has not been previously compressed and has same
         # context length across all layers/heads
-        if num_new_tokens <= 0:
-            num_new_tokens = seq.get_len()
+        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+        params = seq_group.sampling_params
+        total_tokens = seq.get_len()
+        if (params.max_cache_tokens > 0
+            and params.compress_chunks
+            # TODO
+            and num_new_tokens): # are doing another chunk after this
+            # Upper bound of total compressed prefill tokens that will
+            # be cached for this sequence
+            total_tokens = (params.max_cache_tokens + num_new_tokens
+                            - params.observation_context_len)
         num_required_blocks = (
-            (num_new_tokens + self.block_size) // self.block_size
+            (total_tokens + self.block_size) // self.block_size
             * self.num_layers * self.num_kv_heads
         )
         # print(f"Checking PREFILL allocation: {num_required_blocks} blocks")
 
-        num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks()
+        num_free_gpu_blocks = (self.gpu_allocator.get_num_free_blocks()
+                               - self.total_remaining_prefill_blocks)
 
         # Use watermark to avoid frequent cache eviction.
         if (self.num_total_gpu_blocks - num_required_blocks <
                 self.watermark_blocks):
-            print(f"{self.num_total_gpu_blocks=}, {num_required_blocks=}, {self.num_total_gpu_blocks - num_required_blocks=}")
             return AllocStatus.NEVER
         if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
             return AllocStatus.OK
@@ -569,6 +630,13 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
         seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
         n_tokens = (min(seq.get_len(), chunk_tokens) if chunk_tokens > 0
                     else seq.get_len())
+
+        # Update remaining prefill tokens for sequence
+        if chunk_tokens > 0 and chunk_tokens < seq.get_len():
+            self.set_remaining_prefill_blocks(
+                seq.seq_id,
+                seq_group.sampling_params.max_cache_tokens,
+                seq_group.sampling_params.observation_context_len)
 
         seq_len = seq.get_len()
         if observation_len and chunk_tokens > 0 and seq_len > chunk_tokens:
@@ -607,6 +675,16 @@ class BlockSpaceManagerKVC(BlockSpaceManager):
                            seqs: List[Sequence],
                            chunk_size: Optional[List[int]] = None,
                            observation_len: Optional[List[int]] = None) -> None:
+        if chunk_size is not None:
+            for seq, chnk_size, obs_len in zip(seqs, chunk_size, observation_len):
+                # If the sequence is compressed or is no longer prefilling
+                # then it has no remaining prefill blocks to allocate.
+                if seq.prefill_compressed or not seq.is_prefill():
+                    if seq.seq_id in self.remaining_prefill_blocks_by_seq:
+                        self.clear_remaining_prefill_blocks(seq.seq_id)
+                else:
+                    self.decrement_remaining_prefill_blocks(
+                        seq.seq_id, chnk_size - obs_len)
         self._append_to_sequence_batch(seqs, chunk_size=chunk_size,
                                        observation_len=observation_len)
 
