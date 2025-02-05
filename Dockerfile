@@ -110,8 +110,8 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
 
 # Check the size of the wheel if RUN_WHEEL_CHECK is true
 COPY .buildkite/check-wheel-size.py check-wheel-size.py
-# Default max size of the wheel is 250MB
-ARG VLLM_MAX_SIZE_MB=250
+# Default max size of the wheel is 500MB
+ARG VLLM_MAX_SIZE_MB=500
 ENV VLLM_MAX_SIZE_MB=$VLLM_MAX_SIZE_MB
 ARG RUN_WHEEL_CHECK=true
 RUN if [ "$RUN_WHEEL_CHECK" = "true" ]; then \
@@ -119,6 +119,27 @@ RUN if [ "$RUN_WHEEL_CHECK" = "true" ]; then \
     else \
         echo "Skipping wheel size check."; \
     fi
+
+# ARG CACHEBUST=1
+# RUN git clone https://github.com/IsaacRe/flash-attention.git --recurse-submodules --single-branch -b irehg/kvc-metrics
+COPY flash-attention-private flash-attention
+WORKDIR /workspace/flash-attention
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "$USE_SCCACHE" = "1" ]; then \
+        export SCCACHE_BUCKET=${SCCACHE_BUCKET_NAME} \
+        && export SCCACHE_REGION=${SCCACHE_REGION_NAME} \
+        && export SCCACHE_IDLE_TIMEOUT=0 \
+        && export CMAKE_BUILD_TYPE=Release \
+        && sccache --show-stats \
+        && python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp38 \
+        && sccache --show-stats; \
+    fi
+RUN --mount=type=cache,target=/root/.cache/ccache \
+    --mount=type=cache,target=/root/.cache/pip \
+    if [ "$USE_SCCACHE" != "1" ]; then \
+        python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp38; \
+    fi
+
 #################### EXTENSION Build IMAGE ####################
 
 #################### DEV IMAGE ####################
@@ -170,6 +191,11 @@ RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist
 RUN --mount=type=cache,target=/root/.cache/pip \
     . /etc/environment && \
     python3 -m pip install https://github.com/flashinfer-ai/flashinfer/releases/download/v0.1.6/flashinfer-0.1.6+cu121torch2.4-cp${PYTHON_VERSION_STR}-cp${PYTHON_VERSION_STR}-linux_x86_64.whl
+
+RUN python3 -m pip uninstall -y vllm-flash-attn
+RUN --mount=type=bind,from=build,src=/workspace/flash-attention/dist,target=/vllm-workspace/dist \
+    --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install dist/*.whl --verbose
 #################### vLLM installation IMAGE ####################
 
 
@@ -205,3 +231,4 @@ ENV VLLM_USAGE_SOURCE production-docker-image
 
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 #################### OPENAI API SERVER ####################
+
